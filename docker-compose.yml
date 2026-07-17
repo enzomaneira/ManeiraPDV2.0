@@ -1,0 +1,60 @@
+services:
+
+  # ─── Banco de Dados PostgreSQL ───────────────────────────────────────────────
+  db:
+    image: postgres:15
+    container_name: maneira_db
+    environment:
+      - POSTGRES_DB=maneira_pdv
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=senha123
+    ports:
+      - "5433:5432"           # 5433 no host para não conflitar com Postgres local
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── Backend Python (Flask) ──────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: maneira_backend
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgresql://postgres:senha123@db:5432/maneira_pdv
+      - MY_PUBLIC_URL=https://nonimperialistically-lexicostatistical-jaelyn.ngrok-free.dev/api/keeta
+    volumes:
+      - ./keeta_logs:/app/keeta_logs
+    depends_on:
+      db:
+        condition: service_healthy   # só sobe após o Postgres estar pronto
+
+  # ─── Frontend React (Vite) ───────────────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: maneira_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    depends_on:
+      - backend
+
+  # ─── Proxy Nginx ─────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: maneira_proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  postgres_data:

@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Opcional: Para garantir que o fundo preencha a tela toda */
+body, html, #root {
+  height: 100%;
+  margin: 0;
+  background-color: #f8fafc; /* Slate-50 */
+}
