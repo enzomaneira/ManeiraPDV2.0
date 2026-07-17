@@ -1,94 +1,57 @@
 # =============================================================================
 #  main.py  —  Ponto de entrada do ManeiraPDV (Backend Python)
 # =============================================================================
-#
-#  Inicializa a aplicação Flask, registra os blueprints (grupos de rotas)
-#  e conecta ao banco de dados.
-#
-#  Para rodar localmente:
-#    pip install -r requirements.txt
-#    python main.py
-#
-#  No Railway:
-#    O Railway injeta automaticamente a variável $PORT.
-#    O gunicorn usa essa porta para servir a aplicação.
-# =============================================================================
 
 import os
-
 from flask import Flask
 from flask_cors import CORS
+from database import db, get_database_url
+import models  # garante que os modelos são registrados no SQLAlchemy
 
-from database import init_db
-import models  # importa os modelos para o SQLAlchemy reconhecê-los
-
-# Blueprints (grupos de rotas organizados por domínio)
 from routes.orders        import orders_bp
 from routes.keeta_webhook import keeta_bp
 from routes.config        import config_bp
 from routes.stores        import stores_bp
 
-import keeta_client  # importa para testar a conexão no startup
-
-# Porta que o Railway injeta via variável de ambiente (padrão 8080 local)
-PORT = int(os.getenv("PORT", 8080))
-
 # -----------------------------------------------------------------------------
-#  Cria a aplicação Flask
+#  Factory function — cria e configura a aplicação Flask
+#  O gunicorn chama: gunicorn main:app, então 'app' precisa estar no módulo
 # -----------------------------------------------------------------------------
-app = Flask(__name__)
+def create_app():
+    application = Flask(__name__)
+    CORS(application)
 
-# Permite requisições de qualquer origem (necessário para o frontend React)
-CORS(app)
+    # Banco de dados
+    application.config["SQLALCHEMY_DATABASE_URI"]        = get_database_url()
+    application.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    db.init_app(application)
 
-# -----------------------------------------------------------------------------
-#  Conecta ao banco e cria as tabelas (se não existirem)
-# -----------------------------------------------------------------------------
-init_db(app)
+    # Blueprints
+    application.register_blueprint(orders_bp, url_prefix="/api/orders")
+    application.register_blueprint(keeta_bp,  url_prefix="/api/keeta")
+    application.register_blueprint(config_bp, url_prefix="/api/config")
+    application.register_blueprint(stores_bp, url_prefix="/api/stores")
 
-# -----------------------------------------------------------------------------
-#  Registra os blueprints com seus prefixos de URL
-#
-#  Mapeamento de endpoints:
-#    /api/orders/*    → routes/orders.py
-#    /api/keeta/*     → routes/keeta_webhook.py
-#    /api/config/*    → routes/config.py
-#    /api/stores/*    → routes/stores.py
-# -----------------------------------------------------------------------------
-app.register_blueprint(orders_bp, url_prefix="/api/orders")
-app.register_blueprint(keeta_bp,  url_prefix="/api/keeta")
-app.register_blueprint(config_bp, url_prefix="/api/config")
-app.register_blueprint(stores_bp, url_prefix="/api/stores")
+    # Cria as tabelas ao iniciar (só roda uma vez dentro do contexto correto)
+    with application.app_context():
+        try:
+            db.create_all()
+            print("[DB] Tabelas verificadas/criadas com sucesso.")
+        except Exception as e:
+            print(f"[DB] AVISO ao criar tabelas: {e}")
+
+    return application
 
 
-# -----------------------------------------------------------------------------
-#  Teste de integração no startup
-#  (equivalente ao CommandLineRunner do Spring Boot)
-# -----------------------------------------------------------------------------
-with app.app_context():
-    print("\n" + "="*60)
-    print("  ManeiraPDV — Backend Python iniciando...")
-    print("="*60)
-
-    print("\n[Startup] Testando conexão com a Keeta API...")
-    token = keeta_client.get_access_token()
-    if token:
-        print(f"[Startup] ✅ Token Keeta obtido com sucesso!")
-    else:
-        print(f"[Startup] ⚠️  Não foi possível obter o token da Keeta. Verifique as credenciais.")
-
-    print("\n[Startup] Gerando URL de autorização de exemplo...")
-    auth_url = keeta_client.get_authorization_url("http://localhost:8080/api/keeta/callback")
-    if auth_url:
-        print(f"[Startup] URL de Auth: {str(auth_url)[:80]}...")
-
-    print("\n" + "="*60 + "\n")
+# Instância global usada pelo gunicorn (gunicorn main:app)
+app = create_app()
 
 
 # -----------------------------------------------------------------------------
-#  Inicia o servidor
+#  Inicia o servidor (apenas quando rodado diretamente: python main.py)
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # debug=False em produção (Railway define RAILWAY_ENVIRONMENT=production)
+    PORT = int(os.getenv("PORT", 8080))
     is_dev = os.getenv("RAILWAY_ENVIRONMENT") is None
+    print(f"\n[ManeiraPDV] Iniciando na porta {PORT} | debug={is_dev}\n")
     app.run(host="0.0.0.0", port=PORT, debug=is_dev)
