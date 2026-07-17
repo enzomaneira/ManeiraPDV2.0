@@ -9,6 +9,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia o código da aplicação
 COPY . .
 
-EXPOSE 8080
-
-CMD ["python", "main.py"]
+# Usa sh -c para que o shell expanda $PORT antes de passar para o gunicorn
+# O Railway injeta $PORT automaticamente em tempo de execução
+CMD ["sh", "-c", "gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"]
