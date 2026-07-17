@@ -9,7 +9,7 @@ builder = "nixpacks"          # Railway detecta Python automaticamente via nixpa
 [deploy]
 # Comando de produção: gunicorn é mais robusto que o servidor dev do Flask
 # O $PORT é injetado automaticamente pelo Railway
-startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+startCommand = "/bin/sh -c 'gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120'"
 healthcheckPath = "/api/config"   # Railway faz ping aqui para saber se o serviço está ok
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
