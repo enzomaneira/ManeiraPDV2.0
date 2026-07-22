@@ -2,26 +2,24 @@
 node_modules/
 dist/
 build/
-.env
-.env.local
+
+# .env do backend NÃO sobe (tem credenciais reais)
+backend/.env
+backend/.env.local
+
+# .env do frontend SOBE — o VITE_API_URL é lido em build time pelo Vite
+# frontend/.env  ← não ignorar
+
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-
-target/
-*.class
-.mvn/
-*.jar
-*.war
+.DS_Store
+Thumbs.db
 .idea/
 *.iml
 .vscode/
 .settings/
-bin/
-logs/
 keeta_logs/
-
-
-.DS_Store
-Thumbs.db
+__pycache__/
+*.pyc

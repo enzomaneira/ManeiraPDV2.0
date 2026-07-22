@@ -1,5 +1,5 @@
 # =============================================================================
-#  main.py  —  Ponto de entrada do ManeiraPDV (Backend Python)
+#  main.py  —  Ponto de entrada do ManeiraPDV (Backend Python / Flask)
 # =============================================================================
 
 import os
@@ -13,13 +13,30 @@ from routes.keeta_webhook import keeta_bp
 from routes.config        import config_bp
 from routes.stores        import stores_bp
 
-# -----------------------------------------------------------------------------
-#  Factory function — cria e configura a aplicação Flask
-#  O gunicorn chama: gunicorn main:app, então 'app' precisa estar no módulo
-# -----------------------------------------------------------------------------
+
+def _get_cors_origins() -> list[str]:
+    """
+    Lê as origens permitidas da variável de ambiente CORS_ORIGINS.
+    Formato: múltiplas origens separadas por vírgula, sem espaços.
+
+    Ex: https://meu-frontend.up.railway.app,http://localhost:5173
+
+    Igual ao padrão usado no mmb-backend.
+    """
+    raw = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://localhost:3000",
+    )
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    print(f"[CORS] Origins permitidas: {origins}")
+    return origins
+
+
 def create_app():
     application = Flask(__name__)
-    CORS(application)
+
+    # CORS com origins vindas do ambiente
+    CORS(application, origins=_get_cors_origins())
 
     # Banco de dados
     application.config["SQLALCHEMY_DATABASE_URI"]        = get_database_url()
@@ -32,7 +49,7 @@ def create_app():
     application.register_blueprint(config_bp, url_prefix="/api/config")
     application.register_blueprint(stores_bp, url_prefix="/api/stores")
 
-    # Cria as tabelas ao iniciar (só roda uma vez dentro do contexto correto)
+    # Cria as tabelas ao iniciar
     with application.app_context():
         try:
             db.create_all()
@@ -47,11 +64,8 @@ def create_app():
 app = create_app()
 
 
-# -----------------------------------------------------------------------------
-#  Inicia o servidor (apenas quando rodado diretamente: python main.py)
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     PORT = int(os.getenv("PORT", 8080))
-    is_dev = os.getenv("RAILWAY_ENVIRONMENT") is None
-    print(f"\n[ManeiraPDV] Iniciando na porta {PORT} | debug={is_dev}\n")
-    app.run(host="0.0.0.0", port=PORT, debug=is_dev)
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+    print(f"\n[ManeiraPDV] Iniciando na porta {PORT} | debug={DEBUG}\n")
+    app.run(host="0.0.0.0", port=PORT, debug=DEBUG)
