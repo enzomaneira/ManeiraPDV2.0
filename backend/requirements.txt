@@ -1,17 +1,6 @@
-# Dependências do ManeiraPDV Backend Python
-# Instale com: pip install -r requirements.txt
-
-# Web Framework
 flask==3.0.3
-flask-cors==4.0.1        # Permite requisições cross-origin do frontend React
-
-# Banco de Dados
-flask-sqlalchemy==3.1.1  # ORM para mapear classes Python → tabelas SQL
-psycopg2-binary==2.9.9   # Driver de conexão com o PostgreSQL
-
-# Requisições HTTP (para chamar a API da Keeta)
+flask-cors==4.0.1
+flask-sqlalchemy==3.1.1
+psycopg2-binary==2.9.9
 requests==2.32.3
-
-# Servidor de produção (usado pelo Railway via railway.toml)
-# O servidor dev do Flask não é recomendado para produção
 gunicorn==22.0.0
