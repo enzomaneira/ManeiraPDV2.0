@@ -8,19 +8,26 @@
 #     A Keeta faz POST /api/keeta/orders quando algo acontece com um pedido.
 #     Ex: pedido criado, confirmado, cancelado, entregue...
 #
-#  2. RESPONDER ao GET /merchant:
+#  2. RESPONDER ao GET /menu:
 #     A Keeta faz GET /api/keeta/menu para buscar o cardápio da loja.
 #
 #  3. AUXILIARES:
 #     Callbacks OAuth, geração de URL de auth, controle de status da loja.
 #
+#  Como várias lojas (uma por usuário) compartilham o mesmo app Keeta,
+#  usamos o "local ID" (nosso store_id) para saber de qual loja é cada
+#  requisição. Esse ID trafega:
+#    - No onboarding: como merchantId
+#    - No webhook de pedidos: no header X-App-MerchantId
+#    - No fluxo OAuth: embutido na própria redirectUri (?storeId=...)
 # =============================================================================
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 import keeta_client
 from models import Order, MenuItem, StoreConfig
 from database import db
 from routes.orders import save_order_from_keeta
+from auth_utils import login_required
 
 keeta_bp = Blueprint("keeta", __name__)
 
@@ -64,7 +71,7 @@ def receive_order_event():
 
     event_type  = event.get("eventType")   # Tipo do evento: CREATED, CONFIRMED, etc.
     order_id    = event.get("orderId")      # ID do pedido na Keeta
-    merchant_id = request.headers.get("X-App-MerchantId", "1")  # ID da loja que originou o evento
+    merchant_id = request.headers.get("X-App-MerchantId", "1")  # store_id local da loja
 
     print(f"[Webhook] Evento: {event_type} | Pedido Keeta: {order_id}")
 
@@ -136,8 +143,8 @@ def get_merchant_menu():
       - A Keeta quer sincronizar o menu após uma notificação de atualização
       - Durante o processo de onboarding
 
-    A URL deste endpoint é informada no registro do merchant (onboarding).
-    A resposta deve seguir o formato Open Delivery.
+    A URL deste endpoint é informada no registro do merchant (onboarding),
+    incluindo o storeId como query param.
 
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints
     """
@@ -180,18 +187,28 @@ def get_merchant_menu():
 # =============================================================================
 
 @keeta_bp.post("/store-status")
+@login_required
 def update_store_status():
     """
-    Abre ou fecha a loja na Keeta.
+    Abre ou fecha a loja do usuário logado na Keeta.
     Chamado pelo frontend quando o operador clica no botão "LOJA ABERTA/FECHADA".
     """
-    data        = request.get_json()
-    is_open     = data.get("isOpen", True)
-    merchant_id = str(data.get("merchantId", "1"))
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    success = keeta_client.update_store_status(merchant_id, is_open)
+    config = StoreConfig.query.get(store.id)
+    if not config or not config.keeta_merchant_id:
+        return jsonify({"error": "Loja ainda não está conectada à Keeta."}), 400
+
+    data    = request.get_json(silent=True) or {}
+    is_open = data.get("isOpen", True)
+
+    success = keeta_client.update_store_status(config.keeta_merchant_id, is_open)
 
     if success:
+        config.is_store_open = is_open
+        db.session.commit()
         status_text = "ABERTA" if is_open else "FECHADA"
         return jsonify({"message": f"Loja agora está {status_text} na Keeta."})
     else:
@@ -203,17 +220,26 @@ def update_store_status():
 # =============================================================================
 
 @keeta_bp.get("/generate-auth-url")
+@login_required
 def generate_auth_url():
     """
     Gera a URL que o comerciante abre para autorizar seu sistema na Keeta.
 
     Fluxo completo:
-      1. Frontend chama este endpoint → recebe a URL
+      1. Frontend chama este endpoint (autenticado) → recebe a URL
       2. O comerciante abre a URL e faz login na Keeta
       3. Após autorizar, a Keeta redireciona para /api/keeta/callback com authId
+         (a URL de callback já leva o storeId do usuário logado embutido)
       4. /callback usa o authId para buscar dados e fazer o onboarding
+         daquela loja específica
     """
-    my_callback_url = request.host_url.rstrip("/") + "/api/keeta/callback"
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+
+    # Embute o storeId na própria URL de callback, para sabermos depois
+    # de qual loja/usuário é essa autorização.
+    my_callback_url = f"{request.host_url.rstrip('/')}/api/keeta/callback?storeId={store.id}"
     auth_url = keeta_client.get_authorization_url(my_callback_url)
 
     if auth_url:
@@ -231,16 +257,19 @@ def keeta_callback():
       - authId:           ID da autorização (sempre presente)
       - keetaMerchantId: ID da loja na Keeta (às vezes não vem)
       - error:           Mensagem de erro (se algo deu errado)
+      - storeId:         Nosso ID local da loja (embutido por nós ao gerar a URL)
 
     O que fazemos aqui:
       1. Se não vier keetaMerchantId, usamos o authId para buscar os dados da loja
-      2. Fazemos o onboarding: registramos a loja + URL do webhook na Keeta
+      2. Fazemos o onboarding: registramos a loja + URL do webhook na Keeta,
+         vinculando ao storeId correto
     """
-    auth_id          = request.args.get("authId")
-    keeta_id         = request.args.get("keetaMerchantId")
-    error            = request.args.get("error")
+    auth_id  = request.args.get("authId")
+    keeta_id = request.args.get("keetaMerchantId")
+    error    = request.args.get("error")
+    store_id = request.args.get("storeId", "1")
 
-    print(f"\n[Callback] authId={auth_id} | keetaMerchantId={keeta_id}")
+    print(f"\n[Callback] authId={auth_id} | keetaMerchantId={keeta_id} | storeId={store_id}")
 
     if error:
         return f"Erro na Keeta: {error}", 400
@@ -264,7 +293,15 @@ def keeta_callback():
         print(f"[Callback] keetaMerchantId descoberto: {keeta_id}")
 
     # Faz o onboarding — registra o mapeamento e as URLs na Keeta
-    result = keeta_client.register_merchant(keeta_id, my_local_store_id="1")
+    result = keeta_client.register_merchant(keeta_id, my_local_store_id=store_id)
+
+    # Salva o keetaMerchantId na configuração da loja correspondente
+    config = StoreConfig.query.get(int(store_id))
+    if not config:
+        config = StoreConfig(store_id=int(store_id))
+        db.session.add(config)
+    config.keeta_merchant_id = keeta_id
+    db.session.commit()
 
     return f"""
     <h1>✅ Integração Keeta Concluída!</h1>
@@ -272,5 +309,3 @@ def keeta_callback():
     <p><b>Resposta do Onboarding:</b> {result}</p>
     <p><a href="/">← Voltar ao PDV</a></p>
     """, 200
-
-

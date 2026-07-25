@@ -1,6 +1,10 @@
-import { ChefHat, ShoppingBag, History, Utensils, Settings } from 'lucide-react';
+import { ChefHat, ShoppingBag, History, Utensils, Settings, LogOut } from 'lucide-react';
 
-export default function Sidebar({ activeTab, setActiveTab }) {
+export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
+  const initials = user?.name
+    ? user.name.split(' ').filter(Boolean).slice(0, 2).map(n => n[0].toUpperCase()).join('')
+    : '?';
+
   return (
     <aside className="w-20 md:w-64 bg-slate-900 text-white flex flex-col justify-between shadow-2xl z-20 transition-all">
       <div>
@@ -23,11 +27,18 @@ export default function Sidebar({ activeTab, setActiveTab }) {
 
       <div className="p-4 border-t border-slate-700 bg-slate-800/50">
         <div className="flex items-center gap-3 px-2 py-2">
-           <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center font-bold">EM</div>
-           <div className="hidden md:block">
-             <p className="text-sm font-semibold">Enzo Maneira</p>
-             <p className="text-xs text-slate-400">Admin</p>
+           <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center font-bold shrink-0">{initials}</div>
+           <div className="hidden md:block flex-1 min-w-0">
+             <p className="text-sm font-semibold truncate">{user?.name || 'Usuário'}</p>
+             <p className="text-xs text-slate-400 truncate">{user?.storeName || 'Sem restaurante'}</p>
            </div>
+           <button
+             onClick={onLogout}
+             title="Sair"
+             className="hidden md:flex p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-700 transition-all"
+           >
+             <LogOut className="w-4 h-4" />
+           </button>
         </div>
       </div>
     </aside>

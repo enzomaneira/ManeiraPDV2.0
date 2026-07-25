@@ -8,41 +8,86 @@
 
 from database import db
 from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+class User(db.Model):
+    """
+    Tabela: users
+    Representa um usuário (dono/operador) que faz login no sistema.
+
+    Cada usuário está vinculado a NO MÁXIMO um restaurante (Store).
+    Essa relação é 1 para 1: um usuário só administra a sua própria loja.
+    """
+    __tablename__ = "users"
+
+    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name          = db.Column(db.String(255), nullable=False)
+    email         = db.Column(db.String(255), nullable=False, unique=True, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at    = db.Column(db.String(100), nullable=True)
+
+    # Relacionamento 1:1 com a loja (Store) desse usuário
+    store = db.relationship("Store", back_populates="owner", uselist=False)
+
+    def set_password(self, raw_password: str):
+        self.password_hash = generate_password_hash(raw_password)
+
+    def check_password(self, raw_password: str) -> bool:
+        return check_password_hash(self.password_hash, raw_password)
+
+    def to_dict(self):
+        return {
+            "id":      self.id,
+            "name":    self.name,
+            "email":   self.email,
+            "storeId": self.store.id if self.store else None,
+            "storeName": self.store.name if self.store else None,
+        }
 
 
 class Store(db.Model):
     """
     Tabela: stores
     Representa uma loja/restaurante cadastrado no PDV.
+
+    Cada loja pertence a um único usuário (owner_id) — é o vínculo
+    entre o login do sistema e o restaurante integrado com a Keeta.
     """
     __tablename__ = "stores"
 
-    id   = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    name = db.Column(db.String(255), nullable=False)
+    id       = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name     = db.Column(db.String(255), nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, unique=True)
+
+    owner = db.relationship("User", back_populates="store")
 
     def to_dict(self):
-        return {"id": self.id, "name": self.name}
+        return {"id": self.id, "name": self.name, "ownerId": self.owner_id}
 
 
 class StoreConfig(db.Model):
     """
     Tabela: store_config
-    Configurações da loja — uma única linha (id=1).
+    Configurações de integração da loja — uma linha por Store (store_id é a PK).
 
     auto_accept:       Se True, aceita pedidos automaticamente sem intervenção manual.
     keeta_merchant_id: O ID que a Keeta atribuiu para esta loja.
+    is_store_open:     Se a loja está aberta/fechada na Keeta.
     """
     __tablename__ = "store_config"
 
-    id                = db.Column(db.Integer, primary_key=True)
+    store_id          = db.Column(db.Integer, db.ForeignKey("stores.id"), primary_key=True)
     auto_accept       = db.Column(db.Boolean, default=True)
     keeta_merchant_id = db.Column(db.String(100), nullable=True)
+    is_store_open     = db.Column(db.Boolean, default=True)
 
     def to_dict(self):
         return {
-            "id":               self.id,
+            "storeId":          self.store_id,
             "autoAccept":       self.auto_accept,
             "keetaMerchantId":  self.keeta_merchant_id,
+            "isStoreOpen":      self.is_store_open,
         }
 
 

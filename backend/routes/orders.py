@@ -4,13 +4,17 @@
 #
 #  Gerencia os pedidos do PDV: listar, criar manualmente, atualizar status.
 #  Quando o status muda, notificamos a Keeta automaticamente.
+#
+#  Todas as rotas usam o usuário logado (g.current_user) para descobrir
+#  qual é a loja (store_id) que deve ser consultada/alterada.
 # =============================================================================
 
 import random
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from database import db
 from models import Order, OrderItem, StoreConfig
+from auth_utils import login_required
 import keeta_client
 import threading
 
@@ -18,34 +22,34 @@ orders_bp = Blueprint("orders", __name__)
 
 
 # -----------------------------------------------------------------------------
-#  GET /api/orders/store/<store_id>
-#  Lista todos os pedidos de uma loja específica
+#  GET /api/orders
+#  Lista todos os pedidos da loja do usuário logado
 # -----------------------------------------------------------------------------
-@orders_bp.get("/store/<int:store_id>")
-def list_orders(store_id):
-    orders = Order.query.filter_by(store_id=store_id).all()
+@orders_bp.get("/")
+@login_required
+def list_orders():
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+
+    orders = Order.query.filter_by(store_id=store.id).all()
     return jsonify([o.to_dict() for o in orders])
 
 
 # -----------------------------------------------------------------------------
 #  GET /api/orders/<id>
-#  Retorna um pedido específico pelo ID interno
+#  Retorna um pedido específico pelo ID interno (somente se for da sua loja)
 # -----------------------------------------------------------------------------
 @orders_bp.get("/<int:order_id>")
+@login_required
 def get_order(order_id):
+    store = g.current_user.store
     order = Order.query.get_or_404(order_id)
+
+    if not store or order.store_id != store.id:
+        return jsonify({"error": "Pedido não encontrado."}), 404
+
     return jsonify(order.to_dict())
-
-
-# -----------------------------------------------------------------------------
-#  GET /api/orders/active-store
-#  Descobre qual é a loja ativa olhando o último pedido criado
-# -----------------------------------------------------------------------------
-@orders_bp.get("/active-store")
-def get_active_store():
-    last_order = Order.query.order_by(Order.id.desc()).first()
-    store_id = last_order.store_id if last_order else 1
-    return jsonify({"storeId": store_id})
 
 
 # -----------------------------------------------------------------------------
@@ -53,11 +57,16 @@ def get_active_store():
 #  Cria um pedido manual (pedido de balcão, sem integração Keeta)
 # -----------------------------------------------------------------------------
 @orders_bp.post("/")
+@login_required
 def create_order():
-    data = request.get_json()
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+
+    data = request.get_json(silent=True) or {}
 
     order = Order(
-        store_id=data.get("storeId", 1),
+        store_id=store.id,
         status="NEW",
         customer_name="Cliente Balcão",
         payment_type="BALCAO",
@@ -95,9 +104,15 @@ def create_order():
 #  Atualiza o status de um pedido e notifica a Keeta na mesma operação
 # -----------------------------------------------------------------------------
 @orders_bp.patch("/<int:order_id>/status")
+@login_required
 def update_status(order_id):
+    store = g.current_user.store
     order = Order.query.get_or_404(order_id)
-    data = request.get_json()
+
+    if not store or order.store_id != store.id:
+        return jsonify({"error": "Pedido não encontrado."}), 404
+
+    data = request.get_json(silent=True) or {}
     new_status = data.get("status")
 
     old_status = order.status
@@ -143,6 +158,7 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     os campos da Keeta e os campos do nosso banco de dados.
 
     Chamada pelo webhook quando chega um evento de novo pedido.
+    `local_merchant_id` é o store_id (da nossa base) da loja dona do pedido.
     """
     keeta_id = order_json.get("id")
     if not keeta_id:
@@ -164,9 +180,10 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     # --- Status inicial ---
     # Se o pedido ainda não tem status, verificamos se o auto-aceite está ativo
     if not order.status:
-        config = StoreConfig.query.get(1) or StoreConfig(id=1, auto_accept=True)
+        config = StoreConfig.query.get(order.store_id)
+        auto_accept = config.auto_accept if config else True
 
-        if config.auto_accept:
+        if auto_accept:
             order.status = "PREPARING"
             # Confirma na Keeta em background sem bloquear a resposta do webhook
             threading.Thread(

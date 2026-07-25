@@ -12,6 +12,7 @@ from routes.orders        import orders_bp
 from routes.keeta_webhook import keeta_bp
 from routes.config        import config_bp
 from routes.stores        import stores_bp
+from routes.auth          import auth_bp
 
 
 def _get_cors_origins() -> list[str]:
@@ -48,6 +49,7 @@ def create_app():
     application.register_blueprint(keeta_bp,  url_prefix="/api/keeta")
     application.register_blueprint(config_bp, url_prefix="/api/config")
     application.register_blueprint(stores_bp, url_prefix="/api/stores")
+    application.register_blueprint(auth_bp,   url_prefix="/api/auth")
 
     # Cria as tabelas ao iniciar
     with application.app_context():
