@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // Em desenvolvimento (npm run dev): usa o proxy do Vite → chama /api diretamente
 // Em produção (Railway):           usa a variável VITE_API_URL configurada no Railway
-//   Ex: VITE_API_URL = https://maneira-backend-production.up.railway.app
+//   Ex: VITE_API_URL = https://backend-production-818f.up.railway.app
 //
 // Se VITE_API_URL não estiver definida, usa caminho relativo (proxy do Vite)
 const BASE_URL = import.meta.env.VITE_API_URL

@@ -26,7 +26,11 @@ services:
       - "8080:8080"
     environment:
       - DATABASE_URL=postgresql://postgres:senha123@db:5432/maneira_pdv
-      - MY_PUBLIC_URL=https://nonimperialistically-lexicostatistical-jaelyn.ngrok-free.dev/api/keeta
+      # Em desenvolvimento local, a Keeta só consegue chamar o webhook se esta
+      # URL for publicamente acessível. Substitua pela sua URL de ngrok ativa
+      # (ex: https://SEU-TUNEL.ngrok-free.dev/api/keeta) ou pela URL de produção
+      # do backend no Railway (https://backend-production-818f.up.railway.app/api/keeta).
+      - MY_PUBLIC_URL=https://backend-production-818f.up.railway.app/api/keeta
     volumes:
       - ./keeta_logs:/app/keeta_logs
     depends_on:

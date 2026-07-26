@@ -34,11 +34,14 @@ BASE_URL = "https://open.mykeeta.com/api/open/opendelivery"
 #   - onde fazer POST dos eventos de pedido (webhook)
 #   - onde fazer GET do cardápio (menu endpoint)
 #
-# No Railway: configure a variável MY_PUBLIC_URL com a URL gerada pelo Railway
-#   Ex: https://maneira-backend-production.up.railway.app/api/keeta
+# No Railway: já está configurada via variável de ambiente MY_PUBLIC_URL
+#   (ver backend/.env): https://backend-production-818f.up.railway.app/api/keeta
 #
-# Localmente com ngrok: coloque a URL do ngrok aqui ou na variável de ambiente.
-MY_PUBLIC_URL = os.getenv("MY_PUBLIC_URL", "https://nonimperialistically-lexicostatistical-jaelyn.ngrok-free.dev/api/keeta")
+# Localmente com ngrok: defina MY_PUBLIC_URL no seu .env local com a URL do ngrok.
+#
+# O fallback abaixo é a própria URL de produção do backend no Railway, para
+# nunca cairmos em um placeholder inválido caso a env var não esteja setada.
+MY_PUBLIC_URL = os.getenv("MY_PUBLIC_URL", "https://backend-production-818f.up.railway.app/api/keeta")
 
 print(f"[Keeta][INIT] Módulo keeta_client carregado | BASE_URL={BASE_URL} | MY_PUBLIC_URL={MY_PUBLIC_URL} | CLIENT_ID={CLIENT_ID}")
 
