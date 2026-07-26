@@ -110,15 +110,43 @@ def get_access_token() -> str | None:
 #  2. ASSINATURA (X-App-Signature)
 # =============================================================================
 
+def canonical_json(payload) -> str:
+    """
+    Serializa um dict em JSON "canônico", seguindo o espírito da RFC 8785
+    (JSON Canonicalization Scheme) exigido pela Keeta para o cálculo da
+    assinatura:
+
+      - Chaves ordenadas alfabeticamente (recursivamente, em sub-objetos)
+      - SEM espaços após ":" e "," (separators compactos)
+      - Sem espaços/indentação extra
+
+    Isso é crítico: o texto que vira `body` da requisição precisa ser
+    EXATAMENTE igual (byte a byte) ao texto usado para calcular a assinatura.
+    Se usarmos json.dumps(payload) "normal", o Python insere espaços
+    (ex: '{"key": "value"}') e a Keeta rejeita com 401 Invalid signature.
+
+    Retorna uma string vazia se payload for None.
+    """
+    if payload is None:
+        return ""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def _generate_signature(url: str, query_params: dict = None, body: str = None) -> str:
     """
     Gera a assinatura HMAC-SHA256 que a Keeta exige em toda requisição.
 
-    Como funciona:
-      A Keeta monta uma string assim:
-        <url> + "&" + <chave>=<valor> (params ordenados) + "&" + <body JSON>
-      Depois assina essa string com o CLIENT_SECRET usando HMAC-SHA256
-      e codifica o resultado em Base64.
+    Como funciona (conforme documentação oficial):
+      signature_string = URL + "&" + sorted_query_params + "&" + request_body
+
+      1. URL: base, sem query string
+      2. Query params: ordenados alfabeticamente por chave, formato key=value,
+         unidos com "&"
+      3. Body: o JSON exatamente como foi enviado (canônico, sem espaços,
+         chaves ordenadas). Corpos vazios ("" ou "{}") são omitidos.
+
+    Depois assina essa string com o CLIENT_SECRET usando HMAC-SHA256
+    e codifica o resultado em Base64.
 
     Essa assinatura vai no header: X-App-Signature
 
@@ -132,13 +160,15 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
     if query_params:
         # Parâmetros de query DEVEM ser ordenados alfabeticamente
         for key in sorted(query_params.keys()):
-            parts.append(f"{key}={query_params[key]}")
+            value = query_params[key]
+            value_str = "" if value is None else str(value)
+            parts.append(f"{key}={value_str}")
 
     if body and body.strip() not in ("", "{}"):
         parts.append(body)
 
     string_to_sign = "&".join(parts)
-    print(f"[Keeta][_generate_signature] String a ser assinada (preview): {string_to_sign[:200]}")
+    print(f"[Keeta][_generate_signature] String a ser assinada (completa): {string_to_sign}")
 
     # Calcula o HMAC-SHA256
     signature_bytes = hmac.new(
@@ -273,8 +303,8 @@ def request_cancellation(order_id: str, reason: str = "Dificuldades internas do 
         "code":   "INTERNAL_DIFFICULTIES_OF_THE_RESTAURANT",
         "mode":   "MANUAL",
     }
-    body = json.dumps(payload)
-    print(f"[Keeta][request_cancellation] POST {url} | payload={payload}")
+    body = canonical_json(payload)
+    print(f"[Keeta][request_cancellation] POST {url} | payload={payload} | body_canonico={body}")
 
     try:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body)
@@ -349,8 +379,8 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
         "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
         "keetaMerchantId": keeta_merchant_id,
     }
-    body = json.dumps(payload)
-    print(f"[Keeta][register_merchant] Payload montado: {payload}")
+    body = canonical_json(payload)
+    print(f"[Keeta][register_merchant] Payload montado: {payload} | body_canonico={body}")
 
     full_url_with_params = f"{url}?merchantId={my_local_store_id}"
     print(f"[Keeta][register_merchant] PUT {full_url_with_params}")
@@ -386,8 +416,8 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> bool:
     status = "AVAILABLE" if is_open else "UNAVAILABLE"
 
     payload = {"merchantStatus": status}
-    body = json.dumps(payload)
-    print(f"[Keeta][update_store_status] POST {url} | payload={payload}")
+    body = canonical_json(payload)
+    print(f"[Keeta][update_store_status] POST {url} | payload={payload} | body_canonico={body}")
 
     try:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body)
