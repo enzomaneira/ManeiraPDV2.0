@@ -53,39 +53,60 @@ def receive_order_event():
       - Todo webhook vem com o header X-App-Signature
       - Validamos essa assinatura antes de processar qualquer coisa
     """
-    print("\n[Webhook] Evento recebido da Keeta!")
+    print("\n" + "#" * 70)
+    print("[Webhook][receive_order_event] INÍCIO | Evento recebido da Keeta!")
+    print(f"[Webhook][receive_order_event] Headers recebidos: {dict(request.headers)}")
 
     # --- 1. Lê o body bruto (necessário para validar a assinatura) ---
     body_bytes = request.get_data()
     body_str   = body_bytes.decode("utf-8")
+    print(f"[Webhook][receive_order_event] Body bruto recebido ({len(body_str)} bytes): {body_str[:500]}")
 
     # --- 2. Valida a assinatura ---
     received_signature = request.headers.get("X-App-Signature", "")
-    if not keeta_client.validate_webhook_signature(body_str, received_signature):
-        print("[Webhook] ERRO: Assinatura inválida! Requisição rejeitada.")
+    print(f"[Webhook][receive_order_event] Assinatura recebida: {received_signature[:30]}...")
+
+    assinatura_valida = keeta_client.validate_webhook_signature(body_str, received_signature)
+    print(f"[Webhook][receive_order_event] Assinatura válida? {assinatura_valida}")
+
+    if not assinatura_valida:
+        print("[Webhook][receive_order_event] REJEITADO (403): Assinatura inválida!")
+        print("#" * 70 + "\n")
         return jsonify({"error": "Invalid signature"}), 403
 
     # --- 3. Extrai os dados do evento ---
     import json
     event = json.loads(body_str)
+    print(f"[Webhook][receive_order_event] Evento decodificado (chaves): {list(event.keys())}")
 
     event_type  = event.get("eventType")   # Tipo do evento: CREATED, CONFIRMED, etc.
     order_id    = event.get("orderId")      # ID do pedido na Keeta
     merchant_id = request.headers.get("X-App-MerchantId", "1")  # store_id local da loja
 
-    print(f"[Webhook] Evento: {event_type} | Pedido Keeta: {order_id}")
+    print(f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | merchant_id(local store_id)={merchant_id}")
 
     if not order_id:
+        print("[Webhook][receive_order_event] FIM (ignorado): sem orderId no evento.")
+        print("#" * 70 + "\n")
         return jsonify({"message": "No orderId, ignoring."}), 200
 
     # --- 4. Para qualquer evento com orderId, busca os detalhes completos na Keeta ---
     # Isso garante que sempre temos os dados mais atualizados
+    print(f"[Webhook][receive_order_event] Buscando detalhes completos do pedido {order_id} na Keeta...")
     order_data = keeta_client.get_order_details(order_id)
+
     if order_data:
+        print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id={merchant_id})...")
         save_order_from_keeta(order_data, merchant_id)
+    else:
+        print(f"[Webhook][receive_order_event] AVISO: não foi possível obter detalhes do pedido {order_id} na Keeta.")
 
     # --- 5. Atualiza o status no banco de acordo com o tipo do evento ---
+    print(f"[Webhook][receive_order_event] Processando mapeamento de status para event_type={event_type}...")
     _handle_event(event_type, order_id)
+
+    print(f"[Webhook][receive_order_event] FIM (sucesso) | order_id={order_id} | event_type={event_type}")
+    print("#" * 70 + "\n")
 
     # A Keeta espera um HTTP 200 para confirmar que recebemos o evento
     return jsonify({"message": "ok"}), 200
@@ -105,6 +126,8 @@ def _handle_event(event_type: str, order_id: str):
       CANCELLED        → CANCELED
       REFUNDED         → CANCELED
     """
+    print(f"[Webhook][_handle_event] INÍCIO | event_type={event_type} | order_id={order_id}")
+
     status_map = {
         "CONFIRMED":        "PREPARING",
         "READY_FOR_PICKUP": "READY_FOR_PICKUP",
@@ -119,15 +142,21 @@ def _handle_event(event_type: str, order_id: str):
     }
 
     new_status = status_map.get(event_type)
+    print(f"[Webhook][_handle_event] Status mapeado: '{event_type}' → '{new_status}'")
 
     if new_status:
         order = Order.query.filter_by(external_id=order_id).first()
         if order:
+            status_anterior = order.status
             order.status = new_status
             db.session.commit()
-            print(f"[Webhook] Pedido {order_id} → status atualizado para {new_status}")
+            print(f"[Webhook][_handle_event] Pedido {order_id} atualizado: '{status_anterior}' → '{new_status}' (order_id interno={order.id})")
+        else:
+            print(f"[Webhook][_handle_event] AVISO: pedido com external_id={order_id} não encontrado no banco.")
     else:
-        print(f"[Webhook] Evento informativo (sem mudança de status): {event_type}")
+        print(f"[Webhook][_handle_event] Evento informativo (sem mudança de status): {event_type}")
+
+    print(f"[Webhook][_handle_event] FIM | event_type={event_type} | order_id={order_id}")
 
 
 # =============================================================================
@@ -149,7 +178,10 @@ def get_merchant_menu():
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints
     """
     store_id = request.args.get("storeId", 1, type=int)
+    print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId (query param)={store_id}")
+
     items = MenuItem.query.filter_by(store_id=store_id).all()
+    print(f"[Webhook][get_merchant_menu] {len(items)} item(ns) de menu encontrado(s) para store_id={store_id}")
 
     # Formata o cardápio no padrão Open Delivery esperado pela Keeta
     menu_items_formatted = []
@@ -167,7 +199,7 @@ def get_merchant_menu():
             "status": "AVAILABLE",
         })
 
-    return jsonify({
+    response = {
         "id":   str(store_id),
         "menu": [
             {
@@ -179,7 +211,9 @@ def get_merchant_menu():
             }
         ],
         "services": [],
-    })
+    }
+    print(f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id} | total_itens={len(menu_items_formatted)}")
+    return jsonify(response)
 
 
 # =============================================================================
@@ -193,119 +227,100 @@ def update_store_status():
     Abre ou fecha a loja do usuário logado na Keeta.
     Chamado pelo frontend quando o operador clica no botão "LOJA ABERTA/FECHADA".
     """
+    print(f"\n[Webhook][update_store_status] INÍCIO | user_id={g.current_user.id}")
+
     store = g.current_user.store
     if not store:
+        print(f"[Webhook][update_store_status] FALHA (404): usuário sem restaurante vinculado | user_id={g.current_user.id}")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
+    print(f"[Webhook][update_store_status] Buscando StoreConfig para store_id={store.id}...")
     config = StoreConfig.query.get(store.id)
+
     if not config or not config.keeta_merchant_id:
+        print(f"[Webhook][update_store_status] FALHA (400): loja não conectada à Keeta | config={config.to_dict() if config else None}")
         return jsonify({"error": "Loja ainda não está conectada à Keeta."}), 400
 
     data    = request.get_json(silent=True) or {}
     is_open = data.get("isOpen", True)
+    print(f"[Webhook][update_store_status] Body recebido: {data} | is_open={is_open} | keeta_merchant_id={config.keeta_merchant_id}")
 
+    print(f"[Webhook][update_store_status] Chamando keeta_client.update_store_status({config.keeta_merchant_id}, {is_open})...")
     success = keeta_client.update_store_status(config.keeta_merchant_id, is_open)
+    print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: {success}")
 
     if success:
         config.is_store_open = is_open
         db.session.commit()
         status_text = "ABERTA" if is_open else "FECHADA"
+        print(f"[Webhook][update_store_status] FIM (sucesso) | store_id={store.id} | status={status_text}")
         return jsonify({"message": f"Loja agora está {status_text} na Keeta."})
     else:
+        print(f"[Webhook][update_store_status] FIM (falha - 500) | store_id={store.id}")
         return jsonify({"error": "Falha ao atualizar status na Keeta."}), 500
 
 
 # =============================================================================
-#  FLUXO DE AUTORIZAÇÃO OAUTH (Onboarding de comerciantes)
+#  ONBOARDING DIRETO (sem fluxo OAuth de authURL)
 # =============================================================================
 
-@keeta_bp.get("/generate-auth-url")
+@keeta_bp.put("/onboard")
 @login_required
-def generate_auth_url():
+def onboard_merchant():
     """
-    Gera a URL que o comerciante abre para autorizar seu sistema na Keeta.
+    Ativa/conecta a integração da loja do usuário logado diretamente na Keeta,
+    chamando o endpoint de onboarding (PUT /v1/merchantOnboarding).
 
-    Fluxo completo:
-      1. Frontend chama este endpoint (autenticado) → recebe a URL
-      2. O comerciante abre a URL e faz login na Keeta
-      3. Após autorizar, a Keeta redireciona para /api/keeta/callback com authId
-         (a URL de callback já leva o storeId do usuário logado embutido)
-      4. /callback usa o authId para buscar dados e fazer o onboarding
-         daquela loja específica
+    Não depende mais do fluxo OAuth (authURL/callback). O usuário simplesmente
+    digita o ID da loja na Keeta no campo de configuração e clica em
+    "Ativar Integração / Autenticar", que dispara esta rota.
+
+    Body esperado:
+      {
+        "keetaStoreId": "285076...",   // ID da loja dentro da Keeta
+        "storeId": "285076..."         // mesmo valor, usado como identificador local
+      }
     """
+    print(f"\n[Webhook][onboard_merchant] INÍCIO | user_id={g.current_user.id}")
+
     store = g.current_user.store
     if not store:
+        print(f"[Webhook][onboard_merchant] FALHA (404): usuário sem restaurante vinculado | user_id={g.current_user.id}")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    # Embute o storeId na própria URL de callback, para sabermos depois
-    # de qual loja/usuário é essa autorização.
-    my_callback_url = f"{request.host_url.rstrip('/')}/api/keeta/callback?storeId={store.id}"
-    auth_url = keeta_client.get_authorization_url(my_callback_url)
+    data = request.get_json(silent=True) or {}
+    print(f"[Webhook][onboard_merchant] Body recebido: {data}")
 
-    if auth_url:
-        return jsonify(auth_url)  # pode ser string ou dict dependendo da Keeta
-    else:
-        return jsonify({"error": "Não foi possível gerar a URL"}), 500
+    keeta_store_id = (data.get("keetaStoreId") or "").strip()
+    local_store_id = (data.get("storeId") or "").strip()
 
+    print(f"[Webhook][onboard_merchant] Parâmetros normalizados: keetaStoreId='{keeta_store_id}' | storeId='{local_store_id}'")
 
-@keeta_bp.get("/callback")
-def keeta_callback():
-    """
-    Recebe o retorno após o comerciante autorizar o sistema na Keeta.
+    if not keeta_store_id:
+        print(f"[Webhook][onboard_merchant] FALHA (400): keetaStoreId não informado.")
+        return jsonify({"error": "Informe o ID da loja na Keeta antes de ativar a integração."}), 400
 
-    Parâmetros que a Keeta envia na URL:
-      - authId:           ID da autorização (sempre presente)
-      - keetaMerchantId: ID da loja na Keeta (às vezes não vem)
-      - error:           Mensagem de erro (se algo deu errado)
-      - storeId:         Nosso ID local da loja (embutido por nós ao gerar a URL)
+    # Faz o onboarding — registra o mapeamento e as URLs (webhook/menu) na Keeta
+    print(f"[Webhook][onboard_merchant] Chamando keeta_client.register_merchant(keeta_store_id={keeta_store_id}, local_store_id={local_store_id})...")
+    result = keeta_client.register_merchant(keeta_store_id, my_local_store_id=local_store_id or str(store.id))
+    print(f"[Webhook][onboard_merchant] Resultado do onboarding: {result}")
 
-    O que fazemos aqui:
-      1. Se não vier keetaMerchantId, usamos o authId para buscar os dados da loja
-      2. Fazemos o onboarding: registramos a loja + URL do webhook na Keeta,
-         vinculando ao storeId correto
-    """
-    auth_id  = request.args.get("authId")
-    keeta_id = request.args.get("keetaMerchantId")
-    error    = request.args.get("error")
-    store_id = request.args.get("storeId", "1")
-
-    print(f"\n[Callback] authId={auth_id} | keetaMerchantId={keeta_id} | storeId={store_id}")
-
-    if error:
-        return f"Erro na Keeta: {error}", 400
-
-    if not auth_id:
-        return "Erro: authId não recebido no callback.", 400
-
-    # Se o keetaMerchantId não veio na URL, busca via API
-    if not keeta_id:
-        print("[Callback] keetaMerchantId não recebido. Buscando via merchantInfo...")
-        merchant_info = keeta_client.get_merchant_info(auth_id)
-
-        if not merchant_info:
-            return "Erro: Não foi possível buscar info da loja.", 500
-
-        authorized_shops = merchant_info.get("authorizedShops", [])
-        if not authorized_shops:
-            return "Erro: Nenhuma loja autorizada encontrada.", 400
-
-        keeta_id = str(authorized_shops[0]["id"])
-        print(f"[Callback] keetaMerchantId descoberto: {keeta_id}")
-
-    # Faz o onboarding — registra o mapeamento e as URLs na Keeta
-    result = keeta_client.register_merchant(keeta_id, my_local_store_id=store_id)
-
-    # Salva o keetaMerchantId na configuração da loja correspondente
-    config = StoreConfig.query.get(int(store_id))
+    # Salva o keetaMerchantId na configuração da loja do usuário logado
+    print(f"[Webhook][onboard_merchant] Salvando keeta_merchant_id na StoreConfig | store_id={store.id}")
+    config = StoreConfig.query.get(store.id)
     if not config:
-        config = StoreConfig(store_id=int(store_id))
+        print(f"[Webhook][onboard_merchant] Nenhuma config existente para store_id={store.id}. Criando nova...")
+        config = StoreConfig(store_id=store.id)
         db.session.add(config)
-    config.keeta_merchant_id = keeta_id
-    db.session.commit()
 
-    return f"""
-    <h1>✅ Integração Keeta Concluída!</h1>
-    <p><b>ID da Loja na Keeta:</b> {keeta_id}</p>
-    <p><b>Resposta do Onboarding:</b> {result}</p>
-    <p><a href="/">← Voltar ao PDV</a></p>
-    """, 200
+    config.keeta_merchant_id = keeta_store_id
+    db.session.commit()
+    print(f"[Webhook][onboard_merchant] Config salva: {config.to_dict()}")
+
+    print(f"[Webhook][onboard_merchant] FIM (sucesso) | store_id={store.id} | keeta_store_id={keeta_store_id}")
+    return jsonify({
+        "message": "Integração com a Keeta ativada com sucesso!",
+        "keetaMerchantId": keeta_store_id,
+        "onboardingResult": result,
+        "config": config.to_dict(),
+    }), 200

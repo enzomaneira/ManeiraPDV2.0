@@ -10,6 +10,8 @@ from database import db
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 
+print("[Models][INIT] Módulo models.py carregado. Registrando classes User, Store, StoreConfig, MenuItem, Order, OrderItem...")
+
 
 class User(db.Model):
     """
@@ -31,10 +33,15 @@ class User(db.Model):
     store = db.relationship("Store", back_populates="owner", uselist=False)
 
     def set_password(self, raw_password: str):
+        print(f"[Models][User.set_password] INÍCIO | email={self.email} | password_len={len(raw_password)}")
         self.password_hash = generate_password_hash(raw_password)
+        print(f"[Models][User.set_password] FIM | hash_preview={self.password_hash[:25]}...")
 
     def check_password(self, raw_password: str) -> bool:
-        return check_password_hash(self.password_hash, raw_password)
+        print(f"[Models][User.check_password] INÍCIO | email={self.email}")
+        resultado = check_password_hash(self.password_hash, raw_password)
+        print(f"[Models][User.check_password] FIM | resultado={resultado}")
+        return resultado
 
     def to_dict(self):
         return {

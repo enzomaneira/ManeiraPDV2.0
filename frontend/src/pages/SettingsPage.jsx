@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import api from '../services/api';
-import { Save, Store, Globe, Wifi, RefreshCw, CheckCircle, AlertCircle, ExternalLink } from 'lucide-react';
+import { Save, Store, Globe, Wifi, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function SettingsPage({ config, setConfig }) {
   
   const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [message, setMessage] = useState(null);
 
   const handleSave = async () => {
@@ -28,33 +29,33 @@ export default function SettingsPage({ config, setConfig }) {
   };
 
   const handleConnectKeeta = async () => {
+    const keetaId = (config.keetaId || '').trim();
+
+    if (!keetaId) {
+        alert("Informe o ID da loja na Keeta antes de ativar a integração.");
+        return;
+    }
+
+    setConnecting(true);
     try {
-        console.log("Solicitando link de autenticação...");
-        const response = await api.get('/keeta/generate-auth-url');
-        console.log("Resposta do Backend:", response.data);
+        console.log("Ativando integração via onboarding direto | keetaStoreID:", keetaId, "| storeID:", keetaId);
 
-        let targetUrl = "";
+        const response = await api.put('/keeta/onboard', {
+            keetaStoreId: keetaId,
+            storeId: keetaId,
+        });
 
-        // CASO 1: Texto puro
-        if (typeof response.data === 'string') {
-            targetUrl = response.data;
-        } 
-        // CASO 2: JSON (Objeto) - Lê a propriedade correta da Keeta
-        else if (typeof response.data === 'object') {
-            targetUrl = response.data.merchantAuthorizationUrl || response.data.url;
-        }
+        console.log("Resposta do onboarding:", response.data);
 
-        // Validação e Abertura em Nova Aba
-        if (targetUrl && targetUrl.includes('http')) {
-            console.log("Abrindo em nova aba:", targetUrl);
-            window.open(targetUrl, '_blank'); // <--- AQUI MUDOU PARA NOVA ABA
-        } else {
-            console.error("Formato não reconhecido:", response.data);
-            alert("Erro: O backend retornou um formato inesperado. Verifique o console.");
-        }
+        setConfig({ ...config, keetaStatus: 'CONNECTED' });
+        setMessage({ type: 'success', text: 'Integração com a Keeta ativada com sucesso!' });
+        setTimeout(() => setMessage(null), 3000);
     } catch (error) {
-        console.error("Erro de conexão:", error);
-        alert("Não foi possível conectar ao servidor. Verifique se o Backend está rodando.");
+        console.error("Erro ao ativar integração com a Keeta:", error);
+        const errorMsg = error?.response?.data?.error || "Não foi possível ativar a integração. Verifique o backend.";
+        setMessage({ type: 'error', text: errorMsg });
+    } finally {
+        setConnecting(false);
     }
   };
 
@@ -122,14 +123,14 @@ export default function SettingsPage({ config, setConfig }) {
                       </p>
                   </div>
 
-                  {/* Botão de Redirecionamento (Nova Aba) */}
+                  {/* Botão de Ativação (Onboarding direto na Keeta) */}
                   <button 
                     onClick={handleConnectKeeta} 
-                    className="w-full py-3 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm shadow-yellow-100"
+                    disabled={connecting}
+                    className={`w-full py-3 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm ${connecting ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-yellow-400 hover:bg-yellow-500 text-yellow-900 shadow-yellow-100'}`}
                   >
-                      <Wifi className="w-5 h-5" /> 
-                      Ativar Integração / Autenticar
-                      <ExternalLink className="w-4 h-4 opacity-50 ml-1" />
+                      {connecting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Wifi className="w-5 h-5" />}
+                      {connecting ? 'Ativando...' : 'Ativar Integração / Autenticar'}
                   </button>
                   
               </div>
