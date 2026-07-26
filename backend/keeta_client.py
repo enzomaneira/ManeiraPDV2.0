@@ -380,12 +380,19 @@ def get_order_details(order_id: str, order_url: str | None = None) -> dict | Non
     """
     print(f"\n[Keeta][get_order_details] INÍCIO | order_id={order_id} | order_url_recebida={order_url}")
 
-    if order_url:
+    # A orderURL vinda do evento da Keeta pode estar incompleta (sem o ID no
+    # final). Verificamos se o order_id está presente na URL; se não estiver,
+    # ignoramos a order_url e montamos a URL correta a partir do order_id.
+    if order_url and order_id in order_url:
         url = order_url
-        print(f"[Keeta][get_order_details] Usando orderURL vinda do evento (recomendado pela doc oficial): {url}")
+        print(f"[Keeta][get_order_details] Usando orderURL vinda do evento: {url}")
     else:
         url = f"{BASE_URL}/v1/orders/{order_id}"
-        print(f"[Keeta][get_order_details] orderURL não informada. Usando fallback montado manualmente: {url}")
+        if order_url:
+            print(f"[Keeta][get_order_details] orderURL incompleta (não contém '{order_id}'). "
+                  f"Usando fallback: {url}")
+        else:
+            print(f"[Keeta][get_order_details] orderURL não informada. Usando fallback: {url}")
 
     print(f"[Keeta][get_order_details] GET {url}")
     try:
@@ -393,9 +400,15 @@ def get_order_details(order_id: str, order_url: str | None = None) -> dict | Non
         print(f"[Keeta][get_order_details] Resposta | status_code={response.status_code}")
         response.raise_for_status()
 
-        order_data = response.json()
-        print(f"[Keeta][get_order_details] Dados do pedido obtidos (chaves de topo): {list(order_data.keys())}")
-        _save_log(f"ORDER_{order_id}", order_data)  # salva o JSON bruto para debug
+        json_data = response.json()
+        print(f"[Keeta][get_order_details] JSON cru recebido (chaves de topo): {list(json_data.keys())}")
+
+        # A Keeta pode retornar o pedido diretamente, ou encapsulado em:
+        #   {code, message, data: {pedido}, extend}
+        # Nesse caso, o pedido real está dentro de `data`.
+        order_data = json_data.get("data") or json_data
+        print(f"[Keeta][get_order_details] Dados do pedido extraídos (chaves): {list(order_data.keys())}")
+        _save_log(f"ORDER_{order_id}", order_data)
         print(f"[Keeta][get_order_details] FIM (sucesso) | order_id={order_id}")
         return order_data
 

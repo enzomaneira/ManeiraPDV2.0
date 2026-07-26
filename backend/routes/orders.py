@@ -216,6 +216,12 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     print(f"\n[Orders][save_order_from_keeta] INÍCIO | local_merchant_id={local_merchant_id}")
     print(f"[Orders][save_order_from_keeta] JSON recebido (chaves de topo): {list(order_json.keys())}")
 
+    # A Keeta pode encapsular a resposta em {code, message, data, extend}.
+    # Nesse caso, o pedido real está dentro do campo `data`.
+    if "data" in order_json and "code" in order_json:
+        order_json = order_json["data"]
+        print(f"[Orders][save_order_from_keeta] JSON desencapsulado de 'data'. Novas chaves: {list(order_json.keys())}")
+
     keeta_id = order_json.get("id")
     print(f"[Orders][save_order_from_keeta] keeta_id extraído: {keeta_id}")
 
