@@ -420,17 +420,23 @@ def onboard_merchant():
     print(f"[Webhook][onboard_merchant] Body recebido: {data}")
 
     keeta_store_id = (data.get("keetaStoreId") or "").strip()
-    local_store_id = (data.get("storeId") or "").strip()
 
-    print(f"[Webhook][onboard_merchant] Parâmetros normalizados: keetaStoreId='{keeta_store_id}' | storeId='{local_store_id}'")
+    print(f"[Webhook][onboard_merchant] Parâmetros normalizados: keetaStoreId='{keeta_store_id}'")
 
     if not keeta_store_id:
         print(f"[Webhook][onboard_merchant] FALHA (400): keetaStoreId não informado.")
         return jsonify({"error": "Informe o ID da loja na Keeta antes de ativar a integração."}), 400
 
+    # O merchantId (query param) é o NOSSO ID LOCAL da loja (store.id),
+    # enquanto o keetaMerchantId (body) é o ID da loja dentro da Keeta.
+    # A documentação oficial é clara: são identificadores diferentes.
+    # Enviar o mesmo valor nos dois pode fazer o mapeamento falhar.
+    our_local_store_id = str(store.id)
+    print(f"[Webhook][onboard_merchant] Nosso store.id local: {our_local_store_id} | keetaStoreId: {keeta_store_id}")
+
     # Faz o onboarding — registra o mapeamento e as URLs (webhook/menu) na Keeta
-    print(f"[Webhook][onboard_merchant] Chamando keeta_client.register_merchant(keeta_store_id={keeta_store_id}, local_store_id={local_store_id})...")
-    result = keeta_client.register_merchant(keeta_store_id, my_local_store_id=local_store_id or str(store.id))
+    print(f"[Webhook][onboard_merchant] Chamando keeta_client.register_merchant(keeta_store_id={keeta_store_id}, my_local_store_id={our_local_store_id})...")
+    result = keeta_client.register_merchant(keeta_store_id, my_local_store_id=our_local_store_id)
     print(f"[Webhook][onboard_merchant] Resultado do onboarding: {result}")
 
     # Salva o keetaMerchantId na configuração da loja do usuário logado

@@ -413,6 +413,16 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
     url = f"{BASE_URL}/v1/merchantOnboarding"
     query_params = {"merchantId": my_local_store_id}
 
+    # ATENÇÃO: `keetaMerchantId` DEVE ser um número inteiro, NÃO uma string.
+    # A documentação oficial da Keeta especifica o tipo como `number`, e enviar
+    # como string pode fazer o onboarding ser aceito mas o webhook não ser
+    # efetivamente registrado do lado da Keeta.
+    try:
+        keeta_merchant_id_int = int(keeta_merchant_id)
+    except (ValueError, TypeError):
+        print(f"[Keeta][register_merchant] FALHA: keetaMerchantId='{keeta_merchant_id}' não é um número válido.")
+        return None
+
     payload = {
         "getMerchantURL": {
             # Inclui o storeId na própria URL, assim cada loja tem seu cardápio
@@ -420,7 +430,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
             "apiKey":  "123456",
         },
         "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
-        "keetaMerchantId": keeta_merchant_id,
+        "keetaMerchantId": keeta_merchant_id_int,         # DEVE ser number (int), não string
     }
     body = canonical_json(payload)
     print(f"[Keeta][register_merchant] Payload montado: {payload} | body_canonico={body}")
