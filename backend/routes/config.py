@@ -51,6 +51,7 @@ def get_config():
 
 
 @config_bp.post("/")
+@config_bp.post("")      # aceita também sem trailing slash (evita redirect 308)
 @login_required
 def update_config():
     """
