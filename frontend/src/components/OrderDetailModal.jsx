@@ -134,10 +134,10 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                                         {sponsors.length > 0 && (
                                             <div className="text-[10px] text-slate-400 mt-0.5 space-y-0.5">
                                                 {merchantSponsor && (
-                                                    <div>🏪 Loja banca: -{formatCurrency(Math.abs(merchantSponsor.value || 0))}</div>
+                                                    <div>🏪 Loja banca: -{formatCurrency(Math.abs(merchantSponsor.amount?.value || 0))}</div>
                                                 )}
                                                 {marketplaceSponsor && (
-                                                    <div>📱 Keeta banca: -{formatCurrency(Math.abs(marketplaceSponsor.value || 0))}</div>
+                                                    <div>📱 Keeta banca: -{formatCurrency(Math.abs(marketplaceSponsor.amount?.value || 0))}</div>
                                                 )}
                                             </div>
                                         )}
@@ -207,7 +207,14 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                             </button>
                         </div>
                     )}
-                    {(order.status === 'COMPLETED' || order.status === 'DISPATCHED') && (
+                    {order.status === 'DISPATCHED' && (
+                        <div className="flex gap-4">
+                            <button onClick={() => { if(window.confirm('Confirmar entrega do pedido?')) onStatusChange(order.id, 'COMPLETED'); }} className="w-full py-4 bg-green-600 text-white font-bold rounded-2xl hover:bg-green-700 shadow-xl shadow-green-200 transition-all flex items-center justify-center gap-2 text-lg">
+                                <CheckCircle className="w-6 h-6" /> Finalizar Entrega
+                            </button>
+                        </div>
+                    )}
+                    {order.status === 'COMPLETED' && (
                         <div className="w-full py-3 bg-slate-50 text-slate-400 font-bold rounded-xl text-center flex items-center justify-center gap-2 border border-slate-100">
                             <CheckCircle className="w-4 h-4"/> Pedido Finalizado
                         </div>
