@@ -41,7 +41,17 @@ BASE_URL = "https://open.mykeeta.com/api/open/opendelivery"
 #
 # O fallback abaixo é a própria URL de produção do backend no Railway, para
 # nunca cairmos em um placeholder inválido caso a env var não esteja setada.
-MY_PUBLIC_URL = os.getenv("MY_PUBLIC_URL", "https://backend-production-818f.up.railway.app/api/keeta")
+_PRODUCTION_URL_FALLBACK = "https://backend-production-818f.up.railway.app/api/keeta"
+MY_PUBLIC_URL = os.getenv("MY_PUBLIC_URL", _PRODUCTION_URL_FALLBACK)
+
+# --- Proteção extra: se a variável de ambiente estiver configurada no Railway
+# com um valor placeholder esquecido (ex: "SEU-BACKEND"), ignoramos o valor da
+# env var e usamos a URL de produção correta, para nunca enviar um webhook
+# quebrado no onboarding da Keeta.
+if "SEU-BACKEND" in MY_PUBLIC_URL or "seu-backend" in MY_PUBLIC_URL.lower():
+    print(f"[Keeta][INIT] AVISO: MY_PUBLIC_URL contém um placeholder inválido ('{MY_PUBLIC_URL}'). "
+          f"Corrija a variável de ambiente no Railway! Usando fallback de produção por segurança.")
+    MY_PUBLIC_URL = _PRODUCTION_URL_FALLBACK
 
 print(f"[Keeta][INIT] Módulo keeta_client carregado | BASE_URL={BASE_URL} | MY_PUBLIC_URL={MY_PUBLIC_URL} | CLIENT_ID={CLIENT_ID}")
 
@@ -321,7 +331,7 @@ def request_cancellation(order_id: str, reason: str = "Dificuldades internas do 
         return False
 
 
-def get_order_details(order_id: str) -> dict | None:
+def get_order_details(order_id: str, order_url: str | None = None) -> dict | None:
     """
     Busca os detalhes completos de um pedido na Keeta.
 
@@ -329,9 +339,24 @@ def get_order_details(order_id: str) -> dict | None:
     itens, cliente, endereço, valores, pagamento, etc.
 
     Endpoint: GET /v1/orders/{orderId}
+
+    IMPORTANTE: sempre que um evento de webhook/polling for recebido, a Keeta
+    já envia o campo `orderURL` — "The URL to get the order details" — dentro
+    do próprio payload do evento. Por segurança e para seguir exatamente a
+    documentação oficial, damos preferência a essa URL (order_url) em vez de
+    montar `{BASE_URL}/v1/orders/{orderId}` manualmente.
+
+    Se `order_url` não for informado (ex: chamadas antigas/manuais), caímos
+    no fallback de montar a URL padrão a partir do order_id.
     """
-    print(f"\n[Keeta][get_order_details] INÍCIO | order_id={order_id}")
-    url = f"{BASE_URL}/v1/orders/{order_id}"
+    print(f"\n[Keeta][get_order_details] INÍCIO | order_id={order_id} | order_url_recebida={order_url}")
+
+    if order_url:
+        url = order_url
+        print(f"[Keeta][get_order_details] Usando orderURL vinda do evento (recomendado pela doc oficial): {url}")
+    else:
+        url = f"{BASE_URL}/v1/orders/{order_id}"
+        print(f"[Keeta][get_order_details] orderURL não informada. Usando fallback montado manualmente: {url}")
 
     print(f"[Keeta][get_order_details] GET {url}")
     try:
@@ -442,25 +467,49 @@ def validate_webhook_signature(body: str, received_signature: str) -> bool:
     """
     Valida se um webhook recebido realmente veio da Keeta.
 
-    A Keeta assina o body do webhook com o CLIENT_SECRET.
-    Recalculamos a assinatura e comparamos com o header X-App-Signature.
+    Segundo a documentação oficial de assinatura da Keeta, a mesma fórmula
+    usada para assinar requisições que ENVIAMOS também é usada pela Keeta
+    para assinar as requisições que ela nos ENVIA (webhooks):
+
+        signature_string = URL + "&" + sorted_query_params + "&" + body
+
+    Ou seja, a assinatura do webhook NÃO é calculada apenas sobre o body:
+    ela inclui a URL do próprio webhook (a mesma informada como
+    `ordersWebhookURL` no onboarding). Por isso, tentamos validar contra
+    duas possibilidades, para sermos compatíveis mesmo com pequenas
+    variações de URL (com ou sem barra final, etc):
+
+      1. URL + body   (fórmula oficial, URL = ordersWebhookURL)
+      2. body isolado (fallback legado, caso a Keeta não inclua a URL)
 
     Retorna True se a assinatura é válida (é da Keeta), False caso contrário.
     """
     print(f"[Keeta][validate_webhook_signature] INÍCIO | body_len={len(body)} | received_signature_preview={received_signature[:20]}...")
 
-    expected_signature = hmac.new(
-        key=CLIENT_SECRET.encode("utf-8"),
-        msg=body.encode("utf-8"),
-        digestmod=hashlib.sha256,
-    ).digest()
+    webhook_url = f"{MY_PUBLIC_URL}/orders"
 
-    expected_b64 = base64.b64encode(expected_signature).decode("utf-8")
-    valida = hmac.compare_digest(expected_b64, received_signature)
+    candidatos = {
+        "url+body":        f"{webhook_url}&{body}" if body and body.strip() not in ("", "{}") else webhook_url,
+        "url+body(sem_barra)": (f"{webhook_url.rstrip('/')}&{body}" if body and body.strip() not in ("", "{}") else webhook_url.rstrip("/")),
+        "body_apenas":     body,
+    }
 
-    print(f"[Keeta][validate_webhook_signature] Assinatura esperada (preview)={expected_b64[:20]}... | válida={valida}")
-    print(f"[Keeta][validate_webhook_signature] FIM | válida={valida}")
-    return valida
+    for nome, string_to_sign in candidatos.items():
+        expected_signature = hmac.new(
+            key=CLIENT_SECRET.encode("utf-8"),
+            msg=string_to_sign.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).digest()
+        expected_b64 = base64.b64encode(expected_signature).decode("utf-8")
+        valida = hmac.compare_digest(expected_b64, received_signature)
+        print(f"[Keeta][validate_webhook_signature] Tentativa '{nome}' | string_preview={string_to_sign[:80]}... | esperado(preview)={expected_b64[:20]}... | válida={valida}")
+
+        if valida:
+            print(f"[Keeta][validate_webhook_signature] FIM | válida=True (método='{nome}')")
+            return True
+
+    print(f"[Keeta][validate_webhook_signature] FIM | válida=False (nenhum método bateu)")
+    return False
 
 
 # =============================================================================

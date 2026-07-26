@@ -81,9 +81,10 @@ def receive_order_event():
 
     event_type  = event.get("eventType")   # Tipo do evento: CREATED, CONFIRMED, etc.
     order_id    = event.get("orderId")      # ID do pedido na Keeta
+    order_url   = event.get("orderURL")     # URL pronta (enviada pela Keeta) para buscar os detalhes do pedido
     merchant_id = request.headers.get("X-App-MerchantId", "1")  # store_id local da loja
 
-    print(f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | merchant_id(local store_id)={merchant_id}")
+    print(f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | order_url={order_url} | merchant_id(local store_id)={merchant_id}")
 
     if not order_id:
         print("[Webhook][receive_order_event] FIM (ignorado): sem orderId no evento.")
@@ -91,9 +92,12 @@ def receive_order_event():
         return jsonify({"message": "No orderId, ignoring."}), 200
 
     # --- 4. Para qualquer evento com orderId, busca os detalhes completos na Keeta ---
-    # Isso garante que sempre temos os dados mais atualizados
-    print(f"[Webhook][receive_order_event] Buscando detalhes completos do pedido {order_id} na Keeta...")
-    order_data = keeta_client.get_order_details(order_id)
+    # Isso garante que sempre temos os dados mais atualizados.
+    # Damos preferência ao campo `orderURL` enviado pela própria Keeta no evento
+    # (conforme documentação oficial de Polling/Webhook), em vez de montar a
+    # URL manualmente — isso evita chamar o endpoint errado.
+    print(f"[Webhook][receive_order_event] Buscando detalhes completos do pedido {order_id} na Keeta (orderURL={order_url})...")
+    order_data = keeta_client.get_order_details(order_id, order_url=order_url)
 
     if order_data:
         print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id={merchant_id})...")
