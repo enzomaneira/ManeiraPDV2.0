@@ -68,6 +68,20 @@ if "SEU-BACKEND" in MY_PUBLIC_URL or "seu-backend" in MY_PUBLIC_URL.lower():
           f"Corrija a variável de ambiente no Railway! Usando fallback de produção por segurança.")
     MY_PUBLIC_URL = _PRODUCTION_URL_FALLBACK
 
+# Normalização: remove sufixos de rota que podem ter sido incluídos por engano
+# na env var. MY_PUBLIC_URL deve ser a raiz do blueprint (/api/keeta), sem
+# /orders, /menu etc. Caso contrário as URLs ficam quebradas como:
+#   .../api/keeta/orders/menu   (invés de .../api/keeta/menu)
+#   .../api/keeta/orders/orders (invés de .../api/keeta/orders)
+_original = MY_PUBLIC_URL
+MY_PUBLIC_URL = MY_PUBLIC_URL.rstrip("/")  # remove trailing slash
+for _suffix in ("/onboard", "/store-status", "/authorization", "/orders", "/menu"):
+    if MY_PUBLIC_URL.endswith(_suffix):
+        MY_PUBLIC_URL = MY_PUBLIC_URL[:-len(_suffix)]
+        print(f"[Keeta][INIT] CORRIGIDO: removido sufixo '{_suffix}' de MY_PUBLIC_URL. "
+              f"Antes='{_original}' → Depois='{MY_PUBLIC_URL}'. Corrija a env var no Railway!")
+        break
+
 print(f"[Keeta][INIT] Módulo keeta_client carregado | BASE_URL={BASE_URL} | MY_PUBLIC_URL={MY_PUBLIC_URL} | CLIENT_ID={CLIENT_ID}")
 
 # -----------------------------------------------------------------------------
@@ -455,7 +469,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
         return None
 
 
-def update_store_status(keeta_merchant_id: str, is_open: bool) -> bool:
+def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, str | None]:
     """
     Abre ou fecha a loja na plataforma Keeta.
 
@@ -463,6 +477,8 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> bool:
     capacidade de atender (ex: sem entregador).
 
     Endpoint: POST /v1/merchantUpdate/{merchantId}
+
+    Retorna (sucesso, mensagem_de_erro). Se sucesso=True, mensagem é None.
     """
     print(f"\n[Keeta][update_store_status] INÍCIO | keeta_merchant_id={keeta_merchant_id} | is_open={is_open}")
 
@@ -477,12 +493,14 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> bool:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][update_store_status] Resposta | status_code={response.status_code} | body={response.text[:300]}")
         sucesso = response.status_code in (200, 201, 204)
+        erro = None if sucesso else f"Keeta API retornou {response.status_code}: {response.text[:200]}"
         print(f"[Keeta][update_store_status] FIM | keeta_merchant_id={keeta_merchant_id} | sucesso={sucesso}")
-        return sucesso
+        return sucesso, erro
     except Exception as e:
-        print(f"[Keeta][update_store_status] ERRO: {type(e).__name__}: {e}")
+        erro_msg = f"{type(e).__name__}: {e}"
+        print(f"[Keeta][update_store_status] ERRO: {erro_msg}")
         print(f"[Keeta][update_store_status] FIM (falha) | keeta_merchant_id={keeta_merchant_id}")
-        return False
+        return False, erro_msg
 
 
 # =============================================================================

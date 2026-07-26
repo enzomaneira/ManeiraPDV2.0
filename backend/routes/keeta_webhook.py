@@ -374,8 +374,8 @@ def update_store_status():
     print(f"[Webhook][update_store_status] Body recebido: {data} | is_open={is_open} | keeta_merchant_id={config.keeta_merchant_id}")
 
     print(f"[Webhook][update_store_status] Chamando keeta_client.update_store_status({config.keeta_merchant_id}, {is_open})...")
-    success = keeta_client.update_store_status(config.keeta_merchant_id, is_open)
-    print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: {success}")
+    success, error_detail = keeta_client.update_store_status(config.keeta_merchant_id, is_open)
+    print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: success={success} | error={error_detail}")
 
     if success:
         config.is_store_open = is_open
@@ -384,8 +384,8 @@ def update_store_status():
         print(f"[Webhook][update_store_status] FIM (sucesso) | store_id={store.id} | status={status_text}")
         return jsonify({"message": f"Loja agora está {status_text} na Keeta."})
     else:
-        print(f"[Webhook][update_store_status] FIM (falha - 500) | store_id={store.id}")
-        return jsonify({"error": "Falha ao atualizar status na Keeta."}), 500
+        print(f"[Webhook][update_store_status] FIM (falha - 500) | store_id={store.id} | erro={error_detail}")
+        return jsonify({"error": f"Falha ao atualizar status na Keeta: {error_detail}"}), 500
 
 
 # =============================================================================
