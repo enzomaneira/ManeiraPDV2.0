@@ -48,10 +48,23 @@ def create_app():
     application = Flask(__name__)
     print("[Main][create_app] Instância Flask criada.")
 
-    # CORS com origins vindas do ambiente
+    # CORS — aplicado POR BLUEPRINT, e NÃO globalmente no app.
+    #
+    # As rotas /api/keeta/* (webhooks de pedido, autorização e cardápio) são
+    # chamadas server-to-server pela Keeta, SEM header Origin. Se aplicarmos
+    # CORS globalmente com origins restritas, o flask-cors bloqueia/quebra
+    # essas requisições antes mesmo de chegarem na view function (500).
+    #
+    # Por isso, CORS é aplicado apenas nos blueprints que servem o frontend
+    # (que rodam no navegador e precisam de CORS). O keeta_bp fica SEM CORS,
+    # aceitando requisições de qualquer origem — inclusive sem Origin.
     cors_origins = _get_cors_origins()
-    CORS(application, origins=cors_origins)
-    print(f"[Main][create_app] CORS configurado | origins={cors_origins}")
+    CORS(auth_bp,   origins=cors_origins)
+    CORS(orders_bp, origins=cors_origins)
+    CORS(config_bp, origins=cors_origins)
+    CORS(stores_bp, origins=cors_origins)
+    # keeta_bp: sem CORS — chamadas server-to-server da Keeta
+    print(f"[Main][create_app] CORS configurado por blueprint | origins={cors_origins} | keeta_bp: sem CORS (webhooks)")
 
     # Log de todas as requisições recebidas (método + path + origem)
     @application.before_request
