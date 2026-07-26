@@ -3,7 +3,7 @@
 # =============================================================================
 
 import os
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from database import db, get_database_url
 import models  # garante que os modelos são registrados no SQLAlchemy
@@ -78,8 +78,10 @@ def create_app():
 
     @application.errorhandler(Exception)
     def _log_unhandled_exception(e):
+        import traceback
         print(f"[HTTP][UNHANDLED_ERROR] {request.method} {request.path} → {type(e).__name__}: {e}")
-        raise e
+        print(traceback.format_exc())
+        return jsonify({"error": "Internal server error"}), 500
 
     # Banco de dados
     database_url = get_database_url()

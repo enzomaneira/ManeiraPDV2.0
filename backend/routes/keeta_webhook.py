@@ -28,7 +28,9 @@
 # =============================================================================
 
 from flask import Blueprint, request, jsonify, g
+from flask_cors import cross_origin
 import keeta_client
+import os
 from models import Order, MenuItem, StoreConfig
 from database import db
 from routes.orders import save_order_from_keeta
@@ -349,6 +351,7 @@ def get_merchant_menu():
 # =============================================================================
 
 @keeta_bp.post("/store-status")
+@cross_origin()
 @login_required
 def update_store_status():
     """
@@ -393,6 +396,7 @@ def update_store_status():
 # =============================================================================
 
 @keeta_bp.put("/onboard")
+@cross_origin()
 @login_required
 def onboard_merchant():
     """

@@ -18,6 +18,7 @@ config_bp = Blueprint("config", __name__)
 
 
 @config_bp.get("/")
+@config_bp.get("")       # aceita também sem trailing slash (evita redirect CORS)
 @login_required
 def get_config():
     """
