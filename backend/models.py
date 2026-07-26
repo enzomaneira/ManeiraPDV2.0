@@ -154,6 +154,8 @@ class Order(db.Model):
     longitude        = db.Column(db.Float,       nullable=True)
 
     total_price      = db.Column(db.Float,       nullable=True)
+    items_price      = db.Column(db.Float,       nullable=True)  # total.itemsPrice.value
+    other_fees_total = db.Column(db.Float,       nullable=True)  # total.otherFees.value
     payment_type     = db.Column(db.String(50),  nullable=True)  # ONLINE ou NA_ENTREGA
     discount         = db.Column(db.Float,       nullable=True, default=0.0)
 
@@ -167,6 +169,19 @@ class Order(db.Model):
     items = db.relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
     def to_dict(self):
+        import json as _json
+        fees = []
+        discounts = []
+        if self.fees_json:
+            try:
+                fees = _json.loads(self.fees_json)
+            except Exception:
+                pass
+        if self.discounts_json:
+            try:
+                discounts = _json.loads(self.discounts_json)
+            except Exception:
+                pass
         return {
             "id":              self.id,
             "externalId":      self.external_id,
@@ -179,8 +194,12 @@ class Order(db.Model):
             "latitude":        self.latitude,
             "longitude":       self.longitude,
             "totalPrice":      self.total_price,
+            "itemsPrice":      self.items_price,
+            "otherFeesTotal":  self.other_fees_total,
             "paymentType":     self.payment_type,
             "discount":        self.discount,
+            "fees":            fees,
+            "discounts":       discounts,
             "createdAt":       self.created_at,
             "items":           [item.to_dict() for item in self.items],
         }
@@ -202,10 +221,18 @@ class OrderItem(db.Model):
     original_price = db.Column(db.Float,       nullable=True)
     subtotal       = db.Column(db.Float,       nullable=True)
     total          = db.Column(db.Float,       nullable=True)
+    options_json   = db.Column(db.Text,        nullable=True)  # JSON com adicionais do item
 
     order = db.relationship("Order", back_populates="items")
 
     def to_dict(self):
+        import json as _json
+        options = []
+        if self.options_json:
+            try:
+                options = _json.loads(self.options_json)
+            except Exception:
+                pass
         return {
             "id":           self.id,
             "menuItemId":   self.menu_item_id,
@@ -215,4 +242,5 @@ class OrderItem(db.Model):
             "originalPrice": self.original_price,
             "subtotal":     self.subtotal,
             "total":        self.total,
+            "options":      options,
         }

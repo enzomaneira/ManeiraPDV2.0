@@ -290,11 +290,19 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     if "value" in order_amount:
         order.total_price = order_amount["value"]
 
+    items_price_node = total_node.get("itemsPrice", {})
+    if "value" in items_price_node:
+        order.items_price = items_price_node["value"]
+
+    other_fees_node = total_node.get("otherFees", {})
+    if "value" in other_fees_node:
+        order.other_fees_total = other_fees_node["value"]
+
     discount_node = total_node.get("discount", {})
     if "value" in discount_node:
         order.discount = discount_node["value"]
 
-    print(f"[Orders][save_order_from_keeta] Financeiro: total_price={order.total_price} | discount={order.discount}")
+    print(f"[Orders][save_order_from_keeta] Financeiro: total={order.total_price} | items={order.items_price} | fees={order.other_fees_total} | discount={order.discount}")
 
     # --- Tipo de pagamento ---
     payments = order_json.get("payments", {})
@@ -353,6 +361,7 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
             original_price=original_price,
             subtotal=total_price,
             total=total_price,
+            options_json=json.dumps(options),  # salva as opções para o frontend
         )
         order.items.append(order_item)
         print(f"[Orders][save_order_from_keeta] Item processado: '{full_name}' | qty={order_item.quantity} | total={total_price}")

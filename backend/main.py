@@ -142,6 +142,11 @@ def _run_lightweight_migrations():
         # StoreConfig: campos do webhook de autorização Keeta (eventos 1301/1302)
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_authorized BOOLEAN DEFAULT FALSE",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_auth_id VARCHAR(100)",
+        # Order: totais detalhados da Keeta
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS items_price DOUBLE PRECISION",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS other_fees_total DOUBLE PRECISION",
+        # OrderItem: opções/adicionais do item
+        "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
     ]
 
     for stmt in statements:
