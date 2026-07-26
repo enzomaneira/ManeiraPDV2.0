@@ -374,10 +374,15 @@ def update_store_status():
 
     data    = request.get_json(silent=True) or {}
     is_open = data.get("isOpen", True)
-    print(f"[Webhook][update_store_status] Body recebido: {data} | is_open={is_open} | keeta_merchant_id={config.keeta_merchant_id}")
+    print(f"[Webhook][update_store_status] Body recebido: {data} | is_open={is_open} | keeta_merchant_id={config.keeta_merchant_id} | local_store_id={store.id}")
 
-    print(f"[Webhook][update_store_status] Chamando keeta_client.update_store_status({config.keeta_merchant_id}, {is_open})...")
-    success, error_detail = keeta_client.update_store_status(config.keeta_merchant_id, is_open)
+    # O endpoint POST /v1/merchantUpdate/{merchantId} espera o NOSSO ID LOCAL
+    # (o mesmo usado como query param ?merchantId= no onboarding), NÃO o ID da
+    # Keeta (keetaMerchantId). Durante o onboarding registramos o mapeamento
+    # merchantId={store.id} ↔ keetaMerchantId={config.keeta_merchant_id},
+    # portanto a Keeta conhece esta loja como merchantId={store.id}.
+    print(f"[Webhook][update_store_status] Chamando keeta_client.update_store_status(local_store_id={store.id}, is_open={is_open})...")
+    success, error_detail = keeta_client.update_store_status(str(store.id), is_open)
     print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: success={success} | error={error_detail}")
 
     if success:
