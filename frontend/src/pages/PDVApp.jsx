@@ -60,7 +60,8 @@ function PDVApp() {
 
       const formattedOrders = response.data.map(order => {
         let displayStatus = order.status;
-        if (order.status === 'READY_FOR_PICKUP') displayStatus = 'READY';
+        if (order.status === 'PENDING' || order.status === 'NEW') displayStatus = 'PENDING';
+        else if (order.status === 'READY_FOR_PICKUP') displayStatus = 'READY';
         else if (order.status === 'DELIVERY_IN_PROGRESS') displayStatus = 'DISPATCHED';
         else if (order.status === 'CANCELLED') displayStatus = 'CANCELED';
         else if (order.status === 'DELIVERED' || order.status === 'COMPLETED' || order.status === 'PICKED_UP') {

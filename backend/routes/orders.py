@@ -162,7 +162,8 @@ def update_status(order_id):
         def notify_keeta():
             print(f"[Orders][update_status][thread] INÍCIO notificação Keeta | external_id={order.external_id} | old_status={old_status} | new_status={new_status}")
             try:
-                if old_status == "NEW" and new_status == "PREPARING":
+                # Confirmar: de PENDING ou NEW para PREPARING → confirma na Keeta
+                if old_status in ("PENDING", "NEW") and new_status == "PREPARING":
                     print(f"[Orders][update_status][thread] Chamando keeta_client.confirm_order({order.external_id})")
                     resultado = keeta_client.confirm_order(order.external_id)
                     print(f"[Orders][update_status][thread] Resultado confirm_order: {resultado}")
@@ -177,6 +178,7 @@ def update_status(order_id):
                     resultado = keeta_client.notify_dispatched(order.external_id)
                     print(f"[Orders][update_status][thread] Resultado notify_dispatched: {resultado}")
 
+                # Cancelar/Recusar: de qualquer status para CANCELED → cancela na Keeta
                 elif new_status == "CANCELED":
                     print(f"[Orders][update_status][thread] Chamando keeta_client.request_cancellation({order.external_id})")
                     resultado = keeta_client.request_cancellation(order.external_id)
@@ -247,12 +249,14 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
         print(f"[Orders][save_order_from_keeta] ERRO ao converter local_merchant_id='{local_merchant_id}' para int: {e}. Usando fallback store_id={order.store_id}")
 
     # --- Status inicial ---
-    # Se o pedido ainda não tem status, verificamos se o auto-aceite está ativo
+    # Se o pedido ainda não tem status, verificamos se o auto-aceite está ativo.
+    # ATENÇÃO: se a StoreConfig não existir, NÃO assumimos auto-aceite como True.
+    # O default seguro é False (aguardar ação manual do operador).
     if not order.status:
         print(f"[Orders][save_order_from_keeta] Pedido sem status definido. Verificando auto_accept para store_id={order.store_id}...")
         config = StoreConfig.query.get(order.store_id)
-        auto_accept = config.auto_accept if config else True
-        print(f"[Orders][save_order_from_keeta] Config encontrada: {config.to_dict() if config else None} | auto_accept={auto_accept}")
+        auto_accept = config.auto_accept if config else False
+        print(f"[Orders][save_order_from_keeta] Config encontrada: {config.to_dict() if config else 'NENHUMA'} | auto_accept={auto_accept}")
 
         if auto_accept:
             order.status = "PREPARING"
@@ -264,8 +268,8 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
                 daemon=True,
             ).start()
         else:
-            order.status = "NEW"
-            print(f"[Orders][save_order_from_keeta] Auto-aceite INATIVO. Status definido como NEW (aguardando aprovação manual).")
+            order.status = "PENDING"
+            print(f"[Orders][save_order_from_keeta] Auto-aceite INATIVO. Status definido como PENDING (aguardando ação manual).")
 
     # --- Dados de identificação ---
     delivery = order_json.get("delivery", {})
