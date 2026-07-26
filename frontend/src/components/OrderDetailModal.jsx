@@ -6,6 +6,7 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
 
     const getHeaderColor = () => {
         switch(order.status) {
+            case 'PENDING': return 'bg-amber-500';
             case 'NEW': return 'bg-blue-600';
             case 'PREPARING': return 'bg-orange-500';
             case 'READY': return 'bg-green-600';
@@ -152,13 +153,13 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
 
                 {/* Footer (Botões) */}
                 <div className="p-6 bg-white border-t border-slate-100 rounded-b-3xl">
-                    {order.status === 'NEW' && (
+                    {(order.status === 'PENDING' || order.status === 'NEW') && (
                         <div className="flex gap-4">
-                            <button onClick={() => onStatusChange(order.id, 'CANCELED')} className="w-1/3 py-4 bg-white border-2 border-slate-100 text-slate-500 font-bold rounded-2xl hover:bg-red-50 hover:text-red-600 hover:border-red-100 transition-all flex items-center justify-center gap-2">
-                                <Ban className="w-5 h-5" /> Rejeitar
+                            <button onClick={() => { if(window.confirm('Recusar este pedido? O cliente será notificado do cancelamento.')) onStatusChange(order.id, 'CANCELED'); }} className="w-1/3 py-4 bg-white border-2 border-red-200 text-red-500 font-bold rounded-2xl hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-all flex items-center justify-center gap-2">
+                                <Ban className="w-5 h-5" /> Recusar
                             </button>
                             <button onClick={() => onStatusChange(order.id, 'PREPARING')} className="w-2/3 py-4 bg-blue-600 text-white font-bold rounded-2xl hover:bg-blue-700 shadow-xl shadow-blue-200 transition-all flex items-center justify-center gap-2 text-lg">
-                                <Zap className="w-6 h-6" /> Aceitar
+                                <Zap className="w-6 h-6" /> Aceitar Pedido
                             </button>
                         </div>
                     )}
