@@ -74,7 +74,8 @@ function PDVApp() {
           price: item.unitPrice,
           originalPrice: item.originalPrice,
           total: item.total,
-          subtotal: item.subtotal
+          subtotal: item.subtotal,
+          options: item.options || []
         }));
 
         return {
@@ -85,12 +86,16 @@ function PDVApp() {
           platform: "Keeta",
           status: displayStatus,
           total: order.totalPrice,
-          discount: order.discount,
+          itemsPrice: order.itemsPrice || 0,
+          otherFeesTotal: order.otherFeesTotal || 0,
+          discount: order.discount || 0,
           subtotal: processedItems.reduce((acc, i) => acc + i.total, 0),
           paymentType: order.paymentType,
           address: order.deliveryAddress,
           createdAt: order.createdAt,
-          items: processedItems
+          items: processedItems,
+          fees: order.fees || [],
+          discounts: order.discounts || []
         };
       });
 

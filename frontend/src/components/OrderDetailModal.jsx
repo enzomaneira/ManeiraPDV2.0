@@ -99,25 +99,52 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                             <span>{formatCurrency(order.items.reduce((acc, i) => acc + i.total, 0))}</span>
                         </div>
 
-                        {order.fees && order.fees.map((fee, idx) => (
-                            <div key={idx} className="flex justify-between text-slate-500">
-                                <span className="flex items-center gap-1 capitalize">
-                                    <DollarSign className="w-3 h-3 text-slate-400"/> 
-                                    {fee.name ? fee.name.replace(/_/g, ' ').toLowerCase() : 'Taxa'}
-                                </span>
-                                <span>+ {formatCurrency(fee.price?.value || 0)}</span>
-                            </div>
-                        ))}
+                        {order.fees && order.fees.map((fee, idx) => {
+                            // Mapeia o type da Keeta para um nome legível em português
+                            const feeTypeNames = {
+                                'SERVICE_FEE': 'Taxa de Serviço (Marketplace)',
+                                'DELIVERY_FEE': 'Taxa de Entrega',
+                                'MIN_ORDER_FEE': 'Suplemento Pedido Mínimo',
+                            };
+                            const feeName = feeTypeNames[fee.type] || (fee.type || 'Taxa').replace(/_/g, ' ').toLowerCase();
+                            return (
+                                <div key={idx} className="flex justify-between text-slate-500">
+                                    <span className="flex items-center gap-1 capitalize text-xs">
+                                        <DollarSign className="w-3 h-3 text-slate-400"/> 
+                                        {feeName}
+                                    </span>
+                                    <span>+ {formatCurrency(fee.price?.value || fee.value || 0)}</span>
+                                </div>
+                            );
+                        })}
 
-                        {order.discounts && order.discounts.map((disc, idx) => (
-                            <div key={idx} className="flex justify-between text-red-500">
-                                <span className="flex items-center gap-1 capitalize">
-                                    <Tag className="w-3 h-3"/> 
-                                    {disc.name ? disc.name.replace(/_/g, ' ').toLowerCase() : 'Desconto'}
-                                </span>
-                                <span>- {formatCurrency(Math.abs(disc.value || 0))}</span>
-                            </div>
-                        ))}
+                        {order.discounts && order.discounts.map((disc, idx) => {
+                            const discValue = disc.amount?.value || disc.value || 0;
+                            const sponsors = disc.sponsorshipValues || [];
+                            const merchantSponsor = sponsors.find(s => s.name === 'MERCHANT');
+                            const marketplaceSponsor = sponsors.find(s => s.name === 'MARKETPLACE');
+                            return (
+                                <div key={idx} className="flex justify-between text-red-500">
+                                    <span className="flex items-center gap-1 text-xs">
+                                        <Tag className="w-3 h-3"/> 
+                                        Desconto{sponsors.length > 0 ? ' (Cupom)' : ''}
+                                    </span>
+                                    <div className="text-right">
+                                        <span>- {formatCurrency(Math.abs(discValue))}</span>
+                                        {sponsors.length > 0 && (
+                                            <div className="text-[10px] text-slate-400 mt-0.5 space-y-0.5">
+                                                {merchantSponsor && (
+                                                    <div>🏪 Loja banca: -{formatCurrency(Math.abs(merchantSponsor.value || 0))}</div>
+                                                )}
+                                                {marketplaceSponsor && (
+                                                    <div>📱 Keeta banca: -{formatCurrency(Math.abs(marketplaceSponsor.value || 0))}</div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
 
                         <div className="border-t border-slate-100 pt-3 flex justify-between items-end">
                             <span className="text-slate-500 font-bold">Total Final</span>
