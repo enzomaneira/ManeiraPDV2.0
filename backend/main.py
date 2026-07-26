@@ -104,8 +104,41 @@ def create_app():
         except Exception as e:
             print(f"[DB] AVISO ao criar tabelas: {type(e).__name__}: {e}")
 
+        _run_lightweight_migrations()
+
     print("[Main][create_app] FIM (aplicação criada com sucesso)")
     return application
+
+
+def _run_lightweight_migrations():
+    """
+    Como o projeto não usa Alembic/Flask-Migrate, `db.create_all()` só cria
+    tabelas que ainda não existem — ele NÃO adiciona colunas novas em tabelas
+    já existentes. Para não quebrar o banco de produção sempre que um novo
+    campo for adicionado a um model, rodamos aqui pequenos `ALTER TABLE ...
+    ADD COLUMN IF NOT EXISTS` (idempotentes e seguros de rodar toda vez que
+    a aplicação sobe).
+    """
+    from sqlalchemy import text
+
+    print("[DB][_run_lightweight_migrations] INÍCIO")
+
+    statements = [
+        # StoreConfig: campos do webhook de autorização Keeta (eventos 1301/1302)
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_authorized BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_auth_id VARCHAR(100)",
+    ]
+
+    for stmt in statements:
+        try:
+            db.session.execute(text(stmt))
+            db.session.commit()
+            print(f"[DB][_run_lightweight_migrations] OK: {stmt}")
+        except Exception as e:
+            db.session.rollback()
+            print(f"[DB][_run_lightweight_migrations] AVISO ao executar '{stmt}': {type(e).__name__}: {e}")
+
+    print("[DB][_run_lightweight_migrations] FIM")
 
 
 # Instância global usada pelo gunicorn (gunicorn main:app)

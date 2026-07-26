@@ -78,9 +78,12 @@ class StoreConfig(db.Model):
     Tabela: store_config
     Configurações de integração da loja — uma linha por Store (store_id é a PK).
 
-    auto_accept:       Se True, aceita pedidos automaticamente sem intervenção manual.
-    keeta_merchant_id: O ID que a Keeta atribuiu para esta loja.
-    is_store_open:     Se a loja está aberta/fechada na Keeta.
+    auto_accept:         Se True, aceita pedidos automaticamente sem intervenção manual.
+    keeta_merchant_id:   O ID que a Keeta atribuiu para esta loja.
+    is_store_open:       Se a loja está aberta/fechada na Keeta.
+    keeta_authorized:    Se o app está autorizado por este merchant na Keeta
+                          (atualizado via webhook de autorização 1301/1302).
+    keeta_auth_id:       Último authId recebido no webhook de autorização.
     """
     __tablename__ = "store_config"
 
@@ -88,6 +91,8 @@ class StoreConfig(db.Model):
     auto_accept       = db.Column(db.Boolean, default=True)
     keeta_merchant_id = db.Column(db.String(100), nullable=True)
     is_store_open     = db.Column(db.Boolean, default=True)
+    keeta_authorized  = db.Column(db.Boolean, default=False)
+    keeta_auth_id     = db.Column(db.String(100), nullable=True)
 
     def to_dict(self):
         return {
@@ -95,6 +100,8 @@ class StoreConfig(db.Model):
             "autoAccept":       self.auto_accept,
             "keetaMerchantId":  self.keeta_merchant_id,
             "isStoreOpen":      self.is_store_open,
+            "keetaAuthorized":  self.keeta_authorized,
+            "keetaAuthId":      self.keeta_auth_id,
         }
 
 

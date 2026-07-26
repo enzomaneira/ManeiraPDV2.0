@@ -2,24 +2,29 @@
 #  routes/keeta_webhook.py  —  Endpoints de Integração com a Keeta
 # =============================================================================
 #
-#  Este arquivo tem duas responsabilidades:
+#  Este arquivo tem várias responsabilidades:
 #
-#  1. RECEBER eventos da Keeta (webhook):
+#  1. RECEBER eventos de PEDIDO da Keeta (webhook):
 #     A Keeta faz POST /api/keeta/orders quando algo acontece com um pedido.
 #     Ex: pedido criado, confirmado, cancelado, entregue...
 #
-#  2. RESPONDER ao GET /menu:
+#  2. RECEBER eventos de AUTORIZAÇÃO da Keeta (webhook):
+#     A Keeta faz POST /api/keeta/authorization quando um lojista autoriza
+#     (evento 1301) ou revoga a autorização (evento 1302) do nosso app.
+#     Essa URL precisa ser configurada manualmente no Dev Portal da Keeta.
+#
+#  3. RESPONDER ao GET /menu:
 #     A Keeta faz GET /api/keeta/menu para buscar o cardápio da loja.
 #
-#  3. AUXILIARES:
-#     Callbacks OAuth, geração de URL de auth, controle de status da loja.
+#  4. AUXILIARES:
+#     Onboarding direto, controle de status da loja.
 #
 #  Como várias lojas (uma por usuário) compartilham o mesmo app Keeta,
 #  usamos o "local ID" (nosso store_id) para saber de qual loja é cada
 #  requisição. Esse ID trafega:
 #    - No onboarding: como merchantId
 #    - No webhook de pedidos: no header X-App-MerchantId
-#    - No fluxo OAuth: embutido na própria redirectUri (?storeId=...)
+#    - No webhook de autorização: via shopId (= keeta_merchant_id salvo na StoreConfig)
 # =============================================================================
 
 from flask import Blueprint, request, jsonify, g
@@ -96,23 +101,39 @@ def receive_order_event():
     # Damos preferência ao campo `orderURL` enviado pela própria Keeta no evento
     # (conforme documentação oficial de Polling/Webhook), em vez de montar a
     # URL manualmente — isso evita chamar o endpoint errado.
-    print(f"[Webhook][receive_order_event] Buscando detalhes completos do pedido {order_id} na Keeta (orderURL={order_url})...")
-    order_data = keeta_client.get_order_details(order_id, order_url=order_url)
+    #
+    # IMPORTANTE: todo o processamento abaixo está protegido por try/except.
+    # A Keeta considera o webhook "Failed" se a conexão cair ou demorar demais
+    # (sintoma visto como "Unknown Protocol" nos logs), e nesse caso ela
+    # REENVIA o mesmo evento em loop a cada poucos segundos. Por isso é
+    # fundamental que, aconteça o que acontecer no processamento, sempre
+    # respondamos 200 rapidamente — erros são apenas logados, nunca deixados
+    # propagar e derrubar a resposta HTTP.
+    try:
+        print(f"[Webhook][receive_order_event] Buscando detalhes completos do pedido {order_id} na Keeta (orderURL={order_url})...")
+        order_data = keeta_client.get_order_details(order_id, order_url=order_url)
 
-    if order_data:
-        print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id={merchant_id})...")
-        save_order_from_keeta(order_data, merchant_id)
-    else:
-        print(f"[Webhook][receive_order_event] AVISO: não foi possível obter detalhes do pedido {order_id} na Keeta.")
+        if order_data:
+            print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id={merchant_id})...")
+            save_order_from_keeta(order_data, merchant_id)
+        else:
+            print(f"[Webhook][receive_order_event] AVISO: não foi possível obter detalhes do pedido {order_id} na Keeta (timeout ou erro na chamada).")
 
-    # --- 5. Atualiza o status no banco de acordo com o tipo do evento ---
-    print(f"[Webhook][receive_order_event] Processando mapeamento de status para event_type={event_type}...")
-    _handle_event(event_type, order_id)
+        # --- 5. Atualiza o status no banco de acordo com o tipo do evento ---
+        print(f"[Webhook][receive_order_event] Processando mapeamento de status para event_type={event_type}...")
+        _handle_event(event_type, order_id)
+    except Exception as e:
+        # Nunca deixamos uma exceção aqui impedir a resposta 200 à Keeta.
+        # Se algo falhar, o pior caso é o pedido ficar desatualizado — o que
+        # é bem melhor do que entrar em loop infinito de reenvios.
+        print(f"[Webhook][receive_order_event] ERRO durante o processamento do evento (será ignorado para não travar a resposta): {type(e).__name__}: {e}")
 
     print(f"[Webhook][receive_order_event] FIM (sucesso) | order_id={order_id} | event_type={event_type}")
     print("#" * 70 + "\n")
 
-    # A Keeta espera um HTTP 200 para confirmar que recebemos o evento
+    # A Keeta espera um HTTP 200 para confirmar que recebemos o evento.
+    # Respondemos 200 mesmo que o processamento interno tenha falhado, para
+    # evitar que a Keeta entre em loop de reenvio do mesmo evento.
     return jsonify({"message": "ok"}), 200
 
 
@@ -161,6 +182,109 @@ def _handle_event(event_type: str, order_id: str):
         print(f"[Webhook][_handle_event] Evento informativo (sem mudança de status): {event_type}")
 
     print(f"[Webhook][_handle_event] FIM | event_type={event_type} | order_id={order_id}")
+
+
+# =============================================================================
+#  WEBHOOK DE AUTORIZAÇÃO — eventos 1301 (nova autorização) e 1302 (cancelamento)
+# =============================================================================
+#
+#  Este é um webhook DIFERENTE do de pedidos (/orders). Ele não trata de
+#  CREATED/CONFIRMED/DELIVERED etc; trata exclusivamente de quando um
+#  lojista AUTORIZA ou REVOGA a autorização do nosso app na Keeta.
+#
+#  A URL deste endpoint precisa ser configurada MANUALMENTE no Dev Portal
+#  da Keeta (Application Management → Webhook), nos eventos:
+#    1301 → nova autorização
+#    1302 → cancelamento de autorização
+#
+#  Documentação: https://api-docs.mykeeta.com/apis/opendelivery/authentication/receiveauthorizationwebhook
+#
+#  Payload (application/json):
+#    {
+#      "clientId":   2816859805,          // appId da Keeta
+#      "authId":     "41008",             // ID único da sessão de autorização
+#      "opType":     1,                   // 1 = nova autorização | 2 = cancelamento
+#      "shopId":     159649625,           // ID da loja na Keeta (= keeta_merchant_id)
+#      "shopName":   "Loja Exemplo",
+#      "createTime": 1753151456973        // timestamp em milissegundos
+#    }
+# =============================================================================
+
+@keeta_bp.post("/authorization")
+def receive_authorization_event():
+    """
+    Recebe notificações de autorização/desautorização de merchant.
+
+    opType == 1 → merchant autorizou o app (nova autorização)
+    opType == 2 → merchant cancelou a autorização
+
+    A Keeta espera resposta em até 5s, com HTTP 200 e um JSON contendo
+    os campos `status` e `title` (idêntico ao padrão usado no restante da
+    integração, por consistência com os outros endpoints).
+    """
+    print("\n" + "#" * 70)
+    print("[Webhook][receive_authorization_event] INÍCIO | Evento de autorização recebido da Keeta!")
+    print(f"[Webhook][receive_authorization_event] Headers recebidos: {dict(request.headers)}")
+
+    # --- 1. Lê o body bruto e valida a assinatura (mesmo esquema HMAC-SHA256) ---
+    body_bytes = request.get_data()
+    body_str   = body_bytes.decode("utf-8")
+    print(f"[Webhook][receive_authorization_event] Body bruto recebido ({len(body_str)} bytes): {body_str[:500]}")
+
+    received_signature = request.headers.get("X-App-Signature", "")
+    assinatura_valida = keeta_client.validate_webhook_signature(body_str, received_signature)
+    print(f"[Webhook][receive_authorization_event] Assinatura válida? {assinatura_valida}")
+
+    if not assinatura_valida:
+        print("[Webhook][receive_authorization_event] REJEITADO (403): Assinatura inválida!")
+        print("#" * 70 + "\n")
+        return jsonify({"status": 401, "title": "Invalid signature"}), 403
+
+    # --- 2. Faz o parse do payload, protegido contra erros ---
+    try:
+        import json
+        event = json.loads(body_str)
+        print(f"[Webhook][receive_authorization_event] Evento decodificado: {event}")
+
+        auth_id   = event.get("authId")
+        op_type   = event.get("opType")     # 1 = nova autorização | 2 = cancelamento
+        shop_id   = event.get("shopId")     # ID da loja na Keeta (keeta_merchant_id)
+        shop_name = event.get("shopName")
+
+        print(f"[Webhook][receive_authorization_event] authId={auth_id} | opType={op_type} | shopId={shop_id} | shopName={shop_name}")
+
+        if shop_id is None:
+            print("[Webhook][receive_authorization_event] AVISO: evento sem shopId, nada a fazer.")
+        else:
+            # Localiza a StoreConfig cujo keeta_merchant_id bate com o shopId recebido
+            config = StoreConfig.query.filter_by(keeta_merchant_id=str(shop_id)).first()
+
+            if not config:
+                print(f"[Webhook][receive_authorization_event] AVISO: nenhuma StoreConfig encontrada para shopId={shop_id}. "
+                      f"Isso é esperado se a loja ainda não tiver feito o onboarding local.")
+            else:
+                if op_type == 1:
+                    config.keeta_authorized = True
+                    config.keeta_auth_id = str(auth_id) if auth_id is not None else config.keeta_auth_id
+                    print(f"[Webhook][receive_authorization_event] Loja store_id={config.store_id} AUTORIZADA (opType=1) | authId={auth_id}")
+                elif op_type == 2:
+                    config.keeta_authorized = False
+                    print(f"[Webhook][receive_authorization_event] Loja store_id={config.store_id} teve a autorização CANCELADA (opType=2)")
+                else:
+                    print(f"[Webhook][receive_authorization_event] AVISO: opType desconhecido ({op_type}), nenhuma alteração feita.")
+
+                db.session.commit()
+                print(f"[Webhook][receive_authorization_event] Config atualizada: {config.to_dict()}")
+    except Exception as e:
+        # Assim como no webhook de pedidos: nunca deixamos uma exceção impedir
+        # a resposta 200, para evitar reenvios em loop pela Keeta.
+        print(f"[Webhook][receive_authorization_event] ERRO durante o processamento (ignorado para não travar a resposta): {type(e).__name__}: {e}")
+
+    print("[Webhook][receive_authorization_event] FIM (sucesso)")
+    print("#" * 70 + "\n")
+
+    # Formato de resposta sugerido pela documentação: {status, title}, status=0 é sucesso.
+    return jsonify({"status": 0, "title": "success"}), 200
 
 
 # =============================================================================

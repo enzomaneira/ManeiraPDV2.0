@@ -30,6 +30,21 @@ CLIENT_SECRET = "2f6729bdd4be467aa15df35244f2a65e"
 # Base da API da Keeta
 BASE_URL = "https://open.mykeeta.com/api/open/opendelivery"
 
+# Timeout (em segundos) para TODAS as chamadas HTTP feitas à Keeta.
+#
+# IMPORTANTE: sem um timeout explícito, a biblioteca `requests` espera
+# INDEFINIDAMENTE por uma resposta. Isso é extremamente perigoso no fluxo do
+# webhook: se a Keeta (ou a rede) demorar/travar, o worker do Gunicorn que
+# está processando o webhook fica preso para sempre, nunca respondendo 200
+# para a Keeta. Como resultado, a Keeta entende que o webhook falhou
+# ("Failed" / "Unknown Protocol" — a conexão é derrubada pelo proxy antes de
+# terminar) e reenvia o MESMO evento repetidamente em loop (a cada ~12s),
+# esgotando os workers disponíveis.
+#
+# (connect_timeout, read_timeout) — generosos o suficiente para não afetar
+# operação normal, mas curtos o suficiente para nunca travar um worker.
+REQUEST_TIMEOUT = (5, 15)
+
 # URL pública do backend — usada no onboarding para informar à Keeta:
 #   - onde fazer POST dos eventos de pedido (webhook)
 #   - onde fazer GET do cardápio (menu endpoint)
@@ -101,7 +116,7 @@ def get_access_token() -> str | None:
     print(f"[Keeta][get_access_token] POST {url} | payload (secret oculto): {{'client_id': '{CLIENT_ID}', 'grant_type': 'app_level_token'}}")
 
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][get_access_token] Resposta recebida | status_code={response.status_code}")
         response.raise_for_status()
 
@@ -233,7 +248,7 @@ def confirm_order(order_id: str) -> bool:
 
     print(f"[Keeta][confirm_order] POST {url}")
     try:
-        response = requests.post(url, headers=_build_headers(url, body=body), data=body)
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][confirm_order] Resposta | status_code={response.status_code} | body={response.text[:300]}")
         sucesso = response.status_code in (200, 201, 204)
         print(f"[Keeta][confirm_order] FIM | order_id={order_id} | sucesso={sucesso}")
@@ -259,7 +274,7 @@ def notify_ready_for_pickup(order_id: str) -> bool:
 
     print(f"[Keeta][notify_ready_for_pickup] POST {url}")
     try:
-        response = requests.post(url, headers=_build_headers(url, body=body), data=body)
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][notify_ready_for_pickup] Resposta | status_code={response.status_code} | body={response.text[:300]}")
         sucesso = response.status_code in (200, 201, 204)
         print(f"[Keeta][notify_ready_for_pickup] FIM | order_id={order_id} | sucesso={sucesso}")
@@ -285,7 +300,7 @@ def notify_dispatched(order_id: str) -> bool:
 
     print(f"[Keeta][notify_dispatched] POST {url}")
     try:
-        response = requests.post(url, headers=_build_headers(url, body=body), data=body)
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][notify_dispatched] Resposta | status_code={response.status_code} | body={response.text[:300]}")
         sucesso = response.status_code in (200, 201, 204)
         print(f"[Keeta][notify_dispatched] FIM | order_id={order_id} | sucesso={sucesso}")
@@ -320,7 +335,7 @@ def request_cancellation(order_id: str, reason: str = "Dificuldades internas do 
     print(f"[Keeta][request_cancellation] POST {url} | payload={payload} | body_canonico={body}")
 
     try:
-        response = requests.post(url, headers=_build_headers(url, body=body), data=body)
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][request_cancellation] Resposta | status_code={response.status_code} | body={response.text[:300]}")
         sucesso = response.status_code in (200, 201, 204)
         print(f"[Keeta][request_cancellation] FIM | order_id={order_id} | sucesso={sucesso}")
@@ -360,7 +375,7 @@ def get_order_details(order_id: str, order_url: str | None = None) -> dict | Non
 
     print(f"[Keeta][get_order_details] GET {url}")
     try:
-        response = requests.get(url, headers=_build_headers(url))
+        response = requests.get(url, headers=_build_headers(url), timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][get_order_details] Resposta | status_code={response.status_code}")
         response.raise_for_status()
 
@@ -418,6 +433,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
             full_url_with_params,
             headers=_build_headers(url, query_params=query_params, body=body),
             data=body,
+            timeout=REQUEST_TIMEOUT,
         )
         print(f"[Keeta][register_merchant] Resposta | status_code={response.status_code} | body={response.text[:500]}")
         resultado = response.json()
@@ -448,7 +464,7 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> bool:
     print(f"[Keeta][update_store_status] POST {url} | payload={payload} | body_canonico={body}")
 
     try:
-        response = requests.post(url, headers=_build_headers(url, body=body), data=body)
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][update_store_status] Resposta | status_code={response.status_code} | body={response.text[:300]}")
         sucesso = response.status_code in (200, 201, 204)
         print(f"[Keeta][update_store_status] FIM | keeta_merchant_id={keeta_merchant_id} | sucesso={sucesso}")
