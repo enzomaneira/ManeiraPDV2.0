@@ -255,10 +255,21 @@ def confirm_order(order_id: str) -> bool:
     O pedido muda de estado: PLACED → CONFIRMED
 
     Endpoint: POST /v1/orders/{orderId}/confirm
+
+    Campos obrigatórios no body (documentação oficial):
+      - createdAt: UTC timestamp ISO (date-time, required)
+      - orderExternalCode: código externo do pedido (string, required)
     """
     print(f"\n[Keeta][confirm_order] INÍCIO | order_id={order_id}")
     url = f"{BASE_URL}/v1/orders/{order_id}/confirm"
-    body = "{}"
+
+    # createdAt e orderExternalCode são REQUIRED segundo a doc da Keeta.
+    # Enviar body vazio {} gera erro de assinatura ou validação.
+    payload = {
+        "createdAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "orderExternalCode": order_id,
+    }
+    body = canonical_json(payload)
 
     print(f"[Keeta][confirm_order] POST {url}")
     try:
@@ -281,10 +292,11 @@ def notify_ready_for_pickup(order_id: str) -> bool:
     O pedido muda de estado: CONFIRMED → READY_FOR_PICKUP
 
     Endpoint: POST /v1/orders/{orderId}/readyForPickup
+    (sem body obrigatório segundo a documentação)
     """
     print(f"\n[Keeta][notify_ready_for_pickup] INÍCIO | order_id={order_id}")
     url = f"{BASE_URL}/v1/orders/{order_id}/readyForPickup"
-    body = "{}"
+    body = ""  # sem body → não incluído na assinatura nem enviado
 
     print(f"[Keeta][notify_ready_for_pickup] POST {url}")
     try:
@@ -307,10 +319,11 @@ def notify_dispatched(order_id: str) -> bool:
     O pedido muda de estado: READY_FOR_PICKUP → DISPATCHED
 
     Endpoint: POST /v1/orders/{orderId}/dispatch
+    (sem body obrigatório segundo a documentação)
     """
     print(f"\n[Keeta][notify_dispatched] INÍCIO | order_id={order_id}")
     url = f"{BASE_URL}/v1/orders/{order_id}/dispatch"
-    body = "{}"
+    body = ""  # sem body → não incluído na assinatura nem enviado
 
     print(f"[Keeta][notify_dispatched] POST {url}")
     try:
