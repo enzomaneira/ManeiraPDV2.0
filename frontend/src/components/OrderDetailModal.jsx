@@ -32,6 +32,11 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                         <p className="opacity-90 text-xs mt-2 flex items-center gap-1 font-medium">
                             <Clock className="w-3 h-3"/> {formatFullDate(order.createdAt)}
                         </p>
+                        {order.pickupCode && (
+                            <p className="opacity-80 text-xs mt-1 font-bold bg-white/10 px-2 py-0.5 rounded inline-block">
+                                🏷️ Retirada: {order.pickupCode}
+                            </p>
+                        )}
                     </div>
                     <button onClick={onClose} className="bg-white/20 hover:bg-white/30 p-2 rounded-full transition-colors">
                         <XCircle className="w-6 h-6" />

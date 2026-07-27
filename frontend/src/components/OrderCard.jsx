@@ -47,10 +47,17 @@ export default function OrderCard({ order, onClick }) {
 
       {/* Cabeçalho */}
       <div className="flex justify-between items-start mb-3 pl-2">
-        <div className="bg-slate-100 px-2 py-1 rounded-lg border border-slate-200 group-hover:bg-indigo-50 group-hover:border-indigo-100 transition-colors">
-          <span className="text-xs font-bold text-slate-500 group-hover:text-indigo-600">
-            #{order.displayId}
-          </span>
+        <div>
+          <div className="bg-slate-100 px-2 py-1 rounded-lg border border-slate-200 group-hover:bg-indigo-50 group-hover:border-indigo-100 transition-colors inline-block">
+            <span className="text-xs font-bold text-slate-500 group-hover:text-indigo-600">
+              #{order.displayId}
+            </span>
+          </div>
+          {order.pickupCode && (
+            <div className="text-[10px] text-slate-400 mt-1 font-medium">
+              🏷️ {order.pickupCode}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-1 text-xs font-medium text-slate-400">
           <Clock className="w-3 h-3" />

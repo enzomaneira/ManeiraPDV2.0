@@ -81,7 +81,8 @@ function PDVApp() {
         return {
           id: order.id,
           keetaId: order.externalId,
-          displayId: order.pickupCode || order.displayId || order.id,
+          displayId: order.displayId || order.pickupCode || order.id,
+          pickupCode: order.pickupCode || null,
           customer: order.customerName,
           platform: "Keeta",
           status: displayStatus,
@@ -125,6 +126,7 @@ function PDVApp() {
 
     try {
       await orderService.updateStatus(orderId, backendStatus);
+      setSelectedOrder(null);  // fecha o modal e volta ao board
       fetchOrders();
     } catch (error) {
       alert("Erro ao atualizar pedido!");
