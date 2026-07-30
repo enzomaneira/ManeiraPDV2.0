@@ -136,6 +136,7 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                                     </span>
                                     <div className="text-right">
                                         <span>- {formatCurrency(Math.abs(discValue))}</span>
+                                        {/* Patrocínio comentado — descomentar quando necessário
                                         {sponsors.length > 0 && (
                                             <div className="text-[10px] text-slate-400 mt-0.5 space-y-0.5">
                                                 {merchantSponsor && (
@@ -146,6 +147,7 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                                                 )}
                                             </div>
                                         )}
+                                        */}
                                     </div>
                                 </div>
                             );
