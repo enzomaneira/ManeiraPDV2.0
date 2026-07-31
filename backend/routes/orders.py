@@ -288,7 +288,7 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     total_node = order_json.get("total", {})
     order_amount = total_node.get("orderAmount", {})
     if "value" in order_amount:
-        order.total_price = order_amount["value"] + 3  # acrescenta R$ 3 de taxa de serviço
+        order.total_price = order_amount["value"] + 2.09  # acrescenta R$ 2.09 de taxa de serviço
 
     items_price_node = total_node.get("itemsPrice", {})
     if "value" in items_price_node:
