@@ -97,7 +97,7 @@ def _build_menu_response(store_id: int):
             "price": {
                 "originalValue": item.price,
                 "currency":      "BRL",
-                "value":         None,
+                "value":         item.price,
             },
         })
 
@@ -194,7 +194,7 @@ def _build_menu_response(store_id: int):
                 "id":           str(opt.id),
                 "itemId":       f"sub-item-{opt.id}",
                 "status":       None,
-                "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": None},
+                "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},
                 "maxPermitted": opt.max_permitted,
             })
         option_groups.append({
