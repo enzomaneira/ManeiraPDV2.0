@@ -238,26 +238,24 @@ def _build_menu_response(store_id: int):
         offer["availabilityId"] = []
 
     for item in items:
-        item_db_id = int(item.id) if item.id.isdigit() else None
-        if item_db_id:
-            og_ids = db.session.query(menu_item_option_groups.c.option_group_id).filter(
-                menu_item_option_groups.c.menu_item_id == item_db_id
-            ).all()
-            offer_id = f"offer-{item_db_id}"
-            for of in item_offers:
-                if of["id"] == offer_id:
-                    of["optionGroupsId"] = [option_group_ids_map[og_id] for (og_id,) in og_ids if og_id in option_group_ids_map]
-                    break
+        # item.id já é int (SQLAlchemy Integer column)
+        item_db_id = item.id
+        og_ids = db.session.query(menu_item_option_groups.c.option_group_id).filter(
+            menu_item_option_groups.c.menu_item_id == item_db_id
+        ).all()
+        offer_id = f"offer-{item_db_id}"
+        for of in item_offers:
+            if of["id"] == offer_id:
+                of["optionGroupsId"] = [option_group_ids_map[og_id] for (og_id,) in og_ids if og_id in option_group_ids_map]
+                break
 
-        if item_db_id:
-            av_ids = db.session.query(menu_item_availabilities.c.availability_id).filter(
-                menu_item_availabilities.c.menu_item_id == item_db_id
-            ).all()
-            offer_id = f"offer-{item_db_id}"
-            for of in item_offers:
-                if of["id"] == offer_id:
-                    of["availabilityId"] = [availability_ids_map[av_id] for (av_id,) in av_ids if av_id in availability_ids_map]
-                    break
+        av_ids = db.session.query(menu_item_availabilities.c.availability_id).filter(
+            menu_item_availabilities.c.menu_item_id == item_db_id
+        ).all()
+        for of in item_offers:
+            if of["id"] == offer_id:
+                of["availabilityId"] = [availability_ids_map[av_id] for (av_id,) in av_ids if av_id in availability_ids_map]
+                break
 
     for cat in categories_db:
         cat_av_ids = [availability_ids_map[av_id] for (av_id,) in
