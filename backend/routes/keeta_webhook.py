@@ -291,6 +291,37 @@ def receive_authorization_event():
 
 
 # =============================================================================
+#  SINCRONIZAÇÃO DO CARDÁPIO — força a Keeta a puxar o menu atualizado
+# =============================================================================
+
+@keeta_bp.post("/sync-menu")
+@cross_origin()
+@login_required
+def force_sync_menu():
+    """
+    Força a Keeta a re-sincronizar o cardápio completo da loja do usuário logado.
+    Faz POST /v1/merchantUpdate/{merchantId} com body vazio.
+    """
+    print(f"\n[Webhook][force_sync_menu] INÍCIO | user_id={g.current_user.id}")
+
+    store = g.current_user.store
+    if not store:
+        print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+
+    print(f"[Webhook][force_sync_menu] Enviando merchantUpdate para store_id={store.id}...")
+    success, error_detail = keeta_client.force_menu_sync(str(store.id))
+    print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
+
+    if success:
+        print(f"[Webhook][force_sync_menu] FIM (sucesso) | store_id={store.id}")
+        return jsonify({"message": "Cardápio enviado para a Keeta! A sincronização pode levar alguns minutos."})
+    else:
+        print(f"[Webhook][force_sync_menu] FIM (falha) | store_id={store.id}")
+        return jsonify({"error": f"Falha ao sincronizar com a Keeta: {error_detail}"}), 500
+
+
+# =============================================================================
 #  ENDPOINT DO CARDÁPIO — A Keeta chama este endpoint para buscar o menu
 # =============================================================================
 #

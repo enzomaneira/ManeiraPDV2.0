@@ -529,6 +529,44 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
         return False, erro_msg
 
 
+def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
+    """
+    Força a Keeta a re-sincronizar o cardápio completo da loja.
+
+    Faz POST /v1/merchantUpdate/{merchantId} com body vazio, o que força
+    a Keeta a chamar GET /merchant para puxar o menu atualizado.
+
+    merchant_id: ID local da loja (Software Service), NÃO o keetaMerchantId.
+
+    Retorna (sucesso, mensagem_de_erro).
+    """
+    print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
+
+    url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
+    # Body vazio → a Keeta faz um pull completo do GET /merchant
+    body = ""
+
+    print(f"[Keeta][force_menu_sync] POST {url} | body='' (vazio → força pull completo do menu)")
+
+    try:
+        response = requests.post(
+            url,
+            headers=_build_headers(url, body=body),
+            data=body,
+            timeout=REQUEST_TIMEOUT,
+        )
+        print(f"[Keeta][force_menu_sync] Resposta | status_code={response.status_code} | body={response.text[:300]}")
+        sucesso = response.status_code in (200, 201, 204)
+        erro = None if sucesso else f"Keeta API retornou {response.status_code}: {response.text[:200]}"
+        print(f"[Keeta][force_menu_sync] FIM | merchant_id={merchant_id} | sucesso={sucesso}")
+        return sucesso, erro
+    except Exception as e:
+        erro_msg = f"{type(e).__name__}: {e}"
+        print(f"[Keeta][force_menu_sync] ERRO: {erro_msg}")
+        print(f"[Keeta][force_menu_sync] FIM (falha) | merchant_id={merchant_id}")
+        return False, erro_msg
+
+
 # =============================================================================
 #  5. VALIDAÇÃO DO WEBHOOK
 # =============================================================================

@@ -241,12 +241,15 @@ def create_my_menu_item():
     if price is None or float(price) < 0:
         return jsonify({"error": "Preço inválido."}), 400
 
+    category_id = data.get("categoryId")
+    if not category_id:
+        return jsonify({"error": "O item precisa pertencer a uma categoria (categoryId)."}), 400
+
     description = (data.get("description") or "").strip()
     external_code = (data.get("externalCode") or data.get("external_code") or "").strip()
     if not external_code:
         external_code = str(int(db.session.query(db.func.max(MenuItem.id)).scalar() or 0) + 1)
 
-    category_id = data.get("categoryId")
     original_price = data.get("originalPrice", price)
     status = data.get("status", "AVAILABLE")
     image_url = data.get("imageUrl", "")

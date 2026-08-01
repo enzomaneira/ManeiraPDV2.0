@@ -95,4 +95,8 @@ export const availabilityService = {
     delete: (availId) => api.delete(`/stores/me/availabilities/${availId}`),
 };
 
+export const keetaSyncService = {
+    syncMenu: () => api.post('/keeta/sync-menu'),
+};
+
 export default api;
