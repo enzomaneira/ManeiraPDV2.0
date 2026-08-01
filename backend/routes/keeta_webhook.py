@@ -369,6 +369,11 @@ def get_merchant_menu():
             "description":  item.description or item.name,
             "externalCode": item.external_code,
             "status":       item.status,
+            "images":       [{"type": None, "URL": item.image_url, "CRC-32": None}] if item.image_url else [],
+            "nutritionalInfo": None,
+            "serving":      0,
+            "unit":         "UNIT",
+            "image":        None,
         })
 
         item_offers.append({
@@ -377,8 +382,9 @@ def get_merchant_menu():
             "index":  item.index if item.index is not None else idx,
             "status": item.status,
             "price": {
-                "value":         item.price,
-                "originalValue": item.original_price or item.price,
+                "originalValue": item.price,
+                "currency":      "BRL",
+                "value":         None,
             },
         })
 
@@ -399,33 +405,46 @@ def get_merchant_menu():
             "id":           cat_id,
             "index":        cat.index,
             "name":         cat.name,
-            "description":  cat.description or "",
+            "description":  cat.description or None,
             "externalCode": cat.external_code,
             "status":       cat.status,
+            "availabilityId": None,
             "itemOfferId":  cat_offer_map.get(cat.id, []),
+            "serviceType":  "DELIVERY",
         })
 
     # Adiciona categoria "Sem categoria" se houver itens órfãos
     if uncategorized_id in cat_offer_map and cat_offer_map[uncategorized_id]:
         category_menu_ids.append(uncategorized_id)
         categories.append({
-            "id":           uncategorized_id,
-            "index":        len(categories_db),
-            "name":         "Sem Categoria",
-            "description":  "Itens sem categoria definida",
-            "externalCode": f"uncat-{store_id}",
-            "status":       "AVAILABLE",
-            "itemOfferId":  cat_offer_map[uncategorized_id],
+            "id":             uncategorized_id,
+            "index":          len(categories_db),
+            "name":           "Sem Categoria",
+            "description":    None,
+            "externalCode":   f"uncat-{store_id}",
+            "status":         "AVAILABLE",
+            "availabilityId": None,
+            "itemOfferId":    cat_offer_map[uncategorized_id],
+            "serviceType":    "DELIVERY",
         })
 
     # --- 3. MENUS ---
-    menus = [{
-        "id":           menu_id,
-        "name":         "Menu Principal",
-        "description":  "Cardápio completo da loja",
-        "externalCode": f"menu-{store_id}",
-        "categoryId":   category_menu_ids,
-    }]
+    menus = [
+        {
+            "id":           menu_id,
+            "name":         "Delivery",
+            "description":  None,
+            "externalCode": f"menu-delivery-{store_id}",
+            "categoryId":   category_menu_ids,
+        },
+        {
+            "id":           f"menu-pickup-{store_id}",
+            "name":         "Retirar no local",
+            "description":  None,
+            "externalCode": f"menu-pickup-{store_id}",
+            "categoryId":   category_menu_ids,
+        },
+    ]
 
     # --- 5. SERVICES (com serviceHours em UTC-0) ---
     services = [{
@@ -465,24 +484,19 @@ def get_merchant_menu():
         for opt in og.options:
             options_list.append({
                 "id":           str(opt.id),
-                "name":         opt.name,
-                "description":  opt.description or "",
-                "externalCode": opt.external_code,
-                "index":        opt.index,
-                "status":       opt.status,
-                "price":        {"value": opt.price or 0.0},
+                "itemId":       f"sub-item-{opt.id}",
+                "status":       None,
+                "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": None},
                 "maxPermitted": opt.max_permitted,
             })
         option_groups.append({
             "id":           og_id,
             "name":         og.name,
-            "description":  og.description or "",
+            "description":  og.description or None,
             "externalCode": og.external_code,
-            "index":        og.index,
             "status":       og.status,
             "minPermitted": og.min_permitted,
             "maxPermitted": og.max_permitted,
-            "priceMethod":  og.price_method,
             "options":      options_list,
         })
 
