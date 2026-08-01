@@ -5,6 +5,7 @@
 import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from database import db, get_database_url
 import models  # garante que os modelos são registrados no SQLAlchemy
 
@@ -76,8 +77,15 @@ def create_app():
         print(f"[HTTP][RESPONSE] {request.method} {request.path} → status={response.status_code}")
         return response
 
+    @application.errorhandler(HTTPException)
+    def _handle_http_exception(e):
+        """Exceções HTTP 'normais' (404, 405, 403...) — retorna o código correto."""
+        print(f"[HTTP][HTTP_EXCEPTION] {request.method} {request.path} → {e.code} {e.name}: {e.description}")
+        return jsonify({"error": e.description or e.name}), e.code
+
     @application.errorhandler(Exception)
     def _log_unhandled_exception(e):
+        """Erros INESPERADOS (bugs, falhas de banco, etc.) — sempre 500."""
         import traceback
         print(f"[HTTP][UNHANDLED_ERROR] {request.method} {request.path} → {type(e).__name__}: {e}")
         print(traceback.format_exc())

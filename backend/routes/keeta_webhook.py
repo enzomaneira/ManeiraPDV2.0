@@ -41,6 +41,278 @@ keeta_bp = Blueprint("keeta", __name__)
 
 
 # =============================================================================
+#  FUNÇÃO AUXILIAR — Monta o JSON completo do cardápio no formato Open Delivery
+# =============================================================================
+
+def _build_menu_response(store_id: int):
+    """
+    Constrói o JSON do cardápio completo (Open Delivery format) a partir do
+    banco de dados. Inclui: basicInfo, services, menus, categories, items,
+    itemOffers, optionGroups e availabilities.
+    """
+    print(f"\n[_build_menu_response] INÍCIO | store_id={store_id}")
+
+    # --- Busca a loja no banco para preencher o basicInfo ---
+    store = Store.query.get(store_id)
+    store_name = store.name if store else "Minha Loja"
+    print(f"[_build_menu_response] Loja: nome='{store_name}'")
+
+    # --- Busca os itens do cardápio no banco ---
+    items = MenuItem.query.filter_by(store_id=store_id).all()
+    categories_db = MenuCategory.query.filter_by(store_id=store_id).order_by(MenuCategory.index).all()
+    print(f"[_build_menu_response] {len(items)} item(ns), {len(categories_db)} categoria(s)")
+
+    menu_id    = f"menu-{store_id}"
+    service_id = f"svc-delivery-{store_id}"
+    hours_id   = f"hours-{store_id}"
+
+    # --- 1. ITEMS + ITEM OFFERS ---
+    items_list = []
+    item_offers = []
+    cat_offer_map = {}
+    uncategorized_id = f"cat-uncat-{store_id}"
+
+    for idx, item in enumerate(items):
+        item_id_str = str(item.id)
+        offer_id = f"offer-{item.id}"
+
+        items_list.append({
+            "id":           item_id_str,
+            "name":         item.name,
+            "description":  item.description or item.name,
+            "externalCode": item.external_code,
+            "status":       item.status,
+            "images":       [{"type": None, "URL": item.image_url, "CRC-32": None}] if item.image_url else [],
+            "nutritionalInfo": None,
+            "serving":      0,
+            "unit":         "UNIT",
+            "image":        None,
+        })
+
+        item_offers.append({
+            "id":     offer_id,
+            "itemId": item_id_str,
+            "index":  item.index if item.index is not None else idx,
+            "status": item.status,
+            "price": {
+                "originalValue": item.price,
+                "currency":      "BRL",
+                "value":         None,
+            },
+        })
+
+        cat_key = item.category_id if item.category_id else uncategorized_id
+        if cat_key not in cat_offer_map:
+            cat_offer_map[cat_key] = []
+        cat_offer_map[cat_key].append(offer_id)
+
+    # --- 2. CATEGORIES ---
+    categories = []
+    category_menu_ids = []
+
+    for cat in categories_db:
+        cat_id = str(cat.id)
+        category_menu_ids.append(cat_id)
+        categories.append({
+            "id":             cat_id,
+            "index":          cat.index,
+            "name":           cat.name,
+            "description":    cat.description or None,
+            "externalCode":   cat.external_code,
+            "status":         cat.status,
+            "availabilityId": None,
+            "itemOfferId":    cat_offer_map.get(cat.id, []),
+            "serviceType":    "DELIVERY",
+        })
+
+    if uncategorized_id in cat_offer_map and cat_offer_map[uncategorized_id]:
+        category_menu_ids.append(uncategorized_id)
+        categories.append({
+            "id":             uncategorized_id,
+            "index":          len(categories_db),
+            "name":           "Sem Categoria",
+            "description":    None,
+            "externalCode":   f"uncat-{store_id}",
+            "status":         "AVAILABLE",
+            "availabilityId": None,
+            "itemOfferId":    cat_offer_map[uncategorized_id],
+            "serviceType":    "DELIVERY",
+        })
+
+    # --- 3. MENUS ---
+    menus = [
+        {
+            "id":           menu_id,
+            "name":         "Delivery",
+            "description":  None,
+            "externalCode": f"menu-delivery-{store_id}",
+            "categoryId":   category_menu_ids,
+        },
+        {
+            "id":           f"menu-pickup-{store_id}",
+            "name":         "Retirar no local",
+            "description":  None,
+            "externalCode": f"menu-pickup-{store_id}",
+            "categoryId":   category_menu_ids,
+        },
+    ]
+
+    # --- 4. SERVICES ---
+    services = [{
+        "id":          service_id,
+        "status":      "AVAILABLE",
+        "serviceType": "DELIVERY",
+        "menuId":      menu_id,
+        "serviceHours": {
+            "id": hours_id,
+            "weekHours": [
+                {
+                    "dayOfWeek": [
+                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                        "FRIDAY", "SATURDAY", "SUNDAY",
+                    ],
+                    "timePeriods": {
+                        "startTime": "11:00:00.000Z",
+                        "endTime":   "23:00:00.000Z",
+                    },
+                },
+            ],
+        },
+    }]
+
+    # --- 5. OPTION GROUPS ---
+    option_groups_db = MenuOptionGroup.query.filter_by(store_id=store_id).order_by(MenuOptionGroup.index).all()
+    option_groups = []
+    option_group_ids_map = {}
+
+    for og in option_groups_db:
+        og_id = str(og.id)
+        option_group_ids_map[og.id] = og_id
+        options_list = []
+        for opt in og.options:
+            options_list.append({
+                "id":           str(opt.id),
+                "itemId":       f"sub-item-{opt.id}",
+                "status":       None,
+                "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": None},
+                "maxPermitted": opt.max_permitted,
+            })
+        option_groups.append({
+            "id":           og_id,
+            "name":         og.name,
+            "description":  og.description or None,
+            "externalCode": og.external_code,
+            "status":       og.status,
+            "minPermitted": og.min_permitted,
+            "maxPermitted": og.max_permitted,
+            "options":      options_list,
+        })
+
+    # --- 6. AVAILABILITIES ---
+    availabilities_db = MenuAvailability.query.filter_by(store_id=store_id).all()
+    availabilities = []
+    availability_ids_map = {}
+
+    for av in availabilities_db:
+        av_id = str(av.id)
+        availability_ids_map[av.id] = av_id
+        hours_list = []
+        for h in av.hours:
+            hours_list.append({
+                "dayOfWeek":  [h.day_of_week],
+                "timePeriods": {
+                    "startTime": h.start_time,
+                    "endTime":   h.end_time,
+                },
+            })
+        availabilities.append({
+            "id":        av_id,
+            "startDate": av.start_date,
+            "endDate":   av.end_date,
+            "hours":     hours_list,
+        })
+
+    # --- 7. Preenche relacionamentos nos itemOffers ---
+    for offer in item_offers:
+        offer["optionGroupsId"] = []
+        offer["availabilityId"] = []
+
+    for item in items:
+        item_db_id = int(item.id) if item.id.isdigit() else None
+        if item_db_id:
+            og_ids = db.session.query(menu_item_option_groups.c.option_group_id).filter(
+                menu_item_option_groups.c.menu_item_id == item_db_id
+            ).all()
+            offer_id = f"offer-{item_db_id}"
+            for of in item_offers:
+                if of["id"] == offer_id:
+                    of["optionGroupsId"] = [option_group_ids_map[og_id] for (og_id,) in og_ids if og_id in option_group_ids_map]
+                    break
+
+        if item_db_id:
+            av_ids = db.session.query(menu_item_availabilities.c.availability_id).filter(
+                menu_item_availabilities.c.menu_item_id == item_db_id
+            ).all()
+            offer_id = f"offer-{item_db_id}"
+            for of in item_offers:
+                if of["id"] == offer_id:
+                    of["availabilityId"] = [availability_ids_map[av_id] for (av_id,) in av_ids if av_id in availability_ids_map]
+                    break
+
+    for cat in categories_db:
+        cat_av_ids = [availability_ids_map[av_id] for (av_id,) in
+                      db.session.query(menu_category_availabilities.c.availability_id).filter(
+                          menu_category_availabilities.c.category_id == cat.id
+                      ).all() if av_id in availability_ids_map]
+        for c in categories:
+            if c["id"] == str(cat.id):
+                c["availabilityId"] = cat_av_ids
+                break
+
+    response = {
+        "id":     str(store_id),
+        "status": "AVAILABLE",
+        "basicInfo": {
+            "name":           store_name,
+            "document":       "12345678000199",
+            "corporateName":  f"{store_name} Ltda",
+            "description":    "Os melhores produtos da região!",
+            "contactEmails":  ["contato@minhaloja.com.br"],
+            "contactPhones": {
+                "commercialNumber": "55-11999999999",
+            },
+        },
+        "services":       services,
+        "menus":          menus,
+        "categories":     categories,
+        "itemOffers":     item_offers,
+        "items":          items_list,
+        "optionGroups":   option_groups,
+        "availabilities": availabilities,
+    }
+
+    print(f"[_build_menu_response] FIM | items={len(items_list)} offers={len(item_offers)} "
+          f"categories={len(categories)} optionGroups={len(option_groups)} availabilities={len(availabilities)}")
+    return response
+
+
+# =============================================================================
+#  ROOT — Retorna o cardápio completo (baseURL)
+# =============================================================================
+
+@keeta_bp.get("/")
+def keeta_root():
+    """
+    Retorna o cardápio completo no formato Open Delivery.
+    Esta é a baseURL usada pela Keeta para buscar o menu da loja.
+    Usa store_id=1 como padrão.
+    """
+    store_id = request.args.get("storeId", 1, type=int)
+    print(f"[keeta_root] GET /api/keeta | storeId={store_id}")
+    return jsonify(_build_menu_response(store_id))
+
+
+# =============================================================================
 #  WEBHOOK PRINCIPAL — A Keeta chama este endpoint para enviar eventos
 # =============================================================================
 
@@ -360,267 +632,8 @@ def get_merchant_menu():
     api_key = request.headers.get("X-API-KEY", "")
     print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId={store_id} | has_api_key={bool(api_key)}")
 
-    # --- Busca a loja no banco para preencher o basicInfo ---
-    store = Store.query.get(store_id)
-    store_name = store.name if store else "Minha Loja"
-    print(f"[Webhook][get_merchant_menu] Loja encontrada: nome='{store_name}' | store_id={store_id}")
+    response = _build_menu_response(store_id)
 
-    # --- Busca os itens do cardápio no banco ---
-    items = MenuItem.query.filter_by(store_id=store_id).all()
-    print(f"[Webhook][get_merchant_menu] {len(items)} item(ns) de menu encontrado(s) para store_id={store_id}")
-
-    # --- Busca categorias da loja ---
-    categories_db = MenuCategory.query.filter_by(store_id=store_id).order_by(MenuCategory.index).all()
-    print(f"[Webhook][get_merchant_menu] {len(categories_db)} categoria(s) encontrada(s)")
-
-    # =========================================================================
-    #  Monta as entidades Open Delivery a partir dos dados do banco
-    # =========================================================================
-
-    menu_id     = f"menu-{store_id}"
-    service_id  = f"svc-delivery-{store_id}"
-    hours_id    = f"hours-{store_id}"
-
-    # --- 1. ITEMS (produtos base, sem preço) + ITEM OFFERS (com preço) ---
-    items_list = []
-    item_offers = []
-    # Dicionário: category_id → lista de offer IDs
-    cat_offer_map = {}  # {category_db_id: [offer_id, ...]}
-
-    # Categoria "Sem categoria" para itens órfãos
-    uncategorized_id = f"cat-uncat-{store_id}"
-
-    for idx, item in enumerate(items):
-        item_id_str = str(item.id)
-        offer_id = f"offer-{item.id}"
-
-        items_list.append({
-            "id":           item_id_str,
-            "name":         item.name,
-            "description":  item.description or item.name,
-            "externalCode": item.external_code,
-            "status":       item.status,
-            "images":       [{"type": None, "URL": item.image_url, "CRC-32": None}] if item.image_url else [],
-            "nutritionalInfo": None,
-            "serving":      0,
-            "unit":         "UNIT",
-            "image":        None,
-        })
-
-        item_offers.append({
-            "id":     offer_id,
-            "itemId": item_id_str,
-            "index":  item.index if item.index is not None else idx,
-            "status": item.status,
-            "price": {
-                "originalValue": item.price,
-                "currency":      "BRL",
-                "value":         None,
-            },
-        })
-
-        # Mapeia o offer à categoria
-        cat_key = item.category_id if item.category_id else uncategorized_id
-        if cat_key not in cat_offer_map:
-            cat_offer_map[cat_key] = []
-        cat_offer_map[cat_key].append(offer_id)
-
-    # --- 2. CATEGORIES (do banco) ---
-    categories = []
-    category_menu_ids = []  # IDs de categoria para o menu
-
-    for cat in categories_db:
-        cat_id = str(cat.id)
-        category_menu_ids.append(cat_id)
-        categories.append({
-            "id":           cat_id,
-            "index":        cat.index,
-            "name":         cat.name,
-            "description":  cat.description or None,
-            "externalCode": cat.external_code,
-            "status":       cat.status,
-            "availabilityId": None,
-            "itemOfferId":  cat_offer_map.get(cat.id, []),
-            "serviceType":  "DELIVERY",
-        })
-
-    # Adiciona categoria "Sem categoria" se houver itens órfãos
-    if uncategorized_id in cat_offer_map and cat_offer_map[uncategorized_id]:
-        category_menu_ids.append(uncategorized_id)
-        categories.append({
-            "id":             uncategorized_id,
-            "index":          len(categories_db),
-            "name":           "Sem Categoria",
-            "description":    None,
-            "externalCode":   f"uncat-{store_id}",
-            "status":         "AVAILABLE",
-            "availabilityId": None,
-            "itemOfferId":    cat_offer_map[uncategorized_id],
-            "serviceType":    "DELIVERY",
-        })
-
-    # --- 3. MENUS ---
-    menus = [
-        {
-            "id":           menu_id,
-            "name":         "Delivery",
-            "description":  None,
-            "externalCode": f"menu-delivery-{store_id}",
-            "categoryId":   category_menu_ids,
-        },
-        {
-            "id":           f"menu-pickup-{store_id}",
-            "name":         "Retirar no local",
-            "description":  None,
-            "externalCode": f"menu-pickup-{store_id}",
-            "categoryId":   category_menu_ids,
-        },
-    ]
-
-    # --- 5. SERVICES (com serviceHours em UTC-0) ---
-    services = [{
-        "id":          service_id,
-        "status":      "AVAILABLE",
-        "serviceType": "DELIVERY",
-        "menuId":      menu_id,
-        "serviceHours": {
-            "id": hours_id,
-            "weekHours": [
-                {
-                    "dayOfWeek": [
-                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
-                        "FRIDAY", "SATURDAY", "SUNDAY",
-                    ],
-                    "timePeriods": {
-                        # BRT 08:00-20:00 (UTC-3) → UTC 11:00-23:00
-                        "startTime": "11:00:00.000Z",
-                        "endTime":   "23:00:00.000Z",
-                    },
-                },
-            ],
-        },
-    }]
-
-    # --- 6. Monta a resposta completa no formato Open Delivery ---
-
-    # OptionGroups: busca todos os groups da loja + respectivas options
-    option_groups_db = MenuOptionGroup.query.filter_by(store_id=store_id).order_by(MenuOptionGroup.index).all()
-    option_groups = []
-    option_group_ids_map = {}  # {db_id: open_delivery_id}
-
-    for og in option_groups_db:
-        og_id = str(og.id)
-        option_group_ids_map[og.id] = og_id
-        options_list = []
-        for opt in og.options:
-            options_list.append({
-                "id":           str(opt.id),
-                "itemId":       f"sub-item-{opt.id}",
-                "status":       None,
-                "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": None},
-                "maxPermitted": opt.max_permitted,
-            })
-        option_groups.append({
-            "id":           og_id,
-            "name":         og.name,
-            "description":  og.description or None,
-            "externalCode": og.external_code,
-            "status":       og.status,
-            "minPermitted": og.min_permitted,
-            "maxPermitted": og.max_permitted,
-            "options":      options_list,
-        })
-
-    # Availabilities: busca todos os availabilities da loja + hours
-    availabilities_db = MenuAvailability.query.filter_by(store_id=store_id).all()
-    availabilities = []
-    availability_ids_map = {}
-
-    for av in availabilities_db:
-        av_id = str(av.id)
-        availability_ids_map[av.id] = av_id
-        hours_list = []
-        for h in av.hours:
-            hours_list.append({
-                "dayOfWeek":  [h.day_of_week],
-                "timePeriods": {
-                    "startTime": h.start_time,
-                    "endTime":   h.end_time,
-                },
-            })
-        availabilities.append({
-            "id":        av_id,
-            "startDate": av.start_date,
-            "endDate":   av.end_date,
-            "hours":     hours_list,
-        })
-
-    # Atualiza itemOffers com optionGroupsId e availabilityId
-    for offer in item_offers:
-        offer["optionGroupsId"] = []
-        offer["availabilityId"] = []
-
-    # Preenche optionGroupsId nos itemOffers
-    for item in items:
-        item_db_id = int(item.id) if item.id.isdigit() else None
-        if item_db_id:
-            og_ids = db.session.query(menu_item_option_groups.c.option_group_id).filter(
-                menu_item_option_groups.c.menu_item_id == item_db_id
-            ).all()
-            offer_id = f"offer-{item_db_id}"
-            for of in item_offers:
-                if of["id"] == offer_id:
-                    of["optionGroupsId"] = [option_group_ids_map[og_id] for (og_id,) in og_ids if og_id in option_group_ids_map]
-                    break
-
-    # Preenche availabilityId nos itemOffers
-    for item in items:
-        item_db_id = int(item.id) if item.id.isdigit() else None
-        if item_db_id:
-            av_ids = db.session.query(menu_item_availabilities.c.availability_id).filter(
-                menu_item_availabilities.c.menu_item_id == item_db_id
-            ).all()
-            offer_id = f"offer-{item_db_id}"
-            for of in item_offers:
-                if of["id"] == offer_id:
-                    of["availabilityId"] = [availability_ids_map[av_id] for (av_id,) in av_ids if av_id in availability_ids_map]
-                    break
-
-    # Preenche availabilityId nas categories
-    for cat in categories_db:
-        cat_av_ids = [availability_ids_map[av_id] for (av_id,) in
-                      db.session.query(menu_category_availabilities.c.availability_id).filter(
-                          menu_category_availabilities.c.category_id == cat.id
-                      ).all() if av_id in availability_ids_map]
-        for c in categories:
-            if c["id"] == str(cat.id):
-                c["availabilityId"] = cat_av_ids
-                break
-
-    response = {
-        "id":     str(store_id),
-        "status": "AVAILABLE",
-        "basicInfo": {
-            "name":           store_name,
-            "document":       "12345678000199",
-            "corporateName":  f"{store_name} Ltda",
-            "description":    "Os melhores produtos da região!",
-            "contactEmails":  ["contato@minhaloja.com.br"],
-            "contactPhones": {
-                "commercialNumber": "55-11999999999",
-            },
-        },
-        "services":       services,
-        "menus":          menus,
-        "categories":     categories,
-        "itemOffers":     item_offers,
-        "items":          items_list,
-        "optionGroups":   option_groups,
-        "availabilities": availabilities,
-    }
-
-    print(f"[Webhook][get_merchant_menu] Resposta montada | store_id={store_id} | "
-          f"items={len(items_list)} | offers={len(item_offers)} | categories={len(categories)} | menus={len(menus)}")
     print(f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id}")
     return jsonify(response)
 
