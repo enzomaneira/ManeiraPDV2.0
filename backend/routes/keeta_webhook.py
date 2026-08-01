@@ -31,7 +31,7 @@ from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
 import keeta_client
 import os
-from models import Order, MenuItem, StoreConfig
+from models import Order, MenuItem, Store, StoreConfig
 from database import db
 from routes.orders import save_order_from_keeta
 from auth_utils import login_required
@@ -292,6 +292,23 @@ def receive_authorization_event():
 # =============================================================================
 #  ENDPOINT DO CARDÁPIO — A Keeta chama este endpoint para buscar o menu
 # =============================================================================
+#
+#  Formato Open Delivery (GET /v1/merchant) exigido pela Keeta:
+#    - https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints/getmerchant
+#
+#  Estrutura esperada pela Keeta:
+#    {
+#      id, status, basicInfo (com contactPhones e contactEmails),
+#      services (com serviceHours em UTC-0),
+#      menus, categories, itemOffers, items,
+#      optionGroups (opcional), availabilities (opcional)
+#    }
+#
+#  IMPORTANTE: externalCode em cada entidade é o ID do produto no SISTEMA LOCAL
+#  (nosso banco). A Keeta usa esse código para referenciar itens nos pedidos.
+#
+#  Horário mock: Seg-Dom 08:00-20:00 (BRT = UTC-3) → 11:00-23:00 UTC
+# =============================================================================
 
 @keeta_bp.get("/menu")
 def get_merchant_menu():
@@ -308,41 +325,126 @@ def get_merchant_menu():
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints
     """
     store_id = request.args.get("storeId", 1, type=int)
-    print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId (query param)={store_id}")
+    api_key = request.headers.get("X-API-KEY", "")
+    print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId={store_id} | has_api_key={bool(api_key)}")
 
+    # --- Busca a loja no banco para preencher o basicInfo ---
+    store = Store.query.get(store_id)
+    store_name = store.name if store else "Minha Loja"
+    print(f"[Webhook][get_merchant_menu] Loja encontrada: nome='{store_name}' | store_id={store_id}")
+
+    # --- Busca os itens do cardápio no banco ---
     items = MenuItem.query.filter_by(store_id=store_id).all()
     print(f"[Webhook][get_merchant_menu] {len(items)} item(ns) de menu encontrado(s) para store_id={store_id}")
 
-    # Formata o cardápio no padrão Open Delivery esperado pela Keeta
-    menu_items_formatted = []
+    # =========================================================================
+    #  Monta as entidades Open Delivery a partir dos MenuItems do banco
+    # =========================================================================
+
+    # IDs mock para entidades estruturais (uma por loja)
+    category_id = f"cat-{store_id}"
+    menu_id     = f"menu-{store_id}"
+    service_id  = f"svc-delivery-{store_id}"
+    hours_id    = f"hours-{store_id}"
+
+    # --- 1. ITEMS (produtos base, sem preço) ---
+    items_list = []
     for item in items:
-        menu_items_formatted.append({
-            "id":          str(item.id),
-            "name":        item.name,
-            "description": "",
+        items_list.append({
+            "id":           str(item.id),
+            "name":         item.name,
+            "description":  item.name,
             "externalCode": str(item.id),
-            "price": {
-                "value":        item.price,
-                "currency":     "BRL",
-                "originalValue": item.price,
-            },
-            "status": "AVAILABLE",
+            "status":       "AVAILABLE",
         })
 
+    # --- 2. ITEM OFFERS (preço de cada item, vinculado ao item pelo itemId) ---
+    item_offers  = []
+    category_offer_ids = []  # lista de IDs de ItemOffer para a categoria
+
+    for idx, item in enumerate(items):
+        offer_id = f"offer-{item.id}"
+        item_offers.append({
+            "id":     offer_id,
+            "itemId": str(item.id),
+            "index":  idx,
+            "status": "AVAILABLE",
+            "price": {
+                "value":         item.price,
+                "originalValue": item.price,
+            },
+        })
+        category_offer_ids.append(offer_id)
+
+    # --- 3. CATEGORIES ---
+    categories = [{
+        "id":           category_id,
+        "index":        0,
+        "name":         "Cardápio",
+        "externalCode": f"cat-{store_id}",
+        "status":       "AVAILABLE",
+        "itemOfferId":  category_offer_ids,
+    }]
+
+    # --- 4. MENUS ---
+    menus = [{
+        "id":           menu_id,
+        "name":         "Menu Principal",
+        "description":  "Cardápio completo da loja",
+        "externalCode": f"menu-{store_id}",
+        "categoryId":   [category_id],
+    }]
+
+    # --- 5. SERVICES (com serviceHours em UTC-0) ---
+    services = [{
+        "id":          service_id,
+        "status":      "AVAILABLE",
+        "serviceType": "DELIVERY",
+        "menuId":      menu_id,
+        "serviceHours": {
+            "id": hours_id,
+            "weekHours": [
+                {
+                    "dayOfWeek": [
+                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                        "FRIDAY", "SATURDAY", "SUNDAY",
+                    ],
+                    "timePeriods": {
+                        # BRT 08:00-20:00 (UTC-3) → UTC 11:00-23:00
+                        "startTime": "11:00:00.000Z",
+                        "endTime":   "23:00:00.000Z",
+                    },
+                },
+            ],
+        },
+    }]
+
+    # --- 6. Monta a resposta completa no formato Open Delivery ---
     response = {
-        "id":   str(store_id),
-        "menu": [
-            {
-                "id":          "cat-1",
-                "name":        "Cardápio",
-                "externalCode": "cat-1",
-                "status":      "AVAILABLE",
-                "items":       menu_items_formatted,
-            }
-        ],
-        "services": [],
+        "id":     str(store_id),
+        "status": "AVAILABLE",
+        "basicInfo": {
+            "name":           store_name,
+            "document":       "12345678000199",       # mock
+            "corporateName":  f"{store_name} Ltda",
+            "description":    "Os melhores produtos da região!",
+            "contactEmails":  ["contato@minhaloja.com.br"],
+            "contactPhones": {
+                "commercialNumber": "55-11999999999",  # mock
+            },
+        },
+        "services":      services,
+        "menus":         menus,
+        "categories":    categories,
+        "itemOffers":    item_offers,
+        "items":         items_list,
+        "optionGroups":  [],
+        "availabilities": [],
     }
-    print(f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id} | total_itens={len(menu_items_formatted)}")
+
+    print(f"[Webhook][get_merchant_menu] Resposta montada | store_id={store_id} | "
+          f"items={len(items_list)} | offers={len(item_offers)} | categories={len(categories)} | menus={len(menus)}")
+    print(f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id}")
     return jsonify(response)
 
 

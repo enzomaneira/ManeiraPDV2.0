@@ -6,6 +6,7 @@ import Sidebar from '../components/Sidebar';
 import OrderDetailModal from '../components/OrderDetailModal';
 import OrdersPage from './OrdersPage';
 import HistoryPage from './HistoryPage';
+import MenuPage from './MenuPage';
 import SettingsPage from './SettingsPage';
 import { orderService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -203,7 +204,7 @@ function PDVApp() {
           {activeTab === 'orders' && <OrdersPage orders={orders} config={config} onSelectOrder={setSelectedOrder} />}
           {activeTab === 'history' && <HistoryPage orders={orders} />}
           {activeTab === 'settings' && <SettingsPage config={config} setConfig={setConfig} />}
-          {activeTab === 'menu' && <div className="flex items-center justify-center h-full text-slate-400 font-medium">Em construção...</div>}
+          {activeTab === 'menu' && <MenuPage />}
         </div>
       </main>
 

@@ -55,4 +55,10 @@ export const orderService = {
     }),
 };
 
+export const menuService = {
+    getAll: () => api.get('/stores/me/menu'),
+    create: (name, price) => api.post('/stores/me/menu', { name, price }),
+    delete: (itemId) => api.delete(`/stores/me/menu/${itemId}`),
+};
+
 export default api;

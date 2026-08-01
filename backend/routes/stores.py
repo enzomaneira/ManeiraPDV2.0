@@ -91,3 +91,32 @@ def create_my_menu_item():
 
     print(f"[Stores][create_my_menu_item] FIM (sucesso) | item_id={item.id} | store_id={store.id}")
     return jsonify(item.to_dict()), 201
+
+
+@stores_bp.delete("/me/menu/<int:item_id>")
+@login_required
+def delete_my_menu_item(item_id):
+    print(f"\n[Stores][delete_my_menu_item] INÍCIO | user_id={g.current_user.id} | item_id={item_id}")
+
+    store = _get_store_or_404()
+    if not store:
+        print(f"[Stores][delete_my_menu_item] FALHA (404): usuário sem restaurante vinculado | user_id={g.current_user.id}")
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+
+    item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
+    if not item:
+        print(f"[Stores][delete_my_menu_item] FALHA (404): item não encontrado ou não pertence a esta loja | item_id={item_id} | store_id={store.id}")
+        return jsonify({"error": "Item não encontrado."}), 404
+
+    try:
+        item_name = item.name
+        db.session.delete(item)
+        db.session.commit()
+        print(f"[Stores][delete_my_menu_item] Item '{item_name}' (id={item_id}) removido da loja store_id={store.id}")
+    except Exception as e:
+        db.session.rollback()
+        print(f"[Stores][delete_my_menu_item] ERRO ao remover item. Rollback executado. Detalhes: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao remover item do cardápio."}), 500
+
+    print(f"[Stores][delete_my_menu_item] FIM (sucesso) | item_id={item_id} | store_id={store.id}")
+    return jsonify({"message": "Item removido com sucesso."}), 200
