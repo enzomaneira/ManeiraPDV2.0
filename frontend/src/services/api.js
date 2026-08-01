@@ -55,9 +55,20 @@ export const orderService = {
     }),
 };
 
+export const categoryService = {
+    getAll: () => api.get('/stores/me/categories'),
+    create: (data) => api.post('/stores/me/categories', data),
+    update: (categoryId, data) => api.put(`/stores/me/categories/${categoryId}`, data),
+    delete: (categoryId) => api.delete(`/stores/me/categories/${categoryId}`),
+};
+
 export const menuService = {
-    getAll: () => api.get('/stores/me/menu'),
-    create: (name, price) => api.post('/stores/me/menu', { name, price }),
+    getAll: (categoryId) => {
+        const params = categoryId ? { categoryId } : {};
+        return api.get('/stores/me/menu', { params });
+    },
+    create: (data) => api.post('/stores/me/menu', data),
+    update: (itemId, data) => api.put(`/stores/me/menu/${itemId}`, data),
     delete: (itemId) => api.delete(`/stores/me/menu/${itemId}`),
 };
 

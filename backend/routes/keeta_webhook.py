@@ -31,7 +31,7 @@ from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
 import keeta_client
 import os
-from models import Order, MenuItem, Store, StoreConfig
+from models import Order, MenuItem, MenuCategory, Store, StoreConfig
 from database import db
 from routes.orders import save_order_from_keeta
 from auth_utils import login_required
@@ -337,62 +337,93 @@ def get_merchant_menu():
     items = MenuItem.query.filter_by(store_id=store_id).all()
     print(f"[Webhook][get_merchant_menu] {len(items)} item(ns) de menu encontrado(s) para store_id={store_id}")
 
+    # --- Busca categorias da loja ---
+    categories_db = MenuCategory.query.filter_by(store_id=store_id).order_by(MenuCategory.index).all()
+    print(f"[Webhook][get_merchant_menu] {len(categories_db)} categoria(s) encontrada(s)")
+
     # =========================================================================
-    #  Monta as entidades Open Delivery a partir dos MenuItems do banco
+    #  Monta as entidades Open Delivery a partir dos dados do banco
     # =========================================================================
 
-    # IDs mock para entidades estruturais (uma por loja)
-    category_id = f"cat-{store_id}"
     menu_id     = f"menu-{store_id}"
     service_id  = f"svc-delivery-{store_id}"
     hours_id    = f"hours-{store_id}"
 
-    # --- 1. ITEMS (produtos base, sem preço) ---
+    # --- 1. ITEMS (produtos base, sem preço) + ITEM OFFERS (com preço) ---
     items_list = []
-    for item in items:
-        items_list.append({
-            "id":           str(item.id),
-            "name":         item.name,
-            "description":  item.name,
-            "externalCode": str(item.id),
-            "status":       "AVAILABLE",
-        })
+    item_offers = []
+    # Dicionário: category_id → lista de offer IDs
+    cat_offer_map = {}  # {category_db_id: [offer_id, ...]}
 
-    # --- 2. ITEM OFFERS (preço de cada item, vinculado ao item pelo itemId) ---
-    item_offers  = []
-    category_offer_ids = []  # lista de IDs de ItemOffer para a categoria
+    # Categoria "Sem categoria" para itens órfãos
+    uncategorized_id = f"cat-uncat-{store_id}"
 
     for idx, item in enumerate(items):
+        item_id_str = str(item.id)
         offer_id = f"offer-{item.id}"
+
+        items_list.append({
+            "id":           item_id_str,
+            "name":         item.name,
+            "description":  item.description or item.name,
+            "externalCode": item.external_code,
+            "status":       item.status,
+        })
+
         item_offers.append({
             "id":     offer_id,
-            "itemId": str(item.id),
-            "index":  idx,
-            "status": "AVAILABLE",
+            "itemId": item_id_str,
+            "index":  item.index if item.index is not None else idx,
+            "status": item.status,
             "price": {
                 "value":         item.price,
-                "originalValue": item.price,
+                "originalValue": item.original_price or item.price,
             },
         })
-        category_offer_ids.append(offer_id)
 
-    # --- 3. CATEGORIES ---
-    categories = [{
-        "id":           category_id,
-        "index":        0,
-        "name":         "Cardápio",
-        "externalCode": f"cat-{store_id}",
-        "status":       "AVAILABLE",
-        "itemOfferId":  category_offer_ids,
-    }]
+        # Mapeia o offer à categoria
+        cat_key = item.category_id if item.category_id else uncategorized_id
+        if cat_key not in cat_offer_map:
+            cat_offer_map[cat_key] = []
+        cat_offer_map[cat_key].append(offer_id)
 
-    # --- 4. MENUS ---
+    # --- 2. CATEGORIES (do banco) ---
+    categories = []
+    category_menu_ids = []  # IDs de categoria para o menu
+
+    for cat in categories_db:
+        cat_id = str(cat.id)
+        category_menu_ids.append(cat_id)
+        categories.append({
+            "id":           cat_id,
+            "index":        cat.index,
+            "name":         cat.name,
+            "description":  cat.description or "",
+            "externalCode": cat.external_code,
+            "status":       cat.status,
+            "itemOfferId":  cat_offer_map.get(cat.id, []),
+        })
+
+    # Adiciona categoria "Sem categoria" se houver itens órfãos
+    if uncategorized_id in cat_offer_map and cat_offer_map[uncategorized_id]:
+        category_menu_ids.append(uncategorized_id)
+        categories.append({
+            "id":           uncategorized_id,
+            "index":        len(categories_db),
+            "name":         "Sem Categoria",
+            "description":  "Itens sem categoria definida",
+            "externalCode": f"uncat-{store_id}",
+            "status":       "AVAILABLE",
+            "itemOfferId":  cat_offer_map[uncategorized_id],
+        })
+
+    # --- 3. MENUS ---
     menus = [{
         "id":           menu_id,
         "name":         "Menu Principal",
         "description":  "Cardápio completo da loja",
         "externalCode": f"menu-{store_id}",
-        "categoryId":   [category_id],
+        "categoryId":   category_menu_ids,
     }]
 
     # --- 5. SERVICES (com serviceHours em UTC-0) ---

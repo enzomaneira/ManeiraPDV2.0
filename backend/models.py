@@ -10,7 +10,7 @@ from database import db
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 
-print("[Models][INIT] Módulo models.py carregado. Registrando classes User, Store, StoreConfig, MenuItem, Order, OrderItem...")
+print("[Models][INIT] Módulo models.py carregado. Registrando classes User, Store, StoreConfig, MenuCategory, MenuItem, Order, OrderItem...")
 
 
 class User(db.Model):
@@ -105,24 +105,79 @@ class StoreConfig(db.Model):
         }
 
 
+class MenuCategory(db.Model):
+    """
+    Tabela: menu_categories
+    Categorias do cardápio (ex: "Pizzas", "Bebidas", "Sobremesas").
+    Agrupa os itens (MenuItem) por categoria.
+    Mapeia para a entidade `categories` do Open Delivery.
+    """
+    __tablename__ = "menu_categories"
+
+    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    store_id      = db.Column(db.Integer, nullable=False, index=True)
+    name          = db.Column(db.String(150), nullable=False)
+    description   = db.Column(db.String(500), nullable=True, default="")
+    external_code = db.Column(db.String(100), nullable=False)  # código externo (PDV Code)
+    index         = db.Column(db.Integer, nullable=False, default=0)
+    status        = db.Column(db.String(20), nullable=False, default="AVAILABLE")
+
+    # Relacionamento com os itens
+    items = db.relationship("MenuItem", back_populates="category", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id":           self.id,
+            "storeId":      self.store_id,
+            "name":         self.name,
+            "description":  self.description or "",
+            "externalCode": self.external_code,
+            "index":        self.index,
+            "status":       self.status,
+            "itemCount":    len(self.items) if self.items else 0,
+            "items":        [i.to_dict() for i in self.items] if self.items else [],
+        }
+
+
 class MenuItem(db.Model):
     """
     Tabela: menu_items
     Itens do cardápio de uma loja.
+
+    Mapeia para as entidades `items` + `itemOffers` do Open Delivery:
+      - item:        id, name, description, externalCode, status
+      - itemOffer:   id, price (value/originalValue), vinculado ao item
     """
     __tablename__ = "menu_items"
 
-    id       = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    store_id = db.Column(db.Integer, nullable=False)
-    name     = db.Column(db.String(255), nullable=False)
-    price    = db.Column(db.Float, nullable=False)
+    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    store_id      = db.Column(db.Integer, nullable=False, index=True)
+    category_id   = db.Column(db.Integer, db.ForeignKey("menu_categories.id"), nullable=True)
+    name          = db.Column(db.String(150), nullable=False)
+    description   = db.Column(db.String(500), nullable=True, default="")
+    external_code = db.Column(db.String(100), nullable=False)  # código externo (PDV Code)
+    price         = db.Column(db.Float, nullable=False)
+    original_price = db.Column(db.Float, nullable=True)  # preço original (se houver desconto)
+    status        = db.Column(db.String(20), nullable=False, default="AVAILABLE")
+    image_url     = db.Column(db.String(500), nullable=True)
+    index         = db.Column(db.Integer, nullable=False, default=0)
+
+    category = db.relationship("MenuCategory", back_populates="items")
 
     def to_dict(self):
         return {
-            "id":      self.id,
-            "storeId": self.store_id,
-            "name":    self.name,
-            "price":   self.price,
+            "id":            self.id,
+            "storeId":       self.store_id,
+            "categoryId":    self.category_id,
+            "categoryName":  self.category.name if self.category else None,
+            "name":          self.name,
+            "description":   self.description or "",
+            "externalCode":  self.external_code,
+            "price":         self.price,
+            "originalPrice": self.original_price or self.price,
+            "status":        self.status,
+            "imageUrl":      self.image_url,
+            "index":         self.index,
         }
 
 

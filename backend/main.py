@@ -147,6 +147,21 @@ def _run_lightweight_migrations():
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS other_fees_total DOUBLE PRECISION",
         # OrderItem: opções/adicionais do item
         "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
+        # MenuItem: novos campos para suportar Open Delivery (categories, description, externalCode, status, image)
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS description VARCHAR(500) DEFAULT ''",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS external_code VARCHAR(100)",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS category_id INTEGER",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS original_price DOUBLE PRECISION",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'AVAILABLE'",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS image_url VARCHAR(500)",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS index INTEGER DEFAULT 0",
+    ]
+
+    # Preenche external_code com o id para registros existentes que ficaram NULL
+    backfill_statements = [
+        "UPDATE menu_items SET external_code = CAST(id AS VARCHAR) WHERE external_code IS NULL",
+        "UPDATE menu_items SET original_price = price WHERE original_price IS NULL",
+        "UPDATE menu_items SET status = 'AVAILABLE' WHERE status IS NULL",
     ]
 
     for stmt in statements:
@@ -157,6 +172,15 @@ def _run_lightweight_migrations():
         except Exception as e:
             db.session.rollback()
             print(f"[DB][_run_lightweight_migrations] AVISO ao executar '{stmt}': {type(e).__name__}: {e}")
+
+    for stmt in backfill_statements:
+        try:
+            db.session.execute(text(stmt))
+            db.session.commit()
+            print(f"[DB][_run_lightweight_migrations] Backfill OK: {stmt}")
+        except Exception as e:
+            db.session.rollback()
+            print(f"[DB][_run_lightweight_migrations] AVISO no backfill '{stmt}': {type(e).__name__}: {e}")
 
     print("[DB][_run_lightweight_migrations] FIM")
 
