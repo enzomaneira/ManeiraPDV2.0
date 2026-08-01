@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { categoryService, menuService } from '../services/api';
+import { categoryService, menuService, optionGroupService, availabilityService } from '../services/api';
 import {
   Plus, Trash2, Utensils, Loader2, AlertCircle, CheckCircle,
   PackageOpen, FolderPlus, Edit3, ChevronRight, Tag, Image, Layers,
-  X, Save, FolderOpen
+  X, Save, FolderOpen, Clock, ListPlus, CalendarDays
 } from 'lucide-react';
 import { formatCurrency } from '../utils/formatters';
 
@@ -33,16 +33,37 @@ export default function MenuPage() {
   // --- Deleting ---
   const [deletingId, setDeletingId] = useState(null);
 
+  // --- OptionGroups & Availabilities ---
+  const [optionGroups, setOptionGroups] = useState([]);
+  const [availabilities, setAvailabilities] = useState([]);
+  const [showOGSection, setShowOGSection] = useState(false);
+  const [showAvailSection, setShowAvailSection] = useState(false);
+
+  // --- Form OptionGroup ---
+  const [ogForm, setOgForm] = useState({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM' });
+  const [ogSaving, setOgSaving] = useState(false);
+  // --- Form Option (dentro de um group) ---
+  const [optForm, setOptForm] = useState({ name: '', description: '', externalCode: '', price: '0' });
+  const [optTargetGroup, setOptTargetGroup] = useState(null);
+  const [optSaving, setOptSaving] = useState(false);
+  // --- Form Availability ---
+  const [availForm, setAvailForm] = useState({ name: '', startDate: '', endDate: '', hours: [{ dayOfWeek: 'MONDAY', startTime: '00:00:00.000Z', endTime: '23:59:00.000Z' }] });
+  const [availSaving, setAvailSaving] = useState(false);
+
   // ===== Carrega dados =====
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [catRes, itemRes] = await Promise.all([
+      const [catRes, itemRes, ogRes, avRes] = await Promise.all([
         categoryService.getAll(),
         menuService.getAll(selectedCategoryId || undefined),
+        optionGroupService.getAll(),
+        availabilityService.getAll(),
       ]);
       setCategories(catRes.data || []);
       setItems(itemRes.data || []);
+      setOptionGroups(ogRes.data || []);
+      setAvailabilities(avRes.data || []);
     } catch (error) {
       console.error('Erro ao carregar cardápio:', error);
       setMessage({ type: 'error', text: 'Erro ao carregar dados.' });
@@ -214,6 +235,58 @@ export default function MenuPage() {
       setDeletingId(null);
       setTimeout(() => setMessage(null), 3000);
     }
+  };
+
+  // ===== OptionGroup: criar =====
+  const handleCreateOptionGroup = async (e) => {
+    e.preventDefault();
+    if (!ogForm.name.trim()) return;
+    setOgSaving(true);
+    try {
+      await optionGroupService.create(ogForm);
+      setMessage({ type: 'success', text: 'Grupo de opções criado!' });
+      setOgForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM' });
+      fetchData();
+    } catch (e) { setMessage({ type: 'error', text: 'Erro ao criar grupo.' }); }
+    finally { setOgSaving(false); setTimeout(() => setMessage(null), 3000); }
+  };
+
+  // ===== Option: criar dentro de um grupo =====
+  const handleCreateOption = async (e) => {
+    e.preventDefault();
+    if (!optForm.name.trim() || !optTargetGroup) return;
+    setOptSaving(true);
+    try {
+      await optionGroupService.createOption(optTargetGroup, optForm);
+      setMessage({ type: 'success', text: 'Opção adicionada!' });
+      setOptForm({ name: '', description: '', externalCode: '', price: '0' });
+      setOptTargetGroup(null);
+      fetchData();
+    } catch (e) { setMessage({ type: 'error', text: 'Erro ao adicionar opção.' }); }
+    finally { setOptSaving(false); setTimeout(() => setMessage(null), 3000); }
+  };
+
+  // ===== Availability: criar =====
+  const handleCreateAvailability = async (e) => {
+    e.preventDefault();
+    if (!availForm.name.trim()) return;
+    setAvailSaving(true);
+    try {
+      await availabilityService.create(availForm);
+      setMessage({ type: 'success', text: 'Disponibilidade criada!' });
+      setAvailForm({ name: '', startDate: '', endDate: '', hours: [{ dayOfWeek: 'MONDAY', startTime: '00:00:00.000Z', endTime: '23:59:00.000Z' }] });
+      fetchData();
+    } catch (e) { setMessage({ type: 'error', text: 'Erro ao criar disponibilidade.' }); }
+    finally { setAvailSaving(false); setTimeout(() => setMessage(null), 3000); }
+  };
+
+  // ===== Vincula/Desvincula OptionGroup ao item =====
+  const handleToggleOptionGroup = async (itemId, groupId, isLinked) => {
+    try {
+      if (isLinked) await menuService.unlinkOptionGroup(itemId, groupId);
+      else await menuService.linkOptionGroup(itemId, groupId);
+      fetchData();
+    } catch (e) { setMessage({ type: 'error', text: 'Erro ao alterar vínculo.' }); setTimeout(() => setMessage(null), 3000); }
   };
 
   // ===== Estatísticas =====
@@ -483,6 +556,123 @@ export default function MenuPage() {
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* ================================================================= */}
+      {/*  SEÇÃO: GRUPOS DE OPÇÕES E DISPONIBILIDADE                         */}
+      {/* ================================================================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* ---- Option Groups ---- */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between cursor-pointer" onClick={() => setShowOGSection(!showOGSection)}>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-100 text-purple-700 rounded-lg"><ListPlus className="w-5 h-5" /></div>
+              <div>
+                <h3 className="font-bold text-lg text-slate-800">Grupos de Opções (Complementos)</h3>
+                <p className="text-xs text-slate-400">{optionGroups.length} grupo(s) · min/max permitted, preço adicional</p>
+              </div>
+            </div>
+            <ChevronRight className={`w-5 h-5 text-slate-400 transition-transform ${showOGSection ? 'rotate-90' : ''}`} />
+          </div>
+          {showOGSection && (
+            <div className="p-6 space-y-4">
+              {/* Criar novo OptionGroup */}
+              <form onSubmit={handleCreateOptionGroup} className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-sm font-bold text-slate-600">Novo Grupo de Opções</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <input type="text" placeholder="Nome *" value={ogForm.name} onChange={e => setOgForm({...ogForm, name: e.target.value})} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                  <input type="text" placeholder="Cód. Externo" value={ogForm.externalCode} onChange={e => setOgForm({...ogForm, externalCode: e.target.value})} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                  <select value={ogForm.priceMethod} onChange={e => setOgForm({...ogForm, priceMethod: e.target.value})} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm">
+                    <option value="SUM">Soma (SUM)</option><option value="HIGHEST">Maior (HIGHEST)</option><option value="LOWEST">Menor (LOWEST)</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-4">
+                  <label className="text-xs text-slate-500">Min: <input type="number" min="0" value={ogForm.minPermitted} onChange={e => setOgForm({...ogForm, minPermitted: parseInt(e.target.value)||0})} className="w-16 px-2 py-1 border border-slate-200 rounded text-sm" /></label>
+                  <label className="text-xs text-slate-500">Max: <input type="number" min="1" value={ogForm.maxPermitted} onChange={e => setOgForm({...ogForm, maxPermitted: parseInt(e.target.value)||1})} className="w-16 px-2 py-1 border border-slate-200 rounded text-sm" /></label>
+                  <button type="submit" disabled={ogSaving} className="ml-auto px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-bold hover:bg-purple-700 disabled:opacity-50">
+                    {ogSaving ? '...' : 'Criar Grupo'}
+                  </button>
+                </div>
+              </form>
+
+              {/* Lista de OptionGroups */}
+              {optionGroups.map(og => (
+                <div key={og.id} className="border border-slate-200 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <span className="font-bold text-slate-700">{og.name}</span>
+                      <span className="text-xs text-slate-400 ml-2">({og.optionCount} opções) · {og.priceMethod} · min={og.minPermitted} max={og.maxPermitted}</span>
+                    </div>
+                    <button onClick={async () => { await optionGroupService.delete(og.id); fetchData(); }} className="text-xs text-red-400 hover:text-red-600">🗑️</button>
+                  </div>
+                  {/* Opções dentro do grupo */}
+                  <div className="space-y-1 ml-2">
+                    {og.options?.map(opt => (
+                      <div key={opt.id} className="flex items-center justify-between text-sm text-slate-600">
+                        <span>• {opt.name} {opt.price > 0 && <span className="text-xs text-indigo-500">(+R${opt.price.toFixed(2)})</span>}</span>
+                        <button onClick={async () => { await optionGroupService.deleteOption(og.id, opt.id); fetchData(); }} className="text-xs text-slate-300 hover:text-red-400">×</button>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Form rápido para adicionar opção */}
+                  <form onSubmit={handleCreateOption} className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-100">
+                    <input type="text" placeholder="Nova opção" value={optForm.name} onChange={e => setOptForm({...optForm, name: e.target.value})} onFocus={() => setOptTargetGroup(og.id)} className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded" />
+                    <input type="number" step="0.01" placeholder="R$" value={optForm.price} onChange={e => setOptForm({...optForm, price: e.target.value})} onFocus={() => setOptTargetGroup(og.id)} className="w-20 px-2 py-1.5 text-xs border border-slate-200 rounded" />
+                    <button type="submit" disabled={optSaving || optTargetGroup !== og.id} className="px-2 py-1.5 bg-purple-100 text-purple-700 rounded text-xs font-bold">+</button>
+                  </form>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ---- Availabilities ---- */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between cursor-pointer" onClick={() => setShowAvailSection(!showAvailSection)}>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-teal-100 text-teal-700 rounded-lg"><CalendarDays className="w-5 h-5" /></div>
+              <div>
+                <h3 className="font-bold text-lg text-slate-800">Disponibilidade por Horário</h3>
+                <p className="text-xs text-slate-400">{availabilities.length} regra(s) · defina datas e dias da semana</p>
+              </div>
+            </div>
+            <ChevronRight className={`w-5 h-5 text-slate-400 transition-transform ${showAvailSection ? 'rotate-90' : ''}`} />
+          </div>
+          {showAvailSection && (
+            <div className="p-6 space-y-4">
+              <form onSubmit={handleCreateAvailability} className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <p className="text-sm font-bold text-slate-600">Nova Regra de Disponibilidade</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <input type="text" placeholder="Nome *" value={availForm.name} onChange={e => setAvailForm({...availForm, name: e.target.value})} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                  <input type="date" value={availForm.startDate} onChange={e => setAvailForm({...availForm, startDate: e.target.value})} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                  <input type="date" value={availForm.endDate} onChange={e => setAvailForm({...availForm, endDate: e.target.value})} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                </div>
+                <button type="submit" disabled={availSaving} className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-bold hover:bg-teal-700 disabled:opacity-50">
+                  {availSaving ? '...' : 'Criar Disponibilidade'}
+                </button>
+              </form>
+
+              {availabilities.map(av => (
+                <div key={av.id} className="border border-slate-200 rounded-xl p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-700">{av.name}</span>
+                    <button onClick={async () => { await availabilityService.delete(av.id); fetchData(); }} className="text-xs text-red-400 hover:text-red-600">🗑️</button>
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    {av.startDate && av.endDate ? `${av.startDate} até ${av.endDate}` : 'Sem limite de data'}
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {av.hours?.map((h, i) => (
+                      <span key={i} className="text-[10px] px-2 py-0.5 bg-slate-100 rounded-full text-slate-600 font-medium">
+                        {h.dayOfWeek} {h.startTime?.slice(0,5)}-{h.endTime?.slice(0,5)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

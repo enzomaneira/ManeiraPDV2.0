@@ -70,6 +70,29 @@ export const menuService = {
     create: (data) => api.post('/stores/me/menu', data),
     update: (itemId, data) => api.put(`/stores/me/menu/${itemId}`, data),
     delete: (itemId) => api.delete(`/stores/me/menu/${itemId}`),
+    // OptionGroups
+    linkOptionGroup: (itemId, optionGroupId) => api.post(`/stores/me/menu/${itemId}/option-groups`, { optionGroupId }),
+    unlinkOptionGroup: (itemId, groupId) => api.delete(`/stores/me/menu/${itemId}/option-groups/${groupId}`),
+    // Availabilities
+    linkAvailability: (itemId, availabilityId) => api.post(`/stores/me/menu/${itemId}/availabilities`, { availabilityId }),
+    unlinkAvailability: (itemId, availId) => api.delete(`/stores/me/menu/${itemId}/availabilities/${availId}`),
+};
+
+export const optionGroupService = {
+    getAll: () => api.get('/stores/me/option-groups'),
+    create: (data) => api.post('/stores/me/option-groups', data),
+    update: (groupId, data) => api.put(`/stores/me/option-groups/${groupId}`, data),
+    delete: (groupId) => api.delete(`/stores/me/option-groups/${groupId}`),
+    // Options
+    createOption: (groupId, data) => api.post(`/stores/me/option-groups/${groupId}/options`, data),
+    deleteOption: (groupId, optionId) => api.delete(`/stores/me/option-groups/${groupId}/options/${optionId}`),
+};
+
+export const availabilityService = {
+    getAll: () => api.get('/stores/me/availabilities'),
+    create: (data) => api.post('/stores/me/availabilities', data),
+    update: (availId, data) => api.put(`/stores/me/availabilities/${availId}`, data),
+    delete: (availId) => api.delete(`/stores/me/availabilities/${availId}`),
 };
 
 export default api;

@@ -10,7 +10,7 @@ from database import db
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 
-print("[Models][INIT] Módulo models.py carregado. Registrando classes User, Store, StoreConfig, MenuCategory, MenuItem, Order, OrderItem...")
+print("[Models][INIT] Módulo models.py carregado. Registrando classes User, Store, StoreConfig, MenuCategory, MenuItem, MenuAvailability, MenuOptionGroup, MenuOption, Order, OrderItem...")
 
 
 class User(db.Model):
@@ -179,6 +179,194 @@ class MenuItem(db.Model):
             "imageUrl":      self.image_url,
             "index":         self.index,
         }
+
+
+# =============================================================================
+#  TABELAS DE ASSOCIAÇÃO (many-to-many)
+# =============================================================================
+
+# Item ↔ OptionGroup (um item pode ter vários grupos de opções)
+menu_item_option_groups = db.Table(
+    "menu_item_option_groups",
+    db.Column("menu_item_id", db.Integer, db.ForeignKey("menu_items.id", ondelete="CASCADE"), primary_key=True),
+    db.Column("option_group_id", db.Integer, db.ForeignKey("menu_option_groups.id", ondelete="CASCADE"), primary_key=True),
+)
+
+# Item ↔ Availability (um item pode ter várias regras de disponibilidade)
+menu_item_availabilities = db.Table(
+    "menu_item_availabilities",
+    db.Column("menu_item_id", db.Integer, db.ForeignKey("menu_items.id", ondelete="CASCADE"), primary_key=True),
+    db.Column("availability_id", db.Integer, db.ForeignKey("menu_availabilities.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+# =============================================================================
+#  OPTION GROUPS (grupos de opções / complementos / subitens)
+# =============================================================================
+
+class MenuOptionGroup(db.Model):
+    """
+    Tabela: menu_option_groups
+    Grupos de opções para itens do cardápio.
+    Ex: "Escolha o sabor da pizza", "Adicionais", "Tamanho"
+
+    Mapeia para a entidade `optionGroups` do Open Delivery.
+    """
+    __tablename__ = "menu_option_groups"
+
+    id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    store_id      = db.Column(db.Integer, nullable=False, index=True)
+    name          = db.Column(db.String(150), nullable=False)
+    description   = db.Column(db.String(500), nullable=True, default="")
+    external_code = db.Column(db.String(100), nullable=False)
+    index         = db.Column(db.Integer, nullable=False, default=0)
+    status        = db.Column(db.String(20), nullable=False, default="AVAILABLE")
+    min_permitted = db.Column(db.Integer, nullable=False, default=0)   # mínimo de opções que devem ser escolhidas
+    max_permitted = db.Column(db.Integer, nullable=False, default=1)   # máximo de opções que podem ser escolhidas
+    price_method  = db.Column(db.String(10), nullable=False, default="SUM")  # SUM, HIGHEST, LOWEST
+
+    # Opções dentro deste grupo
+    options = db.relationship("MenuOption", back_populates="option_group",
+                              cascade="all, delete-orphan", order_by="MenuOption.index")
+
+    def to_dict(self):
+        return {
+            "id":            self.id,
+            "storeId":       self.store_id,
+            "name":          self.name,
+            "description":   self.description or "",
+            "externalCode":  self.external_code,
+            "index":         self.index,
+            "status":        self.status,
+            "minPermitted":  self.min_permitted,
+            "maxPermitted":  self.max_permitted,
+            "priceMethod":   self.price_method,
+            "optionCount":   len(self.options) if self.options else 0,
+            "options":       [o.to_dict() for o in self.options] if self.options else [],
+        }
+
+
+class MenuOption(db.Model):
+    """
+    Tabela: menu_options
+    Cada opção dentro de um OptionGroup.
+    Ex: "Calabresa", "Margherita", "Frango com Catupiry"
+
+    Mapeia para o array `options[]` dentro de `optionGroups` do Open Delivery.
+    """
+    __tablename__ = "menu_options"
+
+    id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    option_group_id = db.Column(db.Integer, db.ForeignKey("menu_option_groups.id", ondelete="CASCADE"), nullable=False)
+    name            = db.Column(db.String(150), nullable=False)
+    description     = db.Column(db.String(500), nullable=True, default="")
+    external_code   = db.Column(db.String(100), nullable=False)
+    index           = db.Column(db.Integer, nullable=False, default=0)
+    status          = db.Column(db.String(20), nullable=False, default="AVAILABLE")
+    price           = db.Column(db.Float, nullable=True, default=0.0)     # preço adicional desta opção
+    max_permitted   = db.Column(db.Integer, nullable=True)                # limite de vezes que esta opção pode ser escolhida
+
+    option_group = db.relationship("MenuOptionGroup", back_populates="options")
+
+    def to_dict(self):
+        return {
+            "id":             self.id,
+            "optionGroupId":  self.option_group_id,
+            "name":           self.name,
+            "description":    self.description or "",
+            "externalCode":   self.external_code,
+            "index":          self.index,
+            "status":         self.status,
+            "price":          self.price or 0.0,
+            "maxPermitted":   self.max_permitted,
+        }
+
+
+# =============================================================================
+#  AVAILABILITIES (disponibilidade por data/horário)
+# =============================================================================
+
+class MenuAvailability(db.Model):
+    """
+    Tabela: menu_availabilities
+    Regras de disponibilidade para itens e categorias.
+    Ex: "Disponível apenas de 01/05 a 30/05, Seg-Sex 11h-15h"
+
+    Mapeia para a entidade `availabilities` do Open Delivery.
+    """
+    __tablename__ = "menu_availabilities"
+
+    id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    store_id    = db.Column(db.Integer, nullable=False, index=True)
+    name        = db.Column(db.String(150), nullable=False)          # nome descritivo
+    start_date  = db.Column(db.String(20), nullable=True)            # YYYY-MM-DD (opcional)
+    end_date    = db.Column(db.String(20), nullable=True)            # YYYY-MM-DD (opcional)
+
+    hours = db.relationship("AvailabilityHour", back_populates="availability",
+                            cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id":         self.id,
+            "storeId":    self.store_id,
+            "name":       self.name,
+            "startDate":  self.start_date,
+            "endDate":    self.end_date,
+            "hours":      [h.to_dict() for h in self.hours] if self.hours else [],
+        }
+
+
+class AvailabilityHour(db.Model):
+    """
+    Tabela: availability_hours
+    Horários dentro de uma regra de disponibilidade.
+    """
+    __tablename__ = "availability_hours"
+
+    id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    availability_id = db.Column(db.Integer, db.ForeignKey("menu_availabilities.id", ondelete="CASCADE"), nullable=False)
+    day_of_week     = db.Column(db.String(10), nullable=False)     # MONDAY, TUESDAY, etc.
+    start_time      = db.Column(db.String(15), nullable=False)     # HH:MM:SS.000Z (UTC-0)
+    end_time        = db.Column(db.String(15), nullable=False)     # HH:MM:SS.000Z (UTC-0)
+
+    availability = db.relationship("MenuAvailability", back_populates="hours")
+
+    def to_dict(self):
+        return {
+            "id":         self.id,
+            "dayOfWeek":  self.day_of_week,
+            "startTime":  self.start_time,
+            "endTime":    self.end_time,
+        }
+
+
+# --- Atualiza MenuItem com relacionamentos para optionGroups e availabilities ---
+MenuItem.option_groups = db.relationship(
+    "MenuOptionGroup",
+    secondary=menu_item_option_groups,
+    backref=db.backref("menu_items", lazy="dynamic"),
+    lazy="dynamic",
+)
+
+MenuItem.availabilities = db.relationship(
+    "MenuAvailability",
+    secondary=menu_item_availabilities,
+    backref=db.backref("menu_items", lazy="dynamic"),
+    lazy="dynamic",
+)
+
+# --- Atualiza MenuCategory com relacionamento para availabilities ---
+menu_category_availabilities = db.Table(
+    "menu_category_availabilities",
+    db.Column("category_id", db.Integer, db.ForeignKey("menu_categories.id", ondelete="CASCADE"), primary_key=True),
+    db.Column("availability_id", db.Integer, db.ForeignKey("menu_availabilities.id", ondelete="CASCADE"), primary_key=True),
+)
+
+MenuCategory.availabilities = db.relationship(
+    "MenuAvailability",
+    secondary=menu_category_availabilities,
+    lazy="dynamic",
+)
 
 
 class Order(db.Model):

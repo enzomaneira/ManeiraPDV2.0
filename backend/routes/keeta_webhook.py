@@ -31,7 +31,8 @@ from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
 import keeta_client
 import os
-from models import Order, MenuItem, MenuCategory, Store, StoreConfig
+from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
+from models import menu_item_option_groups, menu_item_availabilities, menu_category_availabilities
 from database import db
 from routes.orders import save_order_from_keeta
 from auth_utils import login_required
@@ -451,26 +452,126 @@ def get_merchant_menu():
     }]
 
     # --- 6. Monta a resposta completa no formato Open Delivery ---
+
+    # OptionGroups: busca todos os groups da loja + respectivas options
+    option_groups_db = MenuOptionGroup.query.filter_by(store_id=store_id).order_by(MenuOptionGroup.index).all()
+    option_groups = []
+    option_group_ids_map = {}  # {db_id: open_delivery_id}
+
+    for og in option_groups_db:
+        og_id = str(og.id)
+        option_group_ids_map[og.id] = og_id
+        options_list = []
+        for opt in og.options:
+            options_list.append({
+                "id":           str(opt.id),
+                "name":         opt.name,
+                "description":  opt.description or "",
+                "externalCode": opt.external_code,
+                "index":        opt.index,
+                "status":       opt.status,
+                "price":        {"value": opt.price or 0.0},
+                "maxPermitted": opt.max_permitted,
+            })
+        option_groups.append({
+            "id":           og_id,
+            "name":         og.name,
+            "description":  og.description or "",
+            "externalCode": og.external_code,
+            "index":        og.index,
+            "status":       og.status,
+            "minPermitted": og.min_permitted,
+            "maxPermitted": og.max_permitted,
+            "priceMethod":  og.price_method,
+            "options":      options_list,
+        })
+
+    # Availabilities: busca todos os availabilities da loja + hours
+    availabilities_db = MenuAvailability.query.filter_by(store_id=store_id).all()
+    availabilities = []
+    availability_ids_map = {}
+
+    for av in availabilities_db:
+        av_id = str(av.id)
+        availability_ids_map[av.id] = av_id
+        hours_list = []
+        for h in av.hours:
+            hours_list.append({
+                "dayOfWeek":  [h.day_of_week],
+                "timePeriods": {
+                    "startTime": h.start_time,
+                    "endTime":   h.end_time,
+                },
+            })
+        availabilities.append({
+            "id":        av_id,
+            "startDate": av.start_date,
+            "endDate":   av.end_date,
+            "hours":     hours_list,
+        })
+
+    # Atualiza itemOffers com optionGroupsId e availabilityId
+    for offer in item_offers:
+        offer["optionGroupsId"] = []
+        offer["availabilityId"] = []
+
+    # Preenche optionGroupsId nos itemOffers
+    for item in items:
+        item_db_id = int(item.id) if item.id.isdigit() else None
+        if item_db_id:
+            og_ids = db.session.query(menu_item_option_groups.c.option_group_id).filter(
+                menu_item_option_groups.c.menu_item_id == item_db_id
+            ).all()
+            offer_id = f"offer-{item_db_id}"
+            for of in item_offers:
+                if of["id"] == offer_id:
+                    of["optionGroupsId"] = [option_group_ids_map[og_id] for (og_id,) in og_ids if og_id in option_group_ids_map]
+                    break
+
+    # Preenche availabilityId nos itemOffers
+    for item in items:
+        item_db_id = int(item.id) if item.id.isdigit() else None
+        if item_db_id:
+            av_ids = db.session.query(menu_item_availabilities.c.availability_id).filter(
+                menu_item_availabilities.c.menu_item_id == item_db_id
+            ).all()
+            offer_id = f"offer-{item_db_id}"
+            for of in item_offers:
+                if of["id"] == offer_id:
+                    of["availabilityId"] = [availability_ids_map[av_id] for (av_id,) in av_ids if av_id in availability_ids_map]
+                    break
+
+    # Preenche availabilityId nas categories
+    for cat in categories_db:
+        cat_av_ids = [availability_ids_map[av_id] for (av_id,) in
+                      db.session.query(menu_category_availabilities.c.availability_id).filter(
+                          menu_category_availabilities.c.category_id == cat.id
+                      ).all() if av_id in availability_ids_map]
+        for c in categories:
+            if c["id"] == str(cat.id):
+                c["availabilityId"] = cat_av_ids
+                break
+
     response = {
         "id":     str(store_id),
         "status": "AVAILABLE",
         "basicInfo": {
             "name":           store_name,
-            "document":       "12345678000199",       # mock
+            "document":       "12345678000199",
             "corporateName":  f"{store_name} Ltda",
             "description":    "Os melhores produtos da região!",
             "contactEmails":  ["contato@minhaloja.com.br"],
             "contactPhones": {
-                "commercialNumber": "55-11999999999",  # mock
+                "commercialNumber": "55-11999999999",
             },
         },
-        "services":      services,
-        "menus":         menus,
-        "categories":    categories,
-        "itemOffers":    item_offers,
-        "items":         items_list,
-        "optionGroups":  [],
-        "availabilities": [],
+        "services":       services,
+        "menus":          menus,
+        "categories":     categories,
+        "itemOffers":     item_offers,
+        "items":          items_list,
+        "optionGroups":   option_groups,
+        "availabilities": availabilities,
     }
 
     print(f"[Webhook][get_merchant_menu] Resposta montada | store_id={store_id} | "

@@ -18,7 +18,7 @@
 
 from flask import Blueprint, request, jsonify, g
 from database import db
-from models import MenuItem, MenuCategory
+from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
 from auth_utils import login_required
 
 stores_bp = Blueprint("stores", __name__)
@@ -354,3 +354,298 @@ def delete_my_menu_item(item_id):
         return jsonify({"error": "Erro ao remover item."}), 500
 
     return jsonify({"message": f"Item '{item_name}' removido."}), 200
+
+
+# =============================================================================
+#  OPTION GROUPS (grupos de opções / complementos)
+# =============================================================================
+
+@stores_bp.get("/me/option-groups")
+@login_required
+def list_my_option_groups():
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    groups = MenuOptionGroup.query.filter_by(store_id=store.id).order_by(MenuOptionGroup.index).all()
+    return jsonify([g.to_dict() for g in groups])
+
+
+@stores_bp.post("/me/option-groups")
+@login_required
+def create_my_option_group():
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Nome é obrigatório."}), 400
+    try:
+        g = MenuOptionGroup(
+            store_id=store.id, name=name,
+            description=(data.get("description") or "").strip(),
+            external_code=(data.get("externalCode") or f"og-{name}").strip(),
+            min_permitted=int(data.get("minPermitted", 0)),
+            max_permitted=int(data.get("maxPermitted", 1)),
+            price_method=data.get("priceMethod", "SUM"),
+        )
+        db.session.add(g)
+        db.session.commit()
+        return jsonify(g.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@stores_bp.put("/me/option-groups/<int:group_id>")
+@login_required
+def update_my_option_group(group_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not g:
+        return jsonify({"error": "Grupo não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    for f in ["name","description","externalCode","status","priceMethod"]:
+        if f in data: setattr(g, f if f != "externalCode" else "external_code", data[f])
+    if "minPermitted" in data: g.min_permitted = int(data["minPermitted"])
+    if "maxPermitted" in data: g.max_permitted = int(data["maxPermitted"])
+    db.session.commit()
+    return jsonify(g.to_dict())
+
+
+@stores_bp.delete("/me/option-groups/<int:group_id>")
+@login_required
+def delete_my_option_group(group_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not g:
+        return jsonify({"error": "Grupo não encontrado."}), 404
+    db.session.delete(g)
+    db.session.commit()
+    return jsonify({"message": "Removido."}), 200
+
+
+# --- Options dentro de um OptionGroup ---
+
+@stores_bp.post("/me/option-groups/<int:group_id>/options")
+@login_required
+def create_option(group_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not g:
+        return jsonify({"error": "Grupo não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Nome é obrigatório."}), 400
+    try:
+        o = MenuOption(
+            option_group_id=g.id, name=name,
+            description=(data.get("description") or "").strip(),
+            external_code=(data.get("externalCode") or f"opt-{name}").strip(),
+            price=float(data.get("price", 0)),
+            max_permitted=data.get("maxPermitted"),
+        )
+        db.session.add(o)
+        db.session.commit()
+        return jsonify(o.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@stores_bp.put("/me/option-groups/<int:group_id>/options/<int:option_id>")
+@login_required
+def update_option(group_id, option_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    o = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
+    if not o:
+        return jsonify({"error": "Opção não encontrada."}), 404
+    data = request.get_json(silent=True) or {}
+    for f in ["name","description","externalCode","status"]:
+        if f in data: setattr(o, f if f != "externalCode" else "external_code", data[f])
+    if "price" in data and data["price"] is not None: o.price = float(data["price"])
+    if "maxPermitted" in data: o.max_permitted = data["maxPermitted"]
+    db.session.commit()
+    return jsonify(o.to_dict())
+
+
+@stores_bp.delete("/me/option-groups/<int:group_id>/options/<int:option_id>")
+@login_required
+def delete_option(group_id, option_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    o = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
+    if not o:
+        return jsonify({"error": "Opção não encontrada."}), 404
+    db.session.delete(o)
+    db.session.commit()
+    return jsonify({"message": "Removida."}), 200
+
+
+# --- Vincula/desvincula OptionGroups a MenuItems ---
+
+@stores_bp.post("/me/menu/<int:item_id>/option-groups")
+@login_required
+def link_option_group(item_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
+    if not item:
+        return jsonify({"error": "Item não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    group_id = data.get("optionGroupId")
+    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not g:
+        return jsonify({"error": "Grupo não encontrado."}), 404
+    item.option_groups.append(g)
+    db.session.commit()
+    return jsonify({"message": "Vinculado."}), 200
+
+
+@stores_bp.delete("/me/menu/<int:item_id>/option-groups/<int:group_id>")
+@login_required
+def unlink_option_group(item_id, group_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
+    if not item:
+        return jsonify({"error": "Item não encontrado."}), 404
+    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not g:
+        return jsonify({"error": "Grupo não encontrado."}), 404
+    item.option_groups.remove(g)
+    db.session.commit()
+    return jsonify({"message": "Desvinculado."}), 200
+
+
+# =============================================================================
+#  AVAILABILITIES (disponibilidade por data/horário)
+# =============================================================================
+
+@stores_bp.get("/me/availabilities")
+@login_required
+def list_my_availabilities():
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    avails = MenuAvailability.query.filter_by(store_id=store.id).all()
+    return jsonify([a.to_dict() for a in avails])
+
+
+@stores_bp.post("/me/availabilities")
+@login_required
+def create_my_availability():
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Nome é obrigatório."}), 400
+    try:
+        a = MenuAvailability(
+            store_id=store.id, name=name,
+            start_date=data.get("startDate"),
+            end_date=data.get("endDate"),
+        )
+        for h in data.get("hours", []):
+            a.hours.append(AvailabilityHour(
+                day_of_week=h.get("dayOfWeek", "MONDAY"),
+                start_time=h.get("startTime", "00:00:00.000Z"),
+                end_time=h.get("endTime", "23:59:00.000Z"),
+            ))
+        db.session.add(a)
+        db.session.commit()
+        return jsonify(a.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@stores_bp.put("/me/availabilities/<int:avail_id>")
+@login_required
+def update_my_availability(avail_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
+    if not a:
+        return jsonify({"error": "Disponibilidade não encontrada."}), 404
+    data = request.get_json(silent=True) or {}
+    if "name" in data: a.name = data["name"].strip()
+    if "startDate" in data: a.start_date = data["startDate"]
+    if "endDate" in data: a.end_date = data["endDate"]
+    if "hours" in data:
+        a.hours.clear()
+        for h in data["hours"]:
+            a.hours.append(AvailabilityHour(
+                day_of_week=h.get("dayOfWeek", "MONDAY"),
+                start_time=h.get("startTime", "00:00:00.000Z"),
+                end_time=h.get("endTime", "23:59:00.000Z"),
+            ))
+    db.session.commit()
+    return jsonify(a.to_dict())
+
+
+@stores_bp.delete("/me/availabilities/<int:avail_id>")
+@login_required
+def delete_my_availability(avail_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
+    if not a:
+        return jsonify({"error": "Disponibilidade não encontrada."}), 404
+    db.session.delete(a)
+    db.session.commit()
+    return jsonify({"message": "Removida."}), 200
+
+
+# --- Vincula/desvincula Availability a MenuItems ---
+
+@stores_bp.post("/me/menu/<int:item_id>/availabilities")
+@login_required
+def link_availability(item_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
+    if not item:
+        return jsonify({"error": "Item não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    avail_id = data.get("availabilityId")
+    a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
+    if not a:
+        return jsonify({"error": "Disponibilidade não encontrada."}), 404
+    item.availabilities.append(a)
+    db.session.commit()
+    return jsonify({"message": "Vinculada."}), 200
+
+
+@stores_bp.delete("/me/menu/<int:item_id>/availabilities/<int:avail_id>")
+@login_required
+def unlink_availability(item_id, avail_id):
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
+    if not item:
+        return jsonify({"error": "Item não encontrado."}), 404
+    a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
+    if not a:
+        return jsonify({"error": "Disponibilidade não encontrada."}), 404
+    item.availabilities.remove(a)
+    db.session.commit()
+    return jsonify({"message": "Desvinculada."}), 200
