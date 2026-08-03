@@ -93,6 +93,27 @@ _cached_token = None
 _token_expires_at = 0  # timestamp UNIX de quando o token expira
 
 
+def merchant_uuid(store_id) -> str:
+    """
+    Gera o `id` do Merchant no formato exigido pelo schema oficial da Keeta
+    (GET /v1/merchant): string de 36 a 100 caracteres, único por loja.
+
+    IMPORTANTE: nosso `store.id` no banco é só um Integer autoincrement
+    (ex: "1", "2"...), que tem só 1-2 caracteres — MUITO abaixo do mínimo
+    de 36 exigido pelo schema (`id: string, minLength: 36, maxLength: 100`,
+    required). Enviar um id curto pode fazer a Keeta rejeitar ou processar
+    incorretamente o cardápio, mesmo que o GET retorne 200 OK.
+
+    Para resolver isso sem precisar migrar o banco, geramos aqui um
+    identificador estável e determinístico (sempre o mesmo para o mesmo
+    store_id) com pelo menos 36 caracteres, prefixado com "store-" e
+    preenchido com zeros à esquerda.
+
+    Exemplo: store_id=1 → "store-00000000000000000000000000000001"
+    """
+    return f"store-{int(store_id):030d}"
+
+
 # =============================================================================
 #  1. AUTENTICAÇÃO
 # =============================================================================

@@ -134,19 +134,18 @@ def _build_menu_response(store_id: int):
         })
 
     # --- 3. MENUS ---
+    # IMPORTANTE: só criamos o Menu que está de fato referenciado por um
+    # Service (via menuId). Um Menu "órfão" (sem nenhum Service apontando
+    # para ele via menuId) nunca é alcançado pela Keeta, que navega
+    # Service → menuId → Menu → categoryId → Category → itemOfferId.
+    # Chegamos a criar um segundo menu "Retirar no local" sem um Service
+    # correspondente — isso não quebra o schema, mas é inútil e confuso.
     menus = [
         {
             "id":           menu_id,
             "name":         "Delivery",
             "description":  None,
             "externalCode": f"menu-delivery-{store_id}",
-            "categoryId":   category_menu_ids,
-        },
-        {
-            "id":           f"menu-pickup-{store_id}",
-            "name":         "Retirar no local",
-            "description":  None,
-            "externalCode": f"menu-pickup-{store_id}",
             "categoryId":   category_menu_ids,
         },
     ]
@@ -264,7 +263,10 @@ def _build_menu_response(store_id: int):
                 break
 
     response = {
-        "id":     str(store_id),
+        # O schema oficial exige um `id` de 36 a 100 caracteres (ver
+        # keeta_client.merchant_uuid). Usar apenas str(store_id) (ex: "1")
+        # viola o minLength do schema.
+        "id":     keeta_client.merchant_uuid(store_id),
         "status": "AVAILABLE",
         "basicInfo": {
             "name":           store_name,
