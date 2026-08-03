@@ -178,14 +178,23 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
     """
     Gera a assinatura HMAC-SHA256 que a Keeta exige em toda requisição.
 
-    Como funciona (conforme documentação oficial):
-      signature_string = URL + "&" + sorted_query_params + "&" + request_body
+    Como funciona (conforme script oficial de referência da Keeta, seção
+    "Signature calculation script example" da documentação):
 
-      1. URL: base, sem query string
-      2. Query params: ordenados alfabeticamente por chave, formato key=value,
-         unidos com "&"
-      3. Body: o JSON exatamente como foi enviado (canônico, sem espaços,
-         chaves ordenadas). Corpos vazios ("" ou "{}") são omitidos.
+      sb = [url]
+      for key, value in sorted(query_params):     # se houver query params
+          sb.append(f"&{key}={value}")
+      if body_json_string and body_json_string.strip():   # só pula se for string VAZIA
+          sb.append(f"&{body_json_string}")
+      signature_string = "".join(sb)
+
+    IMPORTANTE: apesar do texto da documentação dizer que objetos vazios
+    "{}" são ignorados no cálculo, o script de referência oficial (Java/
+    Python/PHP) só pula quando o body é uma string vazia/branca. Um body
+    igual a "{}" NÃO é vazio (a string tem 2 caracteres) e, portanto, DEVE
+    ser incluído na string de assinatura. Foi exatamente esse descompasso
+    entre o texto da doc e o código de referência que causava o erro
+    "401 Invalid signature" ao forçar o pull do menu com body "{}".
 
     Depois assina essa string com o CLIENT_SECRET usando HMAC-SHA256
     e codifica o resultado em Base64.
@@ -196,20 +205,22 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
     """
     print(f"[Keeta][_generate_signature] INÍCIO | url={url} | query_params={query_params} | body_preview={(body or '')[:100]}")
 
-    # Monta a string que vai ser assinada
-    parts = [url]
+    # Monta a string que vai ser assinada, seguindo EXATAMENTE o script de
+    # referência oficial: cada parte já carrega o "&" como prefixo, e tudo
+    # é concatenado sem separador adicional.
+    sb = [url]
 
     if query_params:
         # Parâmetros de query DEVEM ser ordenados alfabeticamente
         for key in sorted(query_params.keys()):
             value = query_params[key]
             value_str = "" if value is None else str(value)
-            parts.append(f"{key}={value_str}")
+            sb.append(f"&{key}={value_str}")
 
-    if body and body.strip() not in ("", "{}"):
-        parts.append(body)
+    if body and body.strip():
+        sb.append(f"&{body}")
 
-    string_to_sign = "&".join(parts)
+    string_to_sign = "".join(sb)
     print(f"[Keeta][_generate_signature] String a ser assinada (completa): {string_to_sign}")
 
     # Calcula o HMAC-SHA256
@@ -549,7 +560,8 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
 
     url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
     # Body = objeto JSON vazio "{}" → a Keeta faz um pull completo do GET /merchant.
-    # (a assinatura trata "{}" da mesma forma que corpo vazio, conforme doc oficial)
+    # OBS: "{}" precisa ENTRAR normalmente no cálculo da assinatura (não é
+    # tratado como vazio, pois a string tem 2 caracteres) — ver `_generate_signature`.
     body = canonical_json({})
 
     print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (JSON vazio → força pull completo do menu)")
@@ -603,8 +615,8 @@ def validate_webhook_signature(body: str, received_signature: str) -> bool:
     webhook_url = f"{MY_PUBLIC_URL}/orders"
 
     candidatos = {
-        "url+body":        f"{webhook_url}&{body}" if body and body.strip() not in ("", "{}") else webhook_url,
-        "url+body(sem_barra)": (f"{webhook_url.rstrip('/')}&{body}" if body and body.strip() not in ("", "{}") else webhook_url.rstrip("/")),
+        "url+body":        f"{webhook_url}&{body}" if body and body.strip() else webhook_url,
+        "url+body(sem_barra)": (f"{webhook_url.rstrip('/')}&{body}" if body and body.strip() else webhook_url.rstrip("/")),
         "body_apenas":     body,
     }
 
