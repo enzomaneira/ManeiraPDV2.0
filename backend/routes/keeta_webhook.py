@@ -91,7 +91,10 @@ def _build_menu_response(store_id: int):
             "id":     offer_id,
             "itemId": item_id_str,
             "index":  item.index if item.index is not None else idx,
-            "status": item.status,
+            # `status` é required pelo schema — nunca pode ir None. O modelo
+            # já tem default="AVAILABLE", mas aplicamos o mesmo fallback aqui
+            # por segurança (defesa em profundidade).
+            "status": item.status or "AVAILABLE",
             "price": {
                 "originalValue": item.price,
                 "currency":      "BRL",
@@ -182,15 +185,41 @@ def _build_menu_response(store_id: int):
         og_id = str(og.id)
         option_group_ids_map[og.id] = og_id
         options_list = []
+        available_options_count = 0
         for opt_idx, opt in enumerate(og.options):
+            opt_status = opt.status or "AVAILABLE"
+            if opt_status == "AVAILABLE":
+                available_options_count += 1
             options_list.append({
                 "id":           str(opt.id),
                 "itemId":       f"sub-item-{opt.id}",
                 "index":        opt_idx,
-                "status":       "AVAILABLE",
+                "status":       opt_status,
                 "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},
                 "maxPermitted": opt.max_permitted,
             })
+
+        min_permitted = og.min_permitted if og.min_permitted is not None else 0
+        max_permitted = og.max_permitted if og.max_permitted is not None else 1
+
+        # PROTEÇÃO CRÍTICA: se `minPermitted` for maior que o número de opções
+        # com status AVAILABLE, a Keeta esconde TODOS os itens vinculados a
+        # este optionGroup no app (é impossível para o cliente atingir o
+        # mínimo exigido). Isso normalmente acontece quando o lojista exclui/
+        # desativa opções e esquece de ajustar o mínimo do grupo.
+        #
+        # Em vez de deixar o item sumir silenciosamente, rebaixamos o
+        # minPermitted enviado à Keeta para o mínimo seguro (nunca mais que
+        # as opções disponíveis) e avisamos no log para o lojista corrigir
+        # a configuração na origem.
+        if min_permitted > available_options_count:
+            print(f"[_build_menu_response] AVISO: optionGroup '{og.name}' (id={og_id}) tem "
+                  f"minPermitted={min_permitted} mas só {available_options_count} opção(ões) "
+                  f"disponível(eis) de {len(options_list)} total. Isso esconderia todos os itens "
+                  f"vinculados na Keeta! Ajustando minPermitted={available_options_count} apenas "
+                  f"para esta resposta — corrija o grupo no cardápio para resolver definitivamente.")
+            min_permitted = available_options_count
+
         option_groups.append({
             "id":           og_id,
             "index":        og.index if og.index is not None else 0,
@@ -198,8 +227,8 @@ def _build_menu_response(store_id: int):
             "description":  og.description or None,
             "externalCode": og.external_code or og_id,
             "status":       og.status or "AVAILABLE",
-            "minPermitted": og.min_permitted if og.min_permitted is not None else 0,
-            "maxPermitted": og.max_permitted if og.max_permitted is not None else 1,
+            "minPermitted": min_permitted,
+            "maxPermitted": max_permitted,
             "options":      options_list,
         })
 
@@ -626,16 +655,27 @@ def get_merchant_menu():
     A URL deste endpoint é informada no registro do merchant (onboarding),
     incluindo o storeId como query param.
 
+    Segurança: a Keeta envia de volta, em TODA chamada a este endpoint, o
+    mesmo valor de `apiKey` que foi registrado em `getMerchantURL.apiKey`
+    durante o onboarding (ver keeta_client.register_merchant /
+    MERCHANT_MENU_API_KEY), agora no header `X-API-KEY`. Validamos esse
+    valor para garantir que só a Keeta (ou quem conhece a chave) consiga
+    ler o cardápio completo da loja.
+
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints
     """
     store_id = request.args.get("storeId", 1, type=int)
     api_key = request.headers.get("X-API-KEY", "")
     print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId={store_id} | has_api_key={bool(api_key)}")
 
+    if api_key != keeta_client.MERCHANT_MENU_API_KEY:
+        print(f"[Webhook][get_merchant_menu] REJEITADO (401): X-API-KEY inválida ou ausente para storeId={store_id}")
+        return jsonify({"error": "Invalid or missing X-API-KEY"}), 401
+
     response = _build_menu_response(store_id)
 
     print(f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id}")
-    return jsonify(response)
+    return jsonify(response), 200, {"Content-Type": "application/json"}
 
 
 # =============================================================================

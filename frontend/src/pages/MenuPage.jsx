@@ -166,18 +166,21 @@ export default function MenuPage() {
         maxPermitted: parseInt(ogInlineForm.maxPermitted) || 1,
         priceMethod: ogInlineForm.priceMethod, status: ogInlineForm.status,
       };
-      let groupId;
+      let groupId, warning;
       if (ogInlineEditing) {
-        await optionGroupService.update(ogInlineEditing, payload);
+        const res = await optionGroupService.update(ogInlineEditing, payload);
         groupId = ogInlineEditing;
+        warning = res.data.warning;
       } else {
         const res = await optionGroupService.create(payload);
         groupId = res.data.id;
+        warning = res.data.warning;
         if (editingItem) await menuService.linkOptionGroup(editingItem.id, groupId);
       }
       await fetchData();
       setOgInlineEditing(null);
       setOgInlineForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
+      if (warning) { setMessage({ type: 'error', text: warning }); setTimeout(() => setMessage(null), 6000); }
     } catch { setMessage({ type: 'error', text: 'Erro ao salvar grupo.' }); setTimeout(() => setMessage(null), 3000); }
     finally { setOgInlineSaving(false); }
   };
@@ -219,17 +222,26 @@ export default function MenuPage() {
         externalCode: optInlineForm.externalCode.trim() || `opt-${Date.now()}`,
         price: parseFloat(optInlineForm.price) || 0, status: optInlineForm.status,
       };
-      if (optInlineTarget.optionId)
-        await optionGroupService.updateOption(optInlineTarget.groupId, optInlineTarget.optionId, payload);
-      else
-        await optionGroupService.createOption(optInlineTarget.groupId, payload);
+      let warning;
+      if (optInlineTarget.optionId) {
+        const res = await optionGroupService.updateOption(optInlineTarget.groupId, optInlineTarget.optionId, payload);
+        warning = res.data.warning;
+      } else {
+        const res = await optionGroupService.createOption(optInlineTarget.groupId, payload);
+        warning = res.data.warning;
+      }
       setOptInlineTarget(null); await fetchData();
+      if (warning) { setMessage({ type: 'error', text: warning }); setTimeout(() => setMessage(null), 6000); }
     } catch { setMessage({ type: 'error', text: 'Erro ao salvar opção.' }); setTimeout(() => setMessage(null), 3000); }
     finally { setOptInlineSaving(false); }
   };
   const handleDeleteOptionInline = async (groupId, optionId, name) => {
     if (!confirm(`Remover "${name}"?`)) return;
-    try { await optionGroupService.deleteOption(groupId, optionId); await fetchData(); }
+    try {
+      const res = await optionGroupService.deleteOption(groupId, optionId);
+      await fetchData();
+      if (res.data.warning) { setMessage({ type: 'error', text: res.data.warning }); setTimeout(() => setMessage(null), 6000); }
+    }
     catch { setMessage({ type: 'error', text: 'Erro.' }); setTimeout(() => setMessage(null), 3000); }
   };
 
@@ -308,13 +320,18 @@ export default function MenuPage() {
         maxPermitted: parseInt(ogManagerForm.maxPermitted) || 1,
         priceMethod: ogManagerForm.priceMethod, status: ogManagerForm.status,
       };
-      if (ogEditingId) await optionGroupService.update(ogEditingId, payload);
-      else await optionGroupService.create(payload);
+      let res;
+      if (ogEditingId) res = await optionGroupService.update(ogEditingId, payload);
+      else res = await optionGroupService.create(payload);
       setOgEditingId(null);
       setOgManagerForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
       await fetchData();
-      setMessage({ type: 'success', text: ogEditingId ? 'Grupo atualizado!' : 'Grupo criado!' });
-      setTimeout(() => setMessage(null), 3000);
+      if (res.data.warning) {
+        setMessage({ type: 'error', text: res.data.warning });
+      } else {
+        setMessage({ type: 'success', text: ogEditingId ? 'Grupo atualizado!' : 'Grupo criado!' });
+      }
+      setTimeout(() => setMessage(null), 6000);
     } catch (err) {
       setMessage({ type: 'error', text: 'Erro ao salvar grupo de opções.' });
       setTimeout(() => setMessage(null), 3000);
@@ -355,15 +372,20 @@ export default function MenuPage() {
         price: parseFloat(optionManagerForm.price) || 0,
         status: optionManagerForm.status,
       };
+      let res;
       if (optionEditTarget.optionId) {
-        await optionGroupService.updateOption(optionEditTarget.groupId, optionEditTarget.optionId, payload);
+        res = await optionGroupService.updateOption(optionEditTarget.groupId, optionEditTarget.optionId, payload);
       } else {
-        await optionGroupService.createOption(optionEditTarget.groupId, payload);
+        res = await optionGroupService.createOption(optionEditTarget.groupId, payload);
       }
       setOptionEditTarget(null);
       await fetchData();
-      setMessage({ type: 'success', text: optionEditTarget.optionId ? 'Opção atualizada!' : 'Opção adicionada!' });
-      setTimeout(() => setMessage(null), 3000);
+      if (res.data.warning) {
+        setMessage({ type: 'error', text: res.data.warning });
+      } else {
+        setMessage({ type: 'success', text: optionEditTarget.optionId ? 'Opção atualizada!' : 'Opção adicionada!' });
+      }
+      setTimeout(() => setMessage(null), 6000);
     } catch {
       setMessage({ type: 'error', text: 'Erro ao salvar opção.' });
       setTimeout(() => setMessage(null), 3000);
@@ -372,7 +394,11 @@ export default function MenuPage() {
 
   const handleDeleteOption = async (groupId, optionId, optionName) => {
     if (!confirm(`Remover opção "${optionName}"?`)) return;
-    try { await optionGroupService.deleteOption(groupId, optionId); await fetchData(); }
+    try {
+      const res = await optionGroupService.deleteOption(groupId, optionId);
+      await fetchData();
+      if (res.data.warning) { setMessage({ type: 'error', text: res.data.warning }); setTimeout(() => setMessage(null), 6000); }
+    }
     catch { setMessage({ type: 'error', text: 'Erro ao remover opção.' }); }
   };
 

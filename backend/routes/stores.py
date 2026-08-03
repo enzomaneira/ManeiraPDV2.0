@@ -50,6 +50,31 @@ def _notify_keeta_menu_sync(store):
         print(f"[Stores][_notify_keeta_menu_sync] ERRO inesperado (ignorado): {type(e).__name__}: {e}")
 
 
+def _option_group_min_permitted_warning(group) -> str | None:
+    """
+    Verifica se `group.min_permitted` é maior que o número de opções com
+    status AVAILABLE dentro do grupo.
+
+    Por que isso importa: a Keeta esconde do app TODOS os itens vinculados
+    a um optionGroup cujo minPermitted seja impossível de satisfazer (ex:
+    minPermitted=2 mas só existe 1 opção disponível). Isso normalmente
+    acontece quando o lojista exclui/desativa opções e esquece de reduzir
+    o mínimo do grupo.
+
+    Retorna uma mensagem de aviso (string) para exibir no frontend, ou
+    None se a configuração estiver correta.
+    """
+    available_count = sum(1 for opt in group.options if (opt.status or "AVAILABLE") == "AVAILABLE")
+    min_permitted = group.min_permitted or 0
+    if min_permitted > available_count:
+        return (
+            f"Atenção: o mínimo de opções exigido ({min_permitted}) é maior que o número de "
+            f"opções disponíveis ({available_count}). Isso fará a Keeta esconder todos os itens "
+            f"vinculados a este grupo! Reduza o mínimo ou ative/adicione mais opções."
+        )
+    return None
+
+
 # --- Loja do usuário logado ---
 
 @stores_bp.get("/me")
@@ -434,7 +459,11 @@ def create_my_option_group():
         return jsonify({"error": str(e)}), 500
 
     _notify_keeta_menu_sync(store)
-    return jsonify(group.to_dict()), 201
+    result = group.to_dict()
+    warning = _option_group_min_permitted_warning(group)
+    if warning:
+        result["warning"] = warning
+    return jsonify(result), 201
 
 
 @stores_bp.put("/me/option-groups/<int:group_id>")
@@ -459,7 +488,11 @@ def update_my_option_group(group_id):
         return jsonify({"error": str(e)}), 500
 
     _notify_keeta_menu_sync(store)
-    return jsonify(group.to_dict())
+    result = group.to_dict()
+    warning = _option_group_min_permitted_warning(group)
+    if warning:
+        result["warning"] = warning
+    return jsonify(result)
 
 
 @stores_bp.delete("/me/option-groups/<int:group_id>")
@@ -513,7 +546,11 @@ def create_option(group_id):
         return jsonify({"error": str(e)}), 500
 
     _notify_keeta_menu_sync(store)
-    return jsonify(option.to_dict()), 201
+    result = option.to_dict()
+    warning = _option_group_min_permitted_warning(group)
+    if warning:
+        result["warning"] = warning
+    return jsonify(result), 201
 
 
 @stores_bp.put("/me/option-groups/<int:group_id>/options/<int:option_id>")
@@ -538,7 +575,11 @@ def update_option(group_id, option_id):
         return jsonify({"error": str(e)}), 500
 
     _notify_keeta_menu_sync(store)
-    return jsonify(option.to_dict())
+    result = option.to_dict()
+    warning = _option_group_min_permitted_warning(option.option_group)
+    if warning:
+        result["warning"] = warning
+    return jsonify(result)
 
 
 @stores_bp.delete("/me/option-groups/<int:group_id>/options/<int:option_id>")
@@ -551,6 +592,7 @@ def delete_option(group_id, option_id):
     if not option:
         return jsonify({"error": "Opção não encontrada."}), 404
 
+    group = option.option_group
     try:
         db.session.delete(option)
         db.session.commit()
@@ -559,7 +601,11 @@ def delete_option(group_id, option_id):
         return jsonify({"error": str(e)}), 500
 
     _notify_keeta_menu_sync(store)
-    return jsonify({"message": "Removida."}), 200
+    result = {"message": "Removida."}
+    warning = _option_group_min_permitted_warning(group)
+    if warning:
+        result["warning"] = warning
+    return jsonify(result), 200
 
 
 # --- Vincula/desvincula OptionGroups a MenuItems ---

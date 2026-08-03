@@ -30,6 +30,13 @@ CLIENT_SECRET = "2f6729bdd4be467aa15df35244f2a65e"
 # Base da API da Keeta
 BASE_URL = "https://open.mykeeta.com/api/open/opendelivery"
 
+# apiKey usada para proteger o NOSSO endpoint GET /merchant (GET /api/keeta/menu).
+# É registrada no onboarding (getMerchantURL.apiKey) e a Keeta passa a enviar
+# esse mesmo valor no header X-API-KEY em toda chamada futura a esse endpoint.
+# Mantida centralizada aqui para que register_merchant() e a validação da
+# rota (routes/keeta_webhook.py) nunca fiquem dessincronizadas.
+MERCHANT_MENU_API_KEY = os.getenv("MERCHANT_MENU_API_KEY", "123456")
+
 # Timeout (em segundos) para TODAS as chamadas HTTP feitas à Keeta.
 #
 # IMPORTANTE: sem um timeout explícito, a biblioteca `requests` espera
@@ -499,7 +506,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
         "getMerchantURL": {
             # Inclui o storeId na própria URL, assim cada loja tem seu cardápio
             "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={my_local_store_id}",
-            "apiKey":  "123456",
+            "apiKey":  MERCHANT_MENU_API_KEY,
         },
         "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
         "keetaMerchantId": keeta_merchant_id_int,         # DEVE ser number (int), não string
