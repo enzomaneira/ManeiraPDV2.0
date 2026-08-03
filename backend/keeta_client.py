@@ -544,13 +544,21 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Conforme a documentação oficial (POST /v1/merchantUpdate/{merchantId}):
-    "Sent with an empty body: This will force Keeta to make a new request
-    to the GET /v1/merchant endpoint to update all the merchant information."
+    Conforme o schema oficial `MenuUpdate` (POST /v1/merchantUpdate/{merchantId},
+    entityType=MENU): "Currently, Keeta does not support module-level information
+    updates for merchant menus. Therefore, Keeta will actively request the
+    GET /merchant endpoint to obtain the full merchant information for update
+    when receiving an update request with entityType=Menu."
 
-    IMPORTANTE: o "corpo vazio" esperado pela Keeta é o objeto JSON `{}`,
-    e NÃO uma string HTTP vazia (""). Enviar uma string vazia faz a Keeta
-    ignorar a notificação silenciosamente (sem erro, mas sem efeito).
+    Ou seja: mandamos uma notificação MÍNIMA (com um objeto `Menu` válido em
+    `updatedObjects`, só para satisfazer a validação de schema) e a Keeta,
+    ao processar `entityType=MENU`, ignora o conteúdo e faz o pull completo
+    via GET /merchant — que é exatamente o comportamento que queremos.
+
+    NOTA: chegamos a usar um corpo vazio "{}" anteriormente, mas isso não é
+    um formato documentado pelo schema `MerchantUpdate` (que exige o campo
+    `entityType`) e não é confiável. O formato abaixo é o único documentado
+    oficialmente para forçar o pull do menu completo.
 
     merchant_id: ID local da loja (Software Service), NÃO o keetaMerchantId.
 
@@ -559,12 +567,24 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
     url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
-    # Body = objeto JSON vazio "{}" → a Keeta faz um pull completo do GET /merchant.
-    # OBS: "{}" precisa ENTRAR normalmente no cálculo da assinatura (não é
-    # tratado como vazio, pois a string tem 2 caracteres) — ver `_generate_signature`.
-    body = canonical_json({})
 
-    print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (JSON vazio → força pull completo do menu)")
+    # Objeto `Menu` mínimo, só para satisfazer os campos obrigatórios do
+    # schema (id, name, externalCode, categoryId). O conteúdo real é
+    # ignorado pela Keeta — ela vai buscar o cardápio completo via pull.
+    payload = {
+        "entityType": "MENU",
+        "updatedObjects": [
+            {
+                "id":           f"menu-{merchant_id}",
+                "name":         "Delivery",
+                "externalCode": f"menu-delivery-{merchant_id}",
+                "categoryId":   [],
+            }
+        ],
+    }
+    body = canonical_json(payload)
+
+    print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (entityType=MENU → força pull completo do menu)")
 
     try:
         response = requests.post(

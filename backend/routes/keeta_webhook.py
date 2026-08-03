@@ -80,13 +80,11 @@ def _build_menu_response(store_id: int):
             "id":           item_id_str,
             "name":         item.name,
             "description":  item.description or item.name,
-            "externalCode": item.external_code,
-            "status":       item.status,
+            "externalCode": item.external_code or item_id_str,
+            "status":       item.status or "AVAILABLE",
             "images":       [{"type": None, "URL": item.image_url, "CRC-32": None}] if item.image_url else [],
-            "nutritionalInfo": None,
             "serving":      0,
-            "unit":         "UNIT",
-            "image":        None,
+            "unit":         "UN",
         })
 
         item_offers.append({
@@ -115,14 +113,12 @@ def _build_menu_response(store_id: int):
         category_menu_ids.append(cat_id)
         categories.append({
             "id":             cat_id,
-            "index":          cat.index,
+            "index":          cat.index if cat.index is not None else 0,
             "name":           cat.name,
             "description":    cat.description or None,
-            "externalCode":   cat.external_code,
-            "status":         cat.status,
-            "availabilityId": None,
+            "externalCode":   cat.external_code or cat_id,
+            "status":         cat.status or "AVAILABLE",
             "itemOfferId":    cat_offer_map.get(cat.id, []),
-            "serviceType":    "DELIVERY",
         })
 
     if uncategorized_id in cat_offer_map and cat_offer_map[uncategorized_id]:
@@ -134,9 +130,7 @@ def _build_menu_response(store_id: int):
             "description":    None,
             "externalCode":   f"uncat-{store_id}",
             "status":         "AVAILABLE",
-            "availabilityId": None,
             "itemOfferId":    cat_offer_map[uncategorized_id],
-            "serviceType":    "DELIVERY",
         })
 
     # --- 3. MENUS ---
@@ -189,22 +183,24 @@ def _build_menu_response(store_id: int):
         og_id = str(og.id)
         option_group_ids_map[og.id] = og_id
         options_list = []
-        for opt in og.options:
+        for opt_idx, opt in enumerate(og.options):
             options_list.append({
                 "id":           str(opt.id),
                 "itemId":       f"sub-item-{opt.id}",
-                "status":       None,
+                "index":        opt_idx,
+                "status":       "AVAILABLE",
                 "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},
                 "maxPermitted": opt.max_permitted,
             })
         option_groups.append({
             "id":           og_id,
+            "index":        og.index if og.index is not None else 0,
             "name":         og.name,
             "description":  og.description or None,
-            "externalCode": og.external_code,
-            "status":       og.status,
-            "minPermitted": og.min_permitted,
-            "maxPermitted": og.max_permitted,
+            "externalCode": og.external_code or og_id,
+            "status":       og.status or "AVAILABLE",
+            "minPermitted": og.min_permitted if og.min_permitted is not None else 0,
+            "maxPermitted": og.max_permitted if og.max_permitted is not None else 1,
             "options":      options_list,
         })
 
