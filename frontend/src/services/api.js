@@ -85,6 +85,7 @@ export const optionGroupService = {
     delete: (groupId) => api.delete(`/stores/me/option-groups/${groupId}`),
     // Options
     createOption: (groupId, data) => api.post(`/stores/me/option-groups/${groupId}/options`, data),
+    updateOption: (groupId, optionId, data) => api.put(`/stores/me/option-groups/${groupId}/options/${optionId}`, data),
     deleteOption: (groupId, optionId) => api.delete(`/stores/me/option-groups/${groupId}/options/${optionId}`),
 };
 

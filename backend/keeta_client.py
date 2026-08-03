@@ -533,8 +533,13 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Faz POST /v1/merchantUpdate/{merchantId} com body vazio, o que força
-    a Keeta a chamar GET /merchant para puxar o menu atualizado.
+    Conforme a documentação oficial (POST /v1/merchantUpdate/{merchantId}):
+    "Sent with an empty body: This will force Keeta to make a new request
+    to the GET /v1/merchant endpoint to update all the merchant information."
+
+    IMPORTANTE: o "corpo vazio" esperado pela Keeta é o objeto JSON `{}`,
+    e NÃO uma string HTTP vazia (""). Enviar uma string vazia faz a Keeta
+    ignorar a notificação silenciosamente (sem erro, mas sem efeito).
 
     merchant_id: ID local da loja (Software Service), NÃO o keetaMerchantId.
 
@@ -543,10 +548,11 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
     url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
-    # Body vazio → a Keeta faz um pull completo do GET /merchant
-    body = ""
+    # Body = objeto JSON vazio "{}" → a Keeta faz um pull completo do GET /merchant.
+    # (a assinatura trata "{}" da mesma forma que corpo vazio, conforme doc oficial)
+    body = canonical_json({})
 
-    print(f"[Keeta][force_menu_sync] POST {url} | body='' (vazio → força pull completo do menu)")
+    print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (JSON vazio → força pull completo do menu)")
 
     try:
         response = requests.post(
