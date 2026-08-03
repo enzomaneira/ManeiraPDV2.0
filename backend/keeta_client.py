@@ -585,11 +585,16 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
 
     Como o objetivo aqui é sempre refletir o cardápio inteiro (categorias,
     itens, optionGroups, disponibilidades — tudo) após qualquer alteração
-    local, usamos o Modo 1 (corpo vazio), que é o modo correto e
-    documentado para esse caso, IMPORTANTE: a assinatura (`X-App-Signature`)
-    ainda precisa ser calculada corretamente sobre um body vazio — ver
-    `_generate_signature`, que já trata string vazia/`None` como "sem
-    contribuição" na string a assinar.
+    local, usamos o Modo 1, que é o modo correto e documentado para esse
+    caso.
+
+    IMPORTANTE sobre o "corpo vazio": a Keeta exige que o corpo da
+    requisição NÃO seja nulo/ausente — precisa ser literalmente o objeto
+    JSON vazio `"{}"`. Enviar uma string totalmente vazia (`""`) faz a
+    Keeta rejeitar a requisição (body nulo). Por outro lado, para fins de
+    ASSINATURA, `"{}"` tem 2 caracteres e portanto NÃO é considerado vazio
+    pelo algoritmo oficial (`_generate_signature` só pula strings vazias/
+    brancas) — precisa ser incluído na string a assinar como `&{}`.
 
     merchant_id: ID local da loja (Software Service), NÃO o keetaMerchantId.
 
@@ -599,12 +604,14 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
 
     url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
 
-    # Modo 1 da documentação oficial: corpo vazio força a Keeta a chamar
-    # GET /v1/merchant novamente e atualizar TODAS as informações do
-    # merchant (cardápio completo).
-    body = ""
+    # Modo 1 da documentação oficial: corpo = objeto JSON vazio "{}"
+    # (NUNCA string vazia/nula) força a Keeta a chamar GET /v1/merchant
+    # novamente e atualizar TODAS as informações do merchant (cardápio
+    # completo). Como "{}" não é uma string vazia, ele é automaticamente
+    # incluído no cálculo da assinatura por _generate_signature.
+    body = "{}"
 
-    print(f"[Keeta][force_menu_sync] POST {url} | body vazio (Modo 1 → força novo GET /v1/merchant)")
+    print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (Modo 1 → força novo GET /v1/merchant)")
 
     try:
         response = requests.post(
