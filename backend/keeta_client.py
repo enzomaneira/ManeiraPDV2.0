@@ -572,21 +572,24 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Conforme o schema oficial `MenuUpdate` (POST /v1/merchantUpdate/{merchantId},
-    entityType=MENU): "Currently, Keeta does not support module-level information
-    updates for merchant menus. Therefore, Keeta will actively request the
-    GET /merchant endpoint to obtain the full merchant information for update
-    when receiving an update request with entityType=Menu."
+    Conforme a documentação oficial de `POST /v1/merchantUpdate/{merchantId}`
+    ("New Merchant Update Notification"), este endpoint pode ser usado de
+    3 formas:
 
-    Ou seja: mandamos uma notificação MÍNIMA (com um objeto `Menu` válido em
-    `updatedObjects`, só para satisfazer a validação de schema) e a Keeta,
-    ao processar `entityType=MENU`, ignora o conteúdo e faz o pull completo
-    via GET /merchant — que é exatamente o comportamento que queremos.
+      1. Corpo vazio → força a Keeta a chamar GET /v1/merchant novamente
+         para atualizar TODAS as informações do merchant (é o que queremos
+         aqui: qualquer mudança no cardápio deve refletir por completo).
+      2. Só o campo `merchantStatus` → abre/fecha a loja, sem pull do menu.
+      3. Só `entityType` + `updatedObjects` → atualiza apenas os objetos
+         enviados, sem forçar um novo GET /v1/merchant.
 
-    NOTA: chegamos a usar um corpo vazio "{}" anteriormente, mas isso não é
-    um formato documentado pelo schema `MerchantUpdate` (que exige o campo
-    `entityType`) e não é confiável. O formato abaixo é o único documentado
-    oficialmente para forçar o pull do menu completo.
+    Como o objetivo aqui é sempre refletir o cardápio inteiro (categorias,
+    itens, optionGroups, disponibilidades — tudo) após qualquer alteração
+    local, usamos o Modo 1 (corpo vazio), que é o modo correto e
+    documentado para esse caso, IMPORTANTE: a assinatura (`X-App-Signature`)
+    ainda precisa ser calculada corretamente sobre um body vazio — ver
+    `_generate_signature`, que já trata string vazia/`None` como "sem
+    contribuição" na string a assinar.
 
     merchant_id: ID local da loja (Software Service), NÃO o keetaMerchantId.
 
@@ -596,23 +599,12 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
 
     url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
 
-    # Objeto `Menu` mínimo, só para satisfazer os campos obrigatórios do
-    # schema (id, name, externalCode, categoryId). O conteúdo real é
-    # ignorado pela Keeta — ela vai buscar o cardápio completo via pull.
-    payload = {
-        "entityType": "MENU",
-        "updatedObjects": [
-            {
-                "id":           f"menu-{merchant_id}",
-                "name":         "Delivery",
-                "externalCode": f"menu-delivery-{merchant_id}",
-                "categoryId":   [],
-            }
-        ],
-    }
-    body = canonical_json(payload)
+    # Modo 1 da documentação oficial: corpo vazio força a Keeta a chamar
+    # GET /v1/merchant novamente e atualizar TODAS as informações do
+    # merchant (cardápio completo).
+    body = ""
 
-    print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (entityType=MENU → força pull completo do menu)")
+    print(f"[Keeta][force_menu_sync] POST {url} | body vazio (Modo 1 → força novo GET /v1/merchant)")
 
     try:
         response = requests.post(

@@ -598,10 +598,12 @@ def force_sync_menu():
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja do usuário logado.
 
-    Faz POST /v1/merchantUpdate/{merchantId} com corpo JSON vazio ({}).
-    Conforme a documentação oficial da Keeta, isso faz com que ela chame
-    imediatamente o nosso GET /api/keeta/menu?storeId={merchantId} para
-    buscar o cardápio atualizado (pull completo).
+    Faz POST /v1/merchantUpdate/{merchantId} com corpo vazio (Modo 1 da
+    documentação oficial "New Merchant Update Notification"). Isso faz a
+    Keeta chamar imediatamente o nosso GET /api/keeta/menu?storeId={merchantId}
+    para buscar TODO o cardápio atualizado (pull completo) — diferente dos
+    modos 2 (só merchantStatus) e 3 (entityType+updatedObjects, que atualiza
+    só os objetos enviados sem forçar um novo GET).
     """
     print(f"\n[Webhook][force_sync_menu] INÍCIO | user_id={g.current_user.id}")
 
