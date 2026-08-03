@@ -20,8 +20,34 @@ from flask import Blueprint, request, jsonify, g
 from database import db
 from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
 from auth_utils import login_required
+from keeta_client import force_menu_sync
 
 stores_bp = Blueprint("stores", __name__)
+
+
+def _notify_keeta_menu_sync(store):
+    """
+    Notifica a Keeta (POST /merchantUpdate) sempre que o cardápio muda,
+    para que ela puxe o cardápio atualizado via GET /merchant.
+
+    IMPORTANTE: o merchant_id usado aqui precisa ser EXATAMENTE o mesmo
+    valor usado como `my_local_store_id` durante o onboarding
+    (register_merchant em keeta_client.py) — que é `str(store.id)`.
+    Não confundir com `store.keeta_merchant_id` (o ID da loja DENTRO da
+    Keeta), que é usado só no onboarding, nunca aqui.
+
+    Falhas aqui são apenas logadas (não interrompem a resposta ao
+    frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
+    """
+    try:
+        merchant_id = str(store.id)
+        success, err = force_menu_sync(merchant_id)
+        if not success:
+            print(f"[Stores][_notify_keeta_menu_sync] AVISO: falha ao notificar a Keeta | store_id={store.id} | erro={err}")
+        else:
+            print(f"[Stores][_notify_keeta_menu_sync] Keeta notificada com sucesso | store_id={store.id}")
+    except Exception as e:
+        print(f"[Stores][_notify_keeta_menu_sync] ERRO inesperado (ignorado): {type(e).__name__}: {e}")
 
 
 # --- Loja do usuário logado ---
@@ -120,6 +146,7 @@ def create_my_category():
         print(f"[Stores][create_my_category] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao criar categoria."}), 500
 
+    _notify_keeta_menu_sync(store)
     print(f"[Stores][create_my_category] FIM (sucesso) | category_id={category.id}")
     return jsonify(category.to_dict()), 201
 
@@ -160,6 +187,7 @@ def update_my_category(category_id):
         print(f"[Stores][update_my_category] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao atualizar categoria."}), 500
 
+    _notify_keeta_menu_sync(store)
     return jsonify(category.to_dict())
 
 
@@ -187,6 +215,7 @@ def delete_my_category(category_id):
         print(f"[Stores][delete_my_category] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao remover categoria."}), 500
 
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": f"Categoria '{cat_name}' removida."}), 200
 
 
@@ -237,8 +266,11 @@ def create_my_menu_item():
     if not name:
         return jsonify({"error": "Nome do item é obrigatório."}), 400
 
-    price = data.get("price")
-    if price is None or float(price) < 0:
+    try:
+        price = float(data.get("price"))
+        if price < 0:
+            raise ValueError("price negativo")
+    except (TypeError, ValueError):
         return jsonify({"error": "Preço inválido."}), 400
 
     category_id = data.get("categoryId")
@@ -282,6 +314,7 @@ def create_my_menu_item():
         print(f"[Stores][create_my_menu_item] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao criar item."}), 500
 
+    _notify_keeta_menu_sync(store)
     return jsonify(item.to_dict()), 201
 
 
@@ -329,6 +362,7 @@ def update_my_menu_item(item_id):
         print(f"[Stores][update_my_menu_item] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao atualizar item."}), 500
 
+    _notify_keeta_menu_sync(store)
     return jsonify(item.to_dict())
 
 
@@ -356,6 +390,7 @@ def delete_my_menu_item(item_id):
         print(f"[Stores][delete_my_menu_item] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao remover item."}), 500
 
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": f"Item '{item_name}' removido."}), 200
 
 
@@ -370,7 +405,7 @@ def list_my_option_groups():
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
     groups = MenuOptionGroup.query.filter_by(store_id=store.id).order_by(MenuOptionGroup.index).all()
-    return jsonify([g.to_dict() for g in groups])
+    return jsonify([group.to_dict() for group in groups])
 
 
 @stores_bp.post("/me/option-groups")
@@ -384,7 +419,7 @@ def create_my_option_group():
     if not name:
         return jsonify({"error": "Nome é obrigatório."}), 400
     try:
-        g = MenuOptionGroup(
+        group = MenuOptionGroup(
             store_id=store.id, name=name,
             description=(data.get("description") or "").strip(),
             external_code=(data.get("externalCode") or f"og-{name}").strip(),
@@ -392,12 +427,14 @@ def create_my_option_group():
             max_permitted=int(data.get("maxPermitted", 1)),
             price_method=data.get("priceMethod", "SUM"),
         )
-        db.session.add(g)
+        db.session.add(group)
         db.session.commit()
-        return jsonify(g.to_dict()), 201
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
+    return jsonify(group.to_dict()), 201
 
 
 @stores_bp.put("/me/option-groups/<int:group_id>")
@@ -406,16 +443,23 @@ def update_my_option_group(group_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
-    if not g:
+    group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
     data = request.get_json(silent=True) or {}
     for f in ["name","description","externalCode","status","priceMethod"]:
-        if f in data: setattr(g, f if f != "externalCode" else "external_code", data[f])
-    if "minPermitted" in data: g.min_permitted = int(data["minPermitted"])
-    if "maxPermitted" in data: g.max_permitted = int(data["maxPermitted"])
-    db.session.commit()
-    return jsonify(g.to_dict())
+        if f in data: setattr(group, f if f != "externalCode" else "external_code", data[f])
+    if "minPermitted" in data: group.min_permitted = int(data["minPermitted"])
+    if "maxPermitted" in data: group.max_permitted = int(data["maxPermitted"])
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
+    return jsonify(group.to_dict())
 
 
 @stores_bp.delete("/me/option-groups/<int:group_id>")
@@ -424,11 +468,18 @@ def delete_my_option_group(group_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
-    if not g:
+    group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
-    db.session.delete(g)
-    db.session.commit()
+
+    try:
+        db.session.delete(group)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Removido."}), 200
 
 
@@ -440,27 +491,29 @@ def create_option(group_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
-    if not g:
+    group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Nome é obrigatório."}), 400
     try:
-        o = MenuOption(
-            option_group_id=g.id, name=name,
+        option = MenuOption(
+            option_group_id=group.id, name=name,
             description=(data.get("description") or "").strip(),
             external_code=(data.get("externalCode") or f"opt-{name}").strip(),
             price=float(data.get("price", 0)),
             max_permitted=data.get("maxPermitted"),
         )
-        db.session.add(o)
+        db.session.add(option)
         db.session.commit()
-        return jsonify(o.to_dict()), 201
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
+    return jsonify(option.to_dict()), 201
 
 
 @stores_bp.put("/me/option-groups/<int:group_id>/options/<int:option_id>")
@@ -469,16 +522,23 @@ def update_option(group_id, option_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    o = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
-    if not o:
+    option = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
+    if not option:
         return jsonify({"error": "Opção não encontrada."}), 404
     data = request.get_json(silent=True) or {}
     for f in ["name","description","externalCode","status"]:
-        if f in data: setattr(o, f if f != "externalCode" else "external_code", data[f])
-    if "price" in data and data["price"] is not None: o.price = float(data["price"])
-    if "maxPermitted" in data: o.max_permitted = data["maxPermitted"]
-    db.session.commit()
-    return jsonify(o.to_dict())
+        if f in data: setattr(option, f if f != "externalCode" else "external_code", data[f])
+    if "price" in data and data["price"] is not None: option.price = float(data["price"])
+    if "maxPermitted" in data: option.max_permitted = data["maxPermitted"]
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
+    return jsonify(option.to_dict())
 
 
 @stores_bp.delete("/me/option-groups/<int:group_id>/options/<int:option_id>")
@@ -487,11 +547,18 @@ def delete_option(group_id, option_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    o = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
-    if not o:
+    option = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
+    if not option:
         return jsonify({"error": "Opção não encontrada."}), 404
-    db.session.delete(o)
-    db.session.commit()
+
+    try:
+        db.session.delete(option)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Removida."}), 200
 
 
@@ -508,11 +575,13 @@ def link_option_group(item_id):
         return jsonify({"error": "Item não encontrado."}), 404
     data = request.get_json(silent=True) or {}
     group_id = data.get("optionGroupId")
-    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
-    if not g:
+    group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
-    item.option_groups.append(g)
+    item.option_groups.append(group)
     db.session.commit()
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Vinculado."}), 200
 
 
@@ -525,11 +594,13 @@ def unlink_option_group(item_id, group_id):
     item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
     if not item:
         return jsonify({"error": "Item não encontrado."}), 404
-    g = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
-    if not g:
+    group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
-    item.option_groups.remove(g)
+    item.option_groups.remove(group)
     db.session.commit()
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Desvinculado."}), 200
 
 
@@ -571,10 +642,12 @@ def create_my_availability():
             ))
         db.session.add(a)
         db.session.commit()
-        return jsonify(a.to_dict()), 201
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
+    return jsonify(a.to_dict()), 201
 
 
 @stores_bp.put("/me/availabilities/<int:avail_id>")
@@ -598,7 +671,14 @@ def update_my_availability(avail_id):
                 start_time=h.get("startTime", "00:00:00.000Z"),
                 end_time=h.get("endTime", "23:59:00.000Z"),
             ))
-    db.session.commit()
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
     return jsonify(a.to_dict())
 
 
@@ -611,8 +691,14 @@ def delete_my_availability(avail_id):
     a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
     if not a:
         return jsonify({"error": "Disponibilidade não encontrada."}), 404
-    db.session.delete(a)
-    db.session.commit()
+    try:
+        db.session.delete(a)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Removida."}), 200
 
 
@@ -634,6 +720,8 @@ def link_availability(item_id):
         return jsonify({"error": "Disponibilidade não encontrada."}), 404
     item.availabilities.append(a)
     db.session.commit()
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Vinculada."}), 200
 
 
@@ -651,4 +739,6 @@ def unlink_availability(item_id, avail_id):
         return jsonify({"error": "Disponibilidade não encontrada."}), 404
     item.availabilities.remove(a)
     db.session.commit()
+
+    _notify_keeta_menu_sync(store)
     return jsonify({"message": "Desvinculada."}), 200
