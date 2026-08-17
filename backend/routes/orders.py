@@ -284,7 +284,6 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     order.customer_name = customer.get("name", "Cliente")
     print(f"[Orders][save_order_from_keeta] Cliente: {order.customer_name}")
 
-    # --- Valores financeiros ---
     total_node = order_json.get("total", {})
     order_amount = total_node.get("orderAmount", {})
     if "value" in order_amount:
