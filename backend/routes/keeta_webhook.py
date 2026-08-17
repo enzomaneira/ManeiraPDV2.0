@@ -322,14 +322,21 @@ def _build_menu_response(store_id: int):
 
 
 # =============================================================================
-#  ROOT — Retorna o cardápio completo (baseURL)
+#  ROOT — Atalho de conveniência para inspecionar o cardápio manualmente
 # =============================================================================
 
 @keeta_bp.get("/")
 def keeta_root():
     """
     Retorna o cardápio completo no formato Open Delivery.
-    Esta é a baseURL usada pela Keeta para buscar o menu da loja.
+
+    ATENÇÃO: esta rota é só um atalho para inspeção manual (ex: abrir no
+    navegador para debugar o JSON). A Keeta NUNCA chama esta rota — o
+    endpoint oficial registrado no onboarding (getMerchantURL.baseURL) é
+    GET /api/keeta/menu, que exige o header X-API-KEY (ver get_merchant_menu
+    abaixo). Por isso esta rota não tem — e não precisa ter — validação de
+    X-API-KEY.
+
     Usa store_id=1 como padrão.
     """
     store_id = request.args.get("storeId", 1, type=int)
