@@ -216,30 +216,20 @@ def _secret_fingerprint() -> str:
 
 def _generate_signature(url: str, query_params: dict = None, body: str = None) -> str:
     """
-    Gera a assinatura HMAC-SHA256 que a Keeta exige em toda requisição.
+    Gera a assinatura HMAC-SHA256 exigida pela Keeta.
 
-    Como funciona (conforme script oficial de referência da Keeta, seção
-    "Signature calculation script example" da documentação):
+    A string assinada é formada por:
 
-      sb = [url]
-      for key, value in sorted(query_params):     # se houver query params
-          sb.append(f"&{key}={value}")
-      if body_json_string and body_json_string.strip():   # só pula se for string VAZIA
-          sb.append(f"&{body_json_string}")
-      signature_string = "".join(sb)
+      URL sem query string
+      + "&" + parâmetros de query ordenados por nome (quando existirem)
+      + "&" + body JSON canônico (quando não estiver vazio)
 
-    IMPORTANTE: apesar do texto da documentação dizer que objetos vazios
-    "{}" são ignorados no cálculo, o script de referência oficial (Java/
-    Python/PHP) só pula quando o body é uma string vazia/branca. Um body
-    igual a "{}" NÃO é vazio (a string tem 2 caracteres) e, portanto, DEVE
-    ser incluído na string de assinatura. Foi exatamente esse descompasso
-    entre o texto da doc e o código de referência que causava o erro
-    "401 Invalid signature" ao forçar o pull do menu com body "{}".
+    A documentação atual da Keeta especifica que body vazio e o objeto JSON
+    vazio ``{}`` devem ser omitidos. O texto assinado precisa ser exatamente o
+    mesmo texto enviado em ``data``; por isso os chamadores devem serializar o
+    payload uma única vez com ``canonical_json`` e reutilizar essa string.
 
-    Depois assina essa string com o CLIENT_SECRET usando HMAC-SHA256
-    e codifica o resultado em Base64.
-
-    Essa assinatura vai no header: X-App-Signature
+    O resultado é HMAC-SHA256 com CLIENT_SECRET, codificado em Base64.
 
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/signature-calculation
     """
@@ -249,23 +239,30 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
         f"secret_fingerprint={_secret_fingerprint()}"
     )
 
-    # Monta a string que vai ser assinada, seguindo EXATAMENTE o script de
-    # referência oficial: cada parte já carrega o "&" como prefixo, e tudo
-    # é concatenado sem separador adicional.
-    sb = [url]
+    # A Keeta assina a URL base, sem a query string. Os parâmetros devem ser
+    # fornecidos separadamente em query_params e ordenados alfabeticamente.
+    from urllib.parse import urlsplit
 
+    parsed_url = urlsplit(url)
+    base_url = parsed_url._replace(query="", fragment="").geturl()
+    sb = [base_url]
+
+    # Parâmetros de query DEVEM ser ordenados alfabeticamente. Não fazemos URL
+    # encoding aqui: a especificação define a forma textual key=value usada na
+    # string de assinatura.
     if query_params:
-        # Parâmetros de query DEVEM ser ordenados alfabeticamente
         for key in sorted(query_params.keys()):
             value = query_params[key]
             value_str = "" if value is None else str(value)
             sb.append(f"&{key}={value_str}")
 
-    if body and body.strip():
+    # Conforme a documentação atual, tanto string vazia quanto o objeto JSON
+    # vazio devem ser ignorados. "[]" não é um objeto vazio e deve ser assinado.
+    normalized_body = body.strip() if isinstance(body, str) else ""
+    if normalized_body and normalized_body != "{}":
         sb.append(f"&{body}")
 
     string_to_sign = "".join(sb)
-    print(f"[Keeta][_generate_signature] String a ser assinada (completa): {string_to_sign}")
     print(f"[Keeta][_generate_signature] String UTF-8 length={len(string_to_sign.encode('utf-8'))} | body UTF-8 length={len((body or '').encode('utf-8'))}")
 
     # Calcula o HMAC-SHA256
