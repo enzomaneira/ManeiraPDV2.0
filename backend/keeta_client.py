@@ -505,7 +505,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
     payload = {
         "getMerchantURL": {
             # Inclui o storeId na própria URL, assim cada loja tem seu cardápio
-            "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={my_local_store_id}",
+            "baseURL": f"{MY_PUBLIC_URL}/?storeId={my_local_store_id}",
             "apiKey":  MERCHANT_MENU_API_KEY,
         },
         "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
