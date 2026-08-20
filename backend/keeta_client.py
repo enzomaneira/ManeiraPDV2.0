@@ -25,8 +25,8 @@ from datetime import datetime
 # -----------------------------------------------------------------------------
 #  CREDENCIAIS (em produção, use variáveis de ambiente)
 # -----------------------------------------------------------------------------
-CLIENT_ID     = "2816859805"
-CLIENT_SECRET = "2f6729bdd4be467aa15df35244f2a65e"
+CLIENT_ID     = os.getenv("KEETA_CLIENT_ID", "2816859805")
+CLIENT_SECRET = os.getenv("KEETA_CLIENT_SECRET", "2f6729bdd4be467aa15df35244f2a65e")
 
 # Base da API da Keeta
 BASE_URL = "https://open.mykeeta.com/api/open/opendelivery"
@@ -119,7 +119,10 @@ def merchant_uuid(store_id) -> str:
 
     Exemplo: store_id=1 → "store-00000000000000000000000000000001"
     """
-    return f"store-{int(store_id):030d}"
+    value = str(store_id)
+    if value.startswith("store-") and len(value) >= 36:
+        return value
+    return f"store-{int(value):030d}"
 
 
 # =============================================================================
@@ -254,6 +257,7 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
 
     string_to_sign = "".join(sb)
     print(f"[Keeta][_generate_signature] String a ser assinada (completa): {string_to_sign}")
+    print(f"[Keeta][_generate_signature] String UTF-8 length={len(string_to_sign.encode('utf-8'))} | body UTF-8 length={len((body or '').encode('utf-8'))}")
 
     # Calcula o HMAC-SHA256
     signature_bytes = hmac.new(
@@ -494,7 +498,10 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
     print(f"\n[Keeta][register_merchant] INÍCIO | keeta_merchant_id={keeta_merchant_id} | my_local_store_id={my_local_store_id}")
 
     url = f"{BASE_URL}/v1/merchantOnboarding"
-    query_params = {"merchantId": my_local_store_id}
+    # Keeta's merchantId is the software-generated merchant identifier. It
+    # must match Merchant.id and the merchantUpdate path parameter.
+    software_merchant_id = merchant_uuid(my_local_store_id)
+    query_params = {"merchantId": software_merchant_id}
 
     # ATENÇÃO: `keetaMerchantId` DEVE ser um número inteiro, NÃO uma string.
     # A documentação oficial da Keeta especifica o tipo como `number`, e enviar
@@ -518,7 +525,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
     body = canonical_json(payload)
     print(f"[Keeta][register_merchant] Payload montado: {payload} | body_canonico={body}")
 
-    full_url_with_params = f"{url}?merchantId={my_local_store_id}"
+    full_url_with_params = f"{url}?merchantId={software_merchant_id}"
     print(f"[Keeta][register_merchant] PUT {full_url_with_params}")
     try:
         response = requests.put(
@@ -550,7 +557,9 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     """
     print(f"\n[Keeta][update_store_status] INÍCIO | keeta_merchant_id={keeta_merchant_id} | is_open={is_open}")
 
-    url = f"{BASE_URL}/v1/merchantUpdate/{keeta_merchant_id}"
+    endpoint_merchant_id = merchant_uuid(keeta_merchant_id)
+    url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
+    print(f"[Keeta][update_store_status] Assinando e enviando exatamente esta URL: {url}")
     status = "AVAILABLE" if is_open else "UNAVAILABLE"
 
     payload = {"merchantStatus": status}
@@ -587,7 +596,9 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     """
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
-    url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
+    endpoint_merchant_id = merchant_uuid(merchant_id)
+    url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
+    print(f"[Keeta][force_menu_sync] Assinando e enviando exatamente esta URL: {url}")
 
     payload = menu_push or {}
     body = canonical_json(payload)
