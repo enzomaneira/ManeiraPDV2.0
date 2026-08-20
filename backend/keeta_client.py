@@ -245,30 +245,33 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
         f"secret_fingerprint={_secret_fingerprint()}"
     )
 
-    # A Keeta assina a URL base, sem a query string. Os parâmetros devem ser
-    # fornecidos separadamente em query_params e ordenados alfabeticamente.
+    # A Keeta assina a URL base, sem a query string. A fórmula publicada é:
+    #
+    #   URL + "&" + sorted_query_params + "&" + request_body
+    #
+    # Portanto, mesmo sem query parameters, os dois separadores permanecem:
+    # URL + "&&" + body. Esse detalhe é importante no Menu Push.
     from urllib.parse import urlsplit
 
     parsed_url = urlsplit(url)
     base_url = parsed_url._replace(query="", fragment="").geturl()
-    sb = [base_url]
 
     # Parâmetros de query DEVEM ser ordenados alfabeticamente. Não fazemos URL
     # encoding aqui: a especificação define a forma textual key=value usada na
     # string de assinatura.
+    sorted_query_params = ""
     if query_params:
-        for key in sorted(query_params.keys()):
-            value = query_params[key]
-            value_str = "" if value is None else str(value)
-            sb.append(f"&{key}={value_str}")
+        sorted_query_params = "&".join(
+            f"{key}={'' if query_params[key] is None else str(query_params[key])}"
+            for key in sorted(query_params.keys())
+        )
 
-    # Conforme a documentação atual, tanto string vazia quanto o objeto JSON
-    # vazio devem ser ignorados. "[]" não é um objeto vazio e deve ser assinado.
+    # O body enviado pelo requests deve ser exatamente o body usado aqui.
+    # Body vazio e {} são omitidos conforme a documentação atual; para uma
+    # requisição com body, a fórmula mantém o separador anterior ao body.
     normalized_body = body.strip() if isinstance(body, str) else ""
-    if normalized_body and normalized_body != "{}":
-        sb.append(f"&{body}")
-
-    string_to_sign = "".join(sb)
+    request_body = "" if normalized_body in ("", "{}") else body
+    string_to_sign = f"{base_url}&{sorted_query_params}&{request_body}"
     print(
         f"[Keeta][_generate_signature] base_url={base_url} | "
         f"string_sha256={hashlib.sha256(string_to_sign.encode('utf-8')).hexdigest()} | "
