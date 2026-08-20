@@ -40,16 +40,11 @@ def _notify_keeta_menu_sync(store):
     frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
     """
     try:
-        # Importação local para evitar o ciclo: keeta_webhook importa keeta_client,
-        # enquanto o builder do merchant vive no módulo de rotas Keeta.
-        from routes.keeta_webhook import _build_menu_response
-
+        # O body vazio/{} faz a Keeta chamar nosso GET /merchant e buscar o
+        # cardápio completo. Não enviamos o merchant no Menu Push para evitar
+        # divergência entre o JSON enviado e o JSON usado pela Keeta.
         merchant_id = str(store.id)
-        menu_push = {
-            "entityType": "MERCHANT",
-            "updatedObjects": [_build_menu_response(store.id)],
-        }
-        success, err = force_menu_sync(merchant_id, menu_push)
+        success, err = force_menu_sync(merchant_id)
         if not success:
             print(f"[Stores][_notify_keeta_menu_sync] AVISO: falha ao notificar a Keeta | store_id={store.id} | erro={err}")
         else:

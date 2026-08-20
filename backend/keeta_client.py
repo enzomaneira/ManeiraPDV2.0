@@ -611,10 +611,9 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Envia uma notificação `MenuPush` para `POST /v1/merchantUpdate/{merchantId}`.
-    O payload esperado é `entityType=MERCHANT` com o merchant completo dentro
-    de `updatedObjects`. O parâmetro `menu_push` é opcional para manter
-    compatibilidade com chamadas antigas; quando ausente, envia `{}`.
+    Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}` com o
+    body literal `{}`. A Keeta trata esse body como uma solicitação para
+    buscar o merchant completo pelo nosso endpoint GET /merchant.
 
     `merchant_id` é o ID local da loja (Software Service), não o
     `keetaMerchantId`.
@@ -627,15 +626,8 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
     print(f"[Keeta][force_menu_sync] Assinando e enviando exatamente esta URL: {url}")
 
-    payload = menu_push or {}
+    payload = menu_push if menu_push is not None else {}
     body = canonical_json(payload)
-
-    if not menu_push:
-        print(
-            "[Keeta][force_menu_sync] AVISO: Menu Push sem payload; "
-            "será enviado como body vazio, conforme o modo de re-sincronização completa."
-        )
-        body = ""
 
     print(
         f"[Keeta][force_menu_sync] POST {url} | "
