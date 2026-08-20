@@ -19,6 +19,7 @@ import time
 import requests
 import json
 import os
+import rfc8785
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
@@ -199,7 +200,10 @@ def canonical_json(payload) -> str:
     """
     if payload is None:
         return ""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Keeta explicitly requires RFC 8785 (JCS), not merely sorted keys and
+    # compact separators. In particular, RFC 8785 defines canonical number
+    # formatting, escaping, and Unicode handling.
+    return rfc8785.dumps(payload).decode("utf-8")
 
 
 def _generate_signature(url: str, query_params: dict = None, body: str = None) -> str:
