@@ -209,6 +209,11 @@ def canonical_json(payload) -> str:
     return rfc8785.dumps(payload).decode("utf-8")
 
 
+def _secret_fingerprint() -> str:
+    """Returns a safe fingerprint for comparing the deployed secret."""
+    return hashlib.sha256(CLIENT_SECRET.encode("utf-8")).hexdigest()[:12]
+
+
 def _generate_signature(url: str, query_params: dict = None, body: str = None) -> str:
     """
     Gera a assinatura HMAC-SHA256 que a Keeta exige em toda requisição.
@@ -238,7 +243,11 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
 
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/signature-calculation
     """
-    print(f"[Keeta][_generate_signature] INÍCIO | url={url} | query_params={query_params} | body_preview={(body or '')[:100]}")
+    print(
+        f"[Keeta][_generate_signature] INÍCIO | url={url} | "
+        f"query_params={query_params} | body_len={len(body or '')} | "
+        f"secret_fingerprint={_secret_fingerprint()}"
+    )
 
     # Monta a string que vai ser assinada, seguindo EXATAMENTE o script de
     # referência oficial: cada parte já carrega o "&" como prefixo, e tudo
@@ -268,7 +277,10 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
 
     # Codifica em Base64 e retorna como string
     signature = base64.b64encode(signature_bytes).decode("utf-8")
-    print(f"[Keeta][_generate_signature] FIM | assinatura gerada (preview)={signature[:20]}...")
+    print(
+        f"[Keeta][_generate_signature] FIM | signature={signature} | "
+        f"secret_fingerprint={_secret_fingerprint()}"
+    )
     return signature
 
 
@@ -523,7 +535,11 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
         "keetaMerchantId": keeta_merchant_id_int,         # DEVE ser number (int), não string
     }
     body = canonical_json(payload)
-    print(f"[Keeta][register_merchant] Payload montado: {payload} | body_canonico={body}")
+    print(
+        f"[Keeta][register_merchant] Payload montado | "
+        f"query_merchant_id={software_merchant_id} | "
+        f"body_sha256={hashlib.sha256(body.encode('utf-8')).hexdigest()}"
+    )
 
     full_url_with_params = f"{url}?merchantId={software_merchant_id}"
     print(f"[Keeta][register_merchant] PUT {full_url_with_params}")
@@ -603,7 +619,12 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     payload = menu_push or {}
     body = canonical_json(payload)
 
-    print(f"[Keeta][force_menu_sync] POST {url} | payload_keys={list(payload.keys())} | body_preview={body[:300]}")
+    print(
+        f"[Keeta][force_menu_sync] POST {url} | "
+        f"payload_keys={list(payload.keys())} | "
+        f"body_sha256={hashlib.sha256(body.encode('utf-8')).hexdigest()} | "
+        f"body_len={len(body.encode('utf-8'))}"
+    )
 
     try:
         response = requests.post(
