@@ -28,8 +28,14 @@ from datetime import datetime
 CLIENT_ID     = os.getenv("KEETA_CLIENT_ID", "2816859805")
 CLIENT_SECRET = os.getenv("KEETA_CLIENT_SECRET", "2f6729bdd4be467aa15df35244f2a65e")
 
-# Base da API da Keeta
-BASE_URL = "https://open.mykeeta.com/api/open/opendelivery"
+# Base da API da Keeta. O host precisa ser o mesmo host usado na URL HTTP
+# e na string da assinatura. Em algumas contas/regiões a Keeta usa o host
+# `open-eu.mykeeta.com`; deixar isso configurável evita assinar `open.mykeeta.com`
+# e enviar a requisição para outro host.
+BASE_URL = os.getenv(
+    "KEETA_BASE_URL",
+    "https://open-eu.mykeeta.com/api/open/opendelivery",
+).rstrip("/")
 
 # apiKey usada para proteger o NOSSO endpoint GET /merchant (GET /api/keeta/menu).
 # É registrada no onboarding (getMerchantURL.apiKey) e a Keeta passa a enviar
@@ -263,7 +269,12 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
         sb.append(f"&{body}")
 
     string_to_sign = "".join(sb)
-    print(f"[Keeta][_generate_signature] String UTF-8 length={len(string_to_sign.encode('utf-8'))} | body UTF-8 length={len((body or '').encode('utf-8'))}")
+    print(
+        f"[Keeta][_generate_signature] base_url={base_url} | "
+        f"string_sha256={hashlib.sha256(string_to_sign.encode('utf-8')).hexdigest()} | "
+        f"string_utf8_len={len(string_to_sign.encode('utf-8'))} | "
+        f"body_utf8_len={len((body or '').encode('utf-8'))}"
+    )
 
     # Calcula o HMAC-SHA256
     signature_bytes = hmac.new(
@@ -615,6 +626,13 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
 
     payload = menu_push or {}
     body = canonical_json(payload)
+
+    if not menu_push:
+        print(
+            "[Keeta][force_menu_sync] AVISO: Menu Push sem payload; "
+            "será enviado como body vazio, conforme o modo de re-sincronização completa."
+        )
+        body = ""
 
     print(
         f"[Keeta][force_menu_sync] POST {url} | "
