@@ -505,7 +505,7 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
     payload = {
         "getMerchantURL": {
             # Inclui o storeId na própria URL, assim cada loja tem seu cardápio
-            "baseURL": f"{MY_PUBLIC_URL}/?storeId={my_local_store_id}",
+            "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={my_local_store_id}",
             "apiKey":  MERCHANT_MENU_API_KEY,
         },
         "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
@@ -516,7 +516,6 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
 
     full_url_with_params = f"{url}?merchantId={my_local_store_id}"
     print(f"[Keeta][register_merchant] PUT {full_url_with_params}")
-
     try:
         response = requests.put(
             full_url_with_params,
@@ -568,35 +567,17 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
         return False, erro_msg
 
 
-def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
+def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Conforme a documentação oficial de `POST /v1/merchantUpdate/{merchantId}`
-    ("New Merchant Update Notification"), este endpoint pode ser usado de
-    3 formas:
+    Envia uma notificação `MenuPush` para `POST /v1/merchantUpdate/{merchantId}`.
+    O payload esperado é `entityType=MERCHANT` com o merchant completo dentro
+    de `updatedObjects`. O parâmetro `menu_push` é opcional para manter
+    compatibilidade com chamadas antigas; quando ausente, envia `{}`.
 
-      1. Corpo vazio → força a Keeta a chamar GET /v1/merchant novamente
-         para atualizar TODAS as informações do merchant (é o que queremos
-         aqui: qualquer mudança no cardápio deve refletir por completo).
-      2. Só o campo `merchantStatus` → abre/fecha a loja, sem pull do menu.
-      3. Só `entityType` + `updatedObjects` → atualiza apenas os objetos
-         enviados, sem forçar um novo GET /v1/merchant.
-
-    Como o objetivo aqui é sempre refletir o cardápio inteiro (categorias,
-    itens, optionGroups, disponibilidades — tudo) após qualquer alteração
-    local, usamos o Modo 1, que é o modo correto e documentado para esse
-    caso.
-
-    IMPORTANTE sobre o "corpo vazio": a Keeta exige que o corpo da
-    requisição NÃO seja nulo/ausente — precisa ser literalmente o objeto
-    JSON vazio `"{}"`. Enviar uma string totalmente vazia (`""`) faz a
-    Keeta rejeitar a requisição (body nulo). Por outro lado, para fins de
-    ASSINATURA, `"{}"` tem 2 caracteres e portanto NÃO é considerado vazio
-    pelo algoritmo oficial (`_generate_signature` só pula strings vazias/
-    brancas) — precisa ser incluído na string a assinar como `&{}`.
-
-    merchant_id: ID local da loja (Software Service), NÃO o keetaMerchantId.
+    `merchant_id` é o ID local da loja (Software Service), não o
+    `keetaMerchantId`.
 
     Retorna (sucesso, mensagem_de_erro).
     """
@@ -604,14 +585,10 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
 
     url = f"{BASE_URL}/v1/merchantUpdate/{merchant_id}"
 
-    # Modo 1 da documentação oficial: corpo = objeto JSON vazio "{}"
-    # (NUNCA string vazia/nula) força a Keeta a chamar GET /v1/merchant
-    # novamente e atualizar TODAS as informações do merchant (cardápio
-    # completo). Como "{}" não é uma string vazia, ele é automaticamente
-    # incluído no cálculo da assinatura por _generate_signature.
-    body = "{}"
+    payload = menu_push or {}
+    body = canonical_json(payload)
 
-    print(f"[Keeta][force_menu_sync] POST {url} | body='{body}' (Modo 1 → força novo GET /v1/merchant)")
+    print(f"[Keeta][force_menu_sync] POST {url} | payload_keys={list(payload.keys())} | body_preview={body[:300]}")
 
     try:
         response = requests.post(

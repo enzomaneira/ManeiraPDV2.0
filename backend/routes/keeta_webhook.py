@@ -605,12 +605,9 @@ def force_sync_menu():
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja do usuário logado.
 
-    Faz POST /v1/merchantUpdate/{merchantId} com corpo vazio (Modo 1 da
-    documentação oficial "New Merchant Update Notification"). Isso faz a
-    Keeta chamar imediatamente o nosso GET /api/keeta/menu?storeId={merchantId}
-    para buscar TODO o cardápio atualizado (pull completo) — diferente dos
-    modos 2 (só merchantStatus) e 3 (entityType+updatedObjects, que atualiza
-    só os objetos enviados sem forçar um novo GET).
+    Faz POST /v1/merchantUpdate/{merchantId} com um MenuPush no formato
+    `entityType=MERCHANT` e `updatedObjects=[merchant]`. O merchant completo
+    é enviado diretamente à Keeta, conforme o formato Open Delivery.
     """
     print(f"\n[Webhook][force_sync_menu] INÍCIO | user_id={g.current_user.id}")
 
@@ -619,8 +616,14 @@ def force_sync_menu():
         print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    print(f"[Webhook][force_sync_menu] Enviando merchantUpdate para store_id={store.id}...")
-    success, error_detail = keeta_client.force_menu_sync(str(store.id))
+    print(f"[Webhook][force_sync_menu] Montando MenuPush para store_id={store.id}...")
+    menu = _build_menu_response(store.id)
+    menu_push = {
+        "entityType": "MERCHANT",
+        "updatedObjects": [menu],
+    }
+    print(f"[Webhook][force_sync_menu] Enviando MenuPush para store_id={store.id}...")
+    success, error_detail = keeta_client.force_menu_sync(str(store.id), menu_push)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
