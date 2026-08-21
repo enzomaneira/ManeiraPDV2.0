@@ -223,6 +223,36 @@ def canonical_json(payload) -> str:
     return rfc8785.dumps(payload).decode("utf-8")
 
 
+def extract_merchant_id(payload) -> str | None:
+    """Extrai com segurança `updatedObjects[0].id` de um payload de merchant.
+
+    Aceita tanto um objeto Python quanto uma string JSON. Retorna None quando
+    a estrutura não contém um ID válido; nunca altera o payload recebido.
+    """
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    updated_objects = payload.get("updatedObjects")
+    if not isinstance(updated_objects, list) or not updated_objects:
+        return None
+
+    first_object = updated_objects[0]
+    if not isinstance(first_object, dict):
+        return None
+
+    merchant_id = first_object.get("id")
+    if not isinstance(merchant_id, str) or not merchant_id.strip():
+        return None
+
+    return merchant_id.strip()
+
+
 def _secret_fingerprint() -> str:
     """Returns a safe fingerprint for comparing the deployed secret."""
     return hashlib.sha256(CLIENT_SECRET.encode("utf-8")).hexdigest()[:12]
@@ -640,10 +670,22 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
     endpoint_merchant_id = merchant_uuid(merchant_id)
+    payload = menu_push if menu_push is not None else {}
+
+    # O ID do payload, quando presente, deve ser o mesmo ID usado no path.
+    # A URL é definida antes da assinatura e o body é serializado uma única
+    # vez, evitando divergência entre a URL, a assinatura e o request enviado.
+    payload_merchant_id = extract_merchant_id(payload)
+    if payload_merchant_id is not None and payload_merchant_id != endpoint_merchant_id:
+        erro = (
+            "merchant ID inconsistente: "
+            f"path={endpoint_merchant_id!r}, payload={payload_merchant_id!r}"
+        )
+        print(f"[Keeta][force_menu_sync] ERRO: {erro}")
+        return False, erro
+
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
     print(f"[Keeta][force_menu_sync] Assinando e enviando exatamente esta URL: {url}")
-
-    payload = menu_push if menu_push is not None else {}
     body = canonical_json(payload)
 
     print(
