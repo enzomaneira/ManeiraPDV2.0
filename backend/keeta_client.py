@@ -37,6 +37,14 @@ BASE_URL = os.getenv(
     "https://open-eu.mykeeta.com/api/open/opendelivery",
 ).rstrip("/")
 
+# A Keeta valida a assinatura usando o host global documentado, mesmo quando
+# a requisição HTTP é enviada pelo endpoint regional open-eu.mykeeta.com.
+# Pode ser sobrescrito caso a conta/região tenha uma regra diferente.
+SIGNATURE_BASE_URL = os.getenv(
+    "KEETA_SIGNATURE_BASE_URL",
+    "https://open.mykeeta.com/api/open/opendelivery",
+).rstrip("/")
+
 # apiKey usada para proteger o NOSSO endpoint GET /merchant (GET /api/keeta/menu).
 # É registrada no onboarding (getMerchantURL.apiKey) e a Keeta passa a enviar
 # esse mesmo valor no header X-API-KEY em toda chamada futura a esse endpoint.
@@ -246,16 +254,19 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
         f"secret_fingerprint={_secret_fingerprint()}"
     )
 
-    # A Keeta assina a URL base, sem a query string. A fórmula publicada é:
-    #
-    #   URL + "&" + sorted_query_params + "&" + request_body
-    #
-    # Portanto, mesmo sem query parameters, os dois separadores permanecem:
-    # URL + "&&" + body. Esse detalhe é importante no Menu Push.
+    # A Keeta assina a URL base, sem a query string. O endpoint regional pode
+    # ser usado no transporte, mas a documentação e a validação do servidor
+    # usam o host global open.mykeeta.com por padrão.
     from urllib.parse import urlsplit
 
-    parsed_url = urlsplit(url)
-    base_url = parsed_url._replace(query="", fragment="").geturl()
+    request_url = urlsplit(url)
+    signature_base = urlsplit(SIGNATURE_BASE_URL)
+    base_url = request_url._replace(
+        scheme=signature_base.scheme,
+        netloc=signature_base.netloc,
+        query="",
+        fragment="",
+    ).geturl()
 
     # Parâmetros de query DEVEM ser ordenados alfabeticamente. Não fazemos URL
     # encoding aqui: a especificação define a forma textual key=value usada na
@@ -269,10 +280,15 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
 
     # O body enviado pelo requests deve ser exatamente o body usado aqui.
     # Não use strip() nem remova `{}`: qualquer byte diferente altera o HMAC.
-    # A fórmula mantém os dois separadores mesmo quando não há query params:
-    # URL + "&" + sorted_query_params + "&" + request_body.
+    # A implementação da Keeta usa apenas um separador quando não há query:
+    # URL + "&" + body. Com query, os componentes são concatenados por `&`.
     request_body = body if body is not None else ""
-    string_to_sign = f"{base_url}&{sorted_query_params}&{request_body}"
+    signature_parts = [base_url]
+    if sorted_query_params:
+        signature_parts.append(sorted_query_params)
+    if request_body:
+        signature_parts.append(request_body)
+    string_to_sign = "&".join(signature_parts)
     print(
         f"[Keeta][_generate_signature] base_url={base_url} | "
         f"string_sha256={hashlib.sha256(string_to_sign.encode('utf-8')).hexdigest()} | "
