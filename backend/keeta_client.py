@@ -230,10 +230,11 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
       + "&" + parâmetros de query ordenados por nome (quando existirem)
       + "&" + body JSON canônico (quando não estiver vazio)
 
-    A documentação atual da Keeta especifica que body vazio e o objeto JSON
-    vazio ``{}`` devem ser omitidos. O texto assinado precisa ser exatamente o
-    mesmo texto enviado em ``data``; por isso os chamadores devem serializar o
-    payload uma única vez com ``canonical_json`` e reutilizar essa string.
+    O texto assinado precisa ser exatamente o mesmo texto enviado em ``data``;
+    por isso os chamadores devem serializar o payload uma única vez com
+    ``canonical_json`` e reutilizar essa string. Um body JSON válido como ``{}``
+    também participa da assinatura; somente um body realmente ausente fica
+    representado por uma string vazia.
 
     O resultado é HMAC-SHA256 com CLIENT_SECRET, codificado em Base64.
 
@@ -267,10 +268,10 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
         )
 
     # O body enviado pelo requests deve ser exatamente o body usado aqui.
-    # Body vazio e {} são omitidos conforme a documentação atual; para uma
-    # requisição com body, a fórmula mantém o separador anterior ao body.
-    normalized_body = body.strip() if isinstance(body, str) else ""
-    request_body = "" if normalized_body in ("", "{}") else body
+    # Não use strip() nem remova `{}`: qualquer byte diferente altera o HMAC.
+    # A fórmula mantém os dois separadores mesmo quando não há query params:
+    # URL + "&" + sorted_query_params + "&" + request_body.
+    request_body = body if body is not None else ""
     string_to_sign = f"{base_url}&{sorted_query_params}&{request_body}"
     print(
         f"[Keeta][_generate_signature] base_url={base_url} | "
