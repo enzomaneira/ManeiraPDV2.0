@@ -677,9 +677,22 @@ def get_merchant_menu():
         print(f"[Webhook][get_merchant_menu] REJEITADO (401): X-API-KEY inválida ou ausente para storeId={store_id}")
         return jsonify({"error": "Invalid or missing X-API-KEY"}), 401
 
-    response = _build_menu_response(store_id)
+    # A Keeta espera o envelope de atualização exatamente neste formato:
+    # {
+    #   "entityType": "MERCHANT",
+    #   "updatedObjects": [{ ...merchant completo... }]
+    # }
+    # O objeto interno precisa manter o mesmo ID usado no merchantUpdate path.
+    merchant = _build_menu_response(store_id)
+    response = {
+        "entityType": "MERCHANT",
+        "updatedObjects": [merchant],
+    }
 
-    print(f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id}")
+    print(
+        f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id} | "
+        f"merchant_id={merchant.get('id')} | envelope=MERCHANT"
+    )
     return jsonify(response), 200, {"Content-Type": "application/json"}
 
 
