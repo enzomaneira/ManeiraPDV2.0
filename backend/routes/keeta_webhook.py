@@ -615,8 +615,15 @@ def force_sync_menu():
         print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    print(f"[Webhook][force_sync_menu] Enviando notificação de re-sincronização para store_id={store.id}...")
-    success, error_detail = keeta_client.force_menu_sync(str(store.id))
+    print(f"[Webhook][force_sync_menu] Montando menu push completo para store_id={store.id}...")
+    merchant = _build_menu_response(store.id)
+    menu_push = {
+        "entityType": "MERCHANT",
+        "updatedObjects": [merchant],
+    }
+
+    print(f"[Webhook][force_sync_menu] Enviando menu push completo para store_id={store.id}...")
+    success, error_detail = keeta_client.force_menu_sync(str(store.id), menu_push=menu_push)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
@@ -660,40 +667,26 @@ def get_merchant_menu():
     A URL deste endpoint é informada no registro do merchant (onboarding),
     incluindo o storeId como query param.
 
-    Segurança: a Keeta envia de volta, em TODA chamada a este endpoint, o
-    mesmo valor de `apiKey` que foi registrado em `getMerchantURL.apiKey`
-    durante o onboarding (ver keeta_client.register_merchant /
-    MERCHANT_MENU_API_KEY), agora no header `X-API-KEY`. Validamos esse
-    valor para garantir que só a Keeta (ou quem conhece a chave) consiga
-    ler o cardápio completo da loja.
+    A Keeta acessa esta URL diretamente para obter o objeto Merchant completo.
+    O retorno deste GET é o objeto Merchant puro; o envelope
+    `entityType`/`updatedObjects` pertence ao payload de notificações push e
+    não deve ser usado na resposta desta rota.
 
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints
     """
     store_id = request.args.get("storeId", 1, type=int)
-    api_key = request.headers.get("X-API-KEY", "")
-    print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId={store_id} | has_api_key={bool(api_key)}")
+    print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId={store_id} | endpoint_publico=True")
 
-    if api_key != keeta_client.MERCHANT_MENU_API_KEY:
-        print(f"[Webhook][get_merchant_menu] REJEITADO (401): X-API-KEY inválida ou ausente para storeId={store_id}")
-        return jsonify({"error": "Invalid or missing X-API-KEY"}), 401
-
-    # A Keeta espera o envelope de atualização exatamente neste formato:
-    # {
-    #   "entityType": "MERCHANT",
-    #   "updatedObjects": [{ ...merchant completo... }]
-    # }
-    # O objeto interno precisa manter o mesmo ID usado no merchantUpdate path.
+    # Para GET /merchant, a Keeta espera o Merchant diretamente. Não envolver
+    # este retorno em entityType/updatedObjects, pois esses campos são usados
+    # somente em uma notificação de atualização enviada via POST.
     merchant = _build_menu_response(store_id)
-    response = {
-        "entityType": "MERCHANT",
-        "updatedObjects": [merchant],
-    }
 
     print(
         f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id} | "
-        f"merchant_id={merchant.get('id')} | envelope=MERCHANT"
+        f"merchant_id={merchant.get('id')}"
     )
-    return jsonify(response), 200, {"Content-Type": "application/json"}
+    return jsonify(merchant), 200, {"Content-Type": "application/json"}
 
 
 # =============================================================================

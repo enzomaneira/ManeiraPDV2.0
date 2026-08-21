@@ -659,17 +659,16 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
         return False, erro_msg
 
 
-def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
+def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}` com
-    body realmente vazio. A Keeta trata esse body como uma solicitação para
-    buscar o merchant completo pelo nosso endpoint GET /merchant.
+    Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}`.
+    Quando ``menu_push`` é informado, envia o envelope completo de MERCHANT.
+    Quando não é informado, envia body vazio para solicitar um refresh via GET
+    /merchant.
 
-    Não envia `merchantStatus`, `entityType` nem `updatedObjects`: esses
-    campos pertencem a operações diferentes e não podem ser misturados com a
-    notificação de sincronização completa.
+    Nunca mistura `merchantStatus` com `entityType`/`updatedObjects`.
 
     `merchant_id` é o ID local da loja (Software Service), não o
     `keetaMerchantId`.
@@ -681,14 +680,35 @@ def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     endpoint_merchant_id = merchant_uuid(merchant_id)
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
 
-    # Para refresh completo, a Keeta exige body vazio. Não use `{}` nem envie
-    # entityType/updatedObjects: isso transforma a chamada em atualização de
-    # entidades e faz a API validar basicInfo, services e DELIVERY.
-    body = ""
-    print(
-        f"[Keeta][force_menu_sync] POST {url} | "
-        "refresh_completo=True | body_vazio=True"
-    )
+    if menu_push is None:
+        # Refresh por pull: body realmente vazio. Não use `{}`.
+        body = ""
+        print(
+            f"[Keeta][force_menu_sync] POST {url} | "
+            "refresh_por_get=True | body_vazio=True"
+        )
+    else:
+        if not isinstance(menu_push, dict):
+            return False, "menu_push precisa ser um objeto JSON"
+        if menu_push.get("entityType") != "MERCHANT":
+            return False, "menu_push.entityType precisa ser MERCHANT"
+        updated_objects = menu_push.get("updatedObjects")
+        if not isinstance(updated_objects, list) or not updated_objects:
+            return False, "menu_push.updatedObjects não pode ser vazio"
+        if not isinstance(updated_objects[0], dict):
+            return False, "menu_push.updatedObjects[0] precisa ser um objeto"
+        if updated_objects[0].get("id") != endpoint_merchant_id:
+            return False, "o ID do merchant no payload não corresponde ao path"
+        merchant = updated_objects[0]
+        if not isinstance(merchant.get("basicInfo"), dict):
+            return False, "basicInfo é obrigatório no menu push"
+        services = merchant.get("services")
+        if not isinstance(services, list) or not services:
+            return False, "services não pode ser vazio no menu push"
+        if not any(service.get("serviceType") == "DELIVERY" for service in services if isinstance(service, dict)):
+            return False, "o menu push precisa conter um serviceType DELIVERY"
+        body = canonical_json(menu_push)
+        print(f"[Keeta][force_menu_sync] POST {url} | menu_push=True | body_len={len(body)}")
 
     try:
         response = requests.post(
