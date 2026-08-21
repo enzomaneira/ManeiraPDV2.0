@@ -659,13 +659,17 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
         return False, erro_msg
 
 
-def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bool, str | None]:
+def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}` com o
-    body literal `{}`. A Keeta trata esse body como uma solicitação para
+    Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}` com
+    body realmente vazio. A Keeta trata esse body como uma solicitação para
     buscar o merchant completo pelo nosso endpoint GET /merchant.
+
+    Não envia `merchantStatus`, `entityType` nem `updatedObjects`: esses
+    campos pertencem a operações diferentes e não podem ser misturados com a
+    notificação de sincronização completa.
 
     `merchant_id` é o ID local da loja (Software Service), não o
     `keetaMerchantId`.
@@ -675,29 +679,15 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
     endpoint_merchant_id = merchant_uuid(merchant_id)
-    payload = menu_push if menu_push is not None else {}
-
-    # O ID do payload, quando presente, deve ser o mesmo ID usado no path.
-    # A URL é definida antes da assinatura e o body é serializado uma única
-    # vez, evitando divergência entre a URL, a assinatura e o request enviado.
-    payload_merchant_id = extract_merchant_id(payload)
-    if payload_merchant_id is not None and payload_merchant_id != endpoint_merchant_id:
-        erro = (
-            "merchant ID inconsistente: "
-            f"path={endpoint_merchant_id!r}, payload={payload_merchant_id!r}"
-        )
-        print(f"[Keeta][force_menu_sync] ERRO: {erro}")
-        return False, erro
-
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
-    print(f"[Keeta][force_menu_sync] Assinando e enviando exatamente esta URL: {url}")
-    body = canonical_json(payload)
 
+    # Para refresh completo, a Keeta exige body vazio. Não use `{}` nem envie
+    # entityType/updatedObjects: isso transforma a chamada em atualização de
+    # entidades e faz a API validar basicInfo, services e DELIVERY.
+    body = ""
     print(
         f"[Keeta][force_menu_sync] POST {url} | "
-        f"payload_keys={list(payload.keys())} | "
-        f"body_sha256={hashlib.sha256(body.encode('utf-8')).hexdigest()} | "
-        f"body_len={len(body.encode('utf-8'))}"
+        "refresh_completo=True | body_vazio=True"
     )
 
     try:
