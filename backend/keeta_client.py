@@ -274,6 +274,10 @@ def _generate_signature(url: str, query_params: dict = None, body: str = None) -
     também participa da assinatura; somente um body realmente ausente fica
     representado por uma string vazia.
 
+    O merchantId do path não é descoberto a partir do body: ele vem do
+    mapeamento local e deve ser definido antes de montar o payload. Se o body
+    tiver ``updatedObjects[0].id``, ele é validado contra esse mesmo ID.
+
     O resultado é HMAC-SHA256 com CLIENT_SECRET, codificado em Base64.
 
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/signature-calculation
@@ -585,8 +589,9 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
 
     payload = {
         "getMerchantURL": {
-            # Inclui o storeId na própria URL, assim cada loja tem seu cardápio
-            "baseURL": f"{MY_PUBLIC_URL}/?storeId={my_local_store_id}",
+            # O baseURL precisa apontar para a rota real do nosso GET /menu.
+            # O storeId identifica o merchant local e torna a URL única por loja.
+            "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={my_local_store_id}",
             "apiKey":  MERCHANT_MENU_API_KEY,
         },
         "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
