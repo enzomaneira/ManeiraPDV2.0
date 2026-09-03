@@ -394,9 +394,14 @@ def receive_order_event():
     event_type  = event.get("eventType")   # Tipo do evento: CREATED, CONFIRMED, etc.
     order_id    = event.get("orderId")      # ID do pedido na Keeta
     order_url   = event.get("orderURL")     # URL pronta (enviada pela Keeta) para buscar os detalhes do pedido
-    merchant_id = request.headers.get("X-App-MerchantId", "1")  # store_id local da loja
 
-    print(f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | order_url={order_url} | merchant_id(local store_id)={merchant_id}")
+    # Header X-App-MerchantId pode trazer o store_id LOCAL (nosso), mas a Keeta
+    # nem sempre envia esse header. Em vez de cair num fallback cego "1" (que
+    # faria TODO pedido cair na mesma loja), deixamos como None aqui e
+    # resolvemos o store_id local correto abaixo, a partir do keeta_merchant_id
+    # que vem dentro do JSON do pedido.
+    merchant_id_header = request.headers.get("X-App-MerchantId")
+    print(f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | order_url={order_url} | merchant_id_header={merchant_id_header!r}")
 
     if not order_id:
         print("[Webhook][receive_order_event] FIM (ignorado): sem orderId no evento.")
@@ -421,8 +426,43 @@ def receive_order_event():
         order_data = keeta_client.get_order_details(order_id, order_url=order_url)
 
         if order_data:
-            print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id={merchant_id})...")
-            save_order_from_keeta(order_data, merchant_id)
+            # --- Resolve o store_id LOCAL correto para este pedido ---
+            # O pedido pertence a uma loja da Keeta cujo ID (keeta_merchant_id)
+            # vem dentro do JSON do pedido. Precisamos achar a StoreConfig local
+            # cujo keeta_merchant_id bata, para descobrir o nosso store_id.
+            # Prioridade:
+            #   1) Header X-App-MerchantId (se a Keeta enviar)
+            #   2) Busca inversa por keeta_merchant_id no JSON do pedido
+            #   3) Fallback "1" só em último caso (evita crash, mas loga aviso)
+            local_store_id = merchant_id_header
+
+            if not local_store_id:
+                # Keeta pode enviar o id da loja em diferentes campos, dependendo
+                # da versão/schema. Tentamos os mais comuns.
+                keeta_store_id_from_order = (
+                    order_data.get("merchantId")
+                    or order_data.get("storeId")
+                    or (order_data.get("store") or {}).get("id")
+                    if isinstance(order_data.get("store"), dict)
+                    else order_data.get("store")
+                )
+
+                print(f"[Webhook][receive_order_event] Header sem merchant_id. Procurando keeta_merchant_id no pedido: {keeta_store_id_from_order!r}")
+
+                if keeta_store_id_from_order is not None:
+                    config = StoreConfig.query.filter_by(keeta_merchant_id=str(keeta_store_id_from_order)).first()
+                    if config:
+                        local_store_id = str(config.store_id)
+                        print(f"[Webhook][receive_order_event] StoreConfig encontrada: keeta_merchant_id={keeta_store_id_from_order} -> store_id local={local_store_id}")
+                    else:
+                        print(f"[Webhook][receive_order_event] AVISO: nenhuma StoreConfig com keeta_merchant_id={keeta_store_id_from_order}. Usando fallback '1'.")
+
+            if not local_store_id:
+                print(f"[Webhook][receive_order_event] AVISO: não foi possível resolver o store_id local do pedido {order_id}. Usando fallback '1' — todo pedido cairá na mesma loja se isso persistir.")
+                local_store_id = "1"
+
+            print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id local={local_store_id})...")
+            save_order_from_keeta(order_data, local_store_id)
         else:
             print(f"[Webhook][receive_order_event] AVISO: não foi possível obter detalhes do pedido {order_id} na Keeta (timeout ou erro na chamada).")
 
