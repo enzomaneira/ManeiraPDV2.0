@@ -67,6 +67,19 @@ MERCHANT_MENU_API_KEY = os.getenv("MERCHANT_MENU_API_KEY", "123456")
 # operação normal, mas curtos o suficiente para nunca travar um worker.
 REQUEST_TIMEOUT = (5, 15)
 
+MERCHANT_UPDATE_ENTITY_TYPES = frozenset({
+    "MERCHANT",
+    "BASIC_INFO",
+    "SERVICE",
+    "MENU",
+    "CATEGORY",
+    "ITEM",
+    "ITEM_OFFER",
+    "OPTION_GROUP",
+    "OPTION",
+    "AVAILABILITY",
+})
+
 # URL pública do backend — usada no onboarding para informar à Keeta:
 #   - onde fazer POST dos eventos de pedido (webhook)
 #   - onde fazer GET do cardápio (menu endpoint)
@@ -623,6 +636,126 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
         return None
 
 
+def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | None:
+    """Valida um push cirúrgico antes de enviá-lo para a Keeta."""
+    if entity_type not in MERCHANT_UPDATE_ENTITY_TYPES:
+        return f"entityType inválido: {entity_type!r}"
+    if not isinstance(updated_objects, list) or not updated_objects:
+        return "updatedObjects não pode ser vazio quando entityType está presente"
+
+    required_fields = {
+        "MERCHANT": {"id", "status", "basicInfo", "services"},
+        "BASIC_INFO": {"id", "name"},
+        "SERVICE": {"id", "status", "serviceType", "menuId"},
+        "MENU": {"id", "name", "description", "externalCode", "categoryId"},
+        "CATEGORY": {"id", "index", "name", "status", "itemOfferId"},
+        "ITEM": {"id", "name", "description", "externalCode", "status", "serving", "unit", "nutritionalInfo"},
+        "ITEM_OFFER": {"id", "itemId", "index", "status", "price", "optionGroupsId"},
+        "OPTION_GROUP": {
+            "id", "index", "name", "description", "externalCode", "status",
+            "minPermitted", "maxPermitted", "priceMethod", "options",
+        },
+        "OPTION": {"id", "itemId", "index", "status", "price"},
+        "AVAILABILITY": {"id", "hours"},
+    }
+
+    for index, entity in enumerate(updated_objects):
+        if not isinstance(entity, dict):
+            return f"updatedObjects[{index}] precisa ser um objeto completo"
+        missing_fields = sorted(required_fields[entity_type] - entity.keys())
+        if missing_fields:
+            return (
+                f"updatedObjects[{index}] ({entity_type}) está incompleto; "
+                f"campos ausentes: {', '.join(missing_fields)}"
+            )
+        if not isinstance(entity.get("id"), str) or not entity["id"].strip():
+            return f"updatedObjects[{index}].id é obrigatório"
+
+        if entity_type == "ITEM_OFFER":
+            prices = [entity.get("price"), entity.get("deliveryPrice"), entity.get("pickupPrice")]
+            has_delivery_or_pickup_price = any(
+                isinstance(price, dict) and price.get("value") is not None
+                for price in prices[1:]
+            )
+            # O formato de referência usa `price` para a oferta padrão de
+            # delivery. Nunca aceite somente um preço indoor.
+            has_standard_price = isinstance(prices[0], dict) and prices[0].get("value") is not None
+            if not has_delivery_or_pickup_price and not has_standard_price:
+                return (
+                    f"updatedObjects[{index}] (ITEM_OFFER) precisa ter preço de delivery "
+                    "ou pickup; preço indoor isolado não é permitido"
+                )
+
+        if entity_type == "OPTION_GROUP":
+            options = entity.get("options")
+            if not isinstance(options, list):
+                return f"updatedObjects[{index}].options precisa ser uma lista completa"
+            available_count = sum(
+                1 for option in options
+                if isinstance(option, dict) and option.get("status") == "AVAILABLE"
+            )
+            min_permitted = entity.get("minPermitted")
+            if not isinstance(min_permitted, int) or min_permitted < 0:
+                return f"updatedObjects[{index}].minPermitted precisa ser um inteiro não negativo"
+            if available_count < min_permitted:
+                return (
+                    f"updatedObjects[{index}] (OPTION_GROUP) é unfulfillable: "
+                    f"minPermitted={min_permitted}, opções AVAILABLE={available_count}"
+                )
+
+    return None
+
+
+def notify_merchant_update(
+    merchant_id: str,
+    *,
+    merchant_status: str | None = None,
+    entity_type: str | None = None,
+    updated_objects: list | None = None,
+) -> tuple[bool, str | None]:
+    """Executa os três modos documentados de POST /v1/merchantUpdate."""
+    if merchant_status is not None:
+        if merchant_status not in {"AVAILABLE", "UNAVAILABLE"}:
+            return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
+        if entity_type is not None or updated_objects is not None:
+            return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
+        payload = {"merchantStatus": merchant_status}
+    elif entity_type is None and updated_objects is None:
+        # Full refresh: {} instrui a Keeta a chamar novamente o GET /v1/merchant.
+        payload = {}
+    elif entity_type is None or updated_objects is None:
+        return False, "entityType e updatedObjects devem ser enviados juntos"
+    else:
+        validation_error = _validate_merchant_update(entity_type, updated_objects)
+        if validation_error:
+            return False, validation_error
+        payload = {"entityType": entity_type, "updatedObjects": updated_objects}
+
+    endpoint_merchant_id = merchant_uuid(merchant_id)
+    url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
+    body = canonical_json(payload)
+    print(f"[Keeta][notify_merchant_update] POST {url} | payload={payload} | body_len={len(body)}")
+
+    try:
+        response = requests.post(
+            url,
+            headers=_build_headers(url, body=body),
+            data=body,
+            timeout=REQUEST_TIMEOUT,
+        )
+        print(
+            f"[Keeta][notify_merchant_update] Resposta | status_code={response.status_code} | "
+            f"body={response.text[:300]}"
+        )
+        success = response.status_code in (200, 201, 204)
+        error = None if success else f"Keeta API retornou {response.status_code}: {response.text[:200]}"
+        return success, error
+    except Exception as error:
+        error_detail = f"{type(error).__name__}: {error}"
+        print(f"[Keeta][notify_merchant_update] ERRO: {error_detail}")
+        return False, error_detail
+
+
 def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, str | None]:
     """
     Abre ou fecha a loja na plataforma Keeta.
@@ -641,22 +774,12 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     print(f"[Keeta][update_store_status] Assinando e enviando exatamente esta URL: {url}")
     status = "AVAILABLE" if is_open else "UNAVAILABLE"
 
-    payload = {"merchantStatus": status}
-    body = canonical_json(payload)
-    print(f"[Keeta][update_store_status] POST {url} | payload={payload} | body_canonico={body}")
-
-    try:
-        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
-        print(f"[Keeta][update_store_status] Resposta | status_code={response.status_code} | body={response.text[:300]}")
-        sucesso = response.status_code in (200, 201, 204)
-        erro = None if sucesso else f"Keeta API retornou {response.status_code}: {response.text[:200]}"
-        print(f"[Keeta][update_store_status] FIM | keeta_merchant_id={keeta_merchant_id} | sucesso={sucesso}")
-        return sucesso, erro
-    except Exception as e:
-        erro_msg = f"{type(e).__name__}: {e}"
-        print(f"[Keeta][update_store_status] ERRO: {erro_msg}")
-        print(f"[Keeta][update_store_status] FIM (falha) | keeta_merchant_id={keeta_merchant_id}")
-        return False, erro_msg
+    sucesso, erro = notify_merchant_update(
+        keeta_merchant_id,
+        merchant_status=status,
+    )
+    print(f"[Keeta][update_store_status] FIM | keeta_merchant_id={keeta_merchant_id} | sucesso={sucesso}")
+    return sucesso, erro
 
 
 def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bool, str | None]:
@@ -681,11 +804,11 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
 
     if menu_push is None:
-        # Refresh por pull: body realmente vazio. Não use `{}`.
-        body = ""
+        # Modo 1: {} instrui a Keeta a refazer o GET /v1/merchant.
+        body = canonical_json({})
         print(
             f"[Keeta][force_menu_sync] POST {url} | "
-            "refresh_por_get=True | body_vazio=True"
+            "refresh_por_get=True | body={}"
         )
     else:
         if not isinstance(menu_push, dict):

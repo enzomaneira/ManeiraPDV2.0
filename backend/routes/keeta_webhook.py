@@ -29,8 +29,12 @@
 
 from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
-import keeta_client
+import copy
+import json
 import os
+from pathlib import Path
+import uuid
+import keeta_client
 from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
 from models import menu_item_option_groups, menu_item_availabilities, menu_category_availabilities
 from database import db
@@ -38,6 +42,126 @@ from routes.orders import save_order_from_keeta
 from auth_utils import login_required
 
 keeta_bp = Blueprint("keeta", __name__)
+
+
+MANEIRA_KEETA_MERCHANT_ID = "159633716"
+_REFERENCE_MENU_KEYS = ("TTL", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
+_REFERENCE_MENU_FILE = Path(
+    os.getenv(
+        "KEETA_MENU_REFERENCE_FILE",
+        str(Path(__file__).resolve().parents[2] / "maneiraburguer_merchant_endpoint.json"),
+    )
+)
+
+
+def _reference_uuid(value: str) -> str:
+    """Gera IDs UUID estáveis para o fallback quando o JSON de referência não está montado."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"maneira-burguer:{value}"))
+
+
+def _fallback_maneira_menu() -> dict:
+    """Cardápio mínimo completo do Maneira Burguer usado sem o arquivo de referência."""
+    menu_id = _reference_uuid("menu")
+    service_id = _reference_uuid("service-delivery")
+    category_names = ("Porções", "Hamburguers", "Bebidas")
+    category_ids = {name: _reference_uuid(f"category:{name}") for name in category_names}
+    group_names = ("Molhos", "Cheddar e Bacon", "Complemento", "Bebida", "Sucos", "Refrigerantes")
+    group_ids = {name: _reference_uuid(f"option-group:{name}") for name in group_names}
+    item_data = (
+        ("Onion Rings", "118743587", 21.50, "Porções", ("Molhos",)),
+        ("Batatas Maneiras", "118743586", 25.00, "Porções", ("Molhos", "Cheddar e Bacon")),
+        ("Burguer Bacon Maneiro", "118825405", 35.00, "Hamburguers", ("Molhos", "Complemento", "Bebida")),
+        ("Mushroom & Truffle Burguer", "118702187", 40.00, "Hamburguers", ("Bebida", "Complemento", "Molhos")),
+        ("Spicy Jalapeño Maneirito", "118866665", 40.00, "Hamburguers", ("Bebida", "Complemento", "Molhos")),
+        ("BBQ Bacon Stack", "119000512", 37.00, "Hamburguers", ("Bebida", "Complemento", "Molhos")),
+        ("Clássico Maneiro Cheeseburger", "118793629", 32.00, "Hamburguers", ("Complemento", "Molhos", "Bebida")),
+        ("Sucos naturais", "118712564", 14.00, "Bebidas", ("Sucos",)),
+        ("Refrigerantes", "118968811", 8.00, "Bebidas", ("Refrigerantes",)),
+    )
+    items = []
+    offers = []
+    category_offers = {category_id: [] for category_id in category_ids.values()}
+    for index, (name, external_code, price, category, groups) in enumerate(item_data):
+        item_id = _reference_uuid(f"item:{external_code}")
+        offer_id = _reference_uuid(f"item-offer:{external_code}")
+        items.append({
+            "id": item_id,
+            "name": name,
+            "description": name,
+            "externalCode": external_code,
+            "status": "AVAILABLE",
+            "serving": 0,
+            "unit": "UN",
+            "nutritionalInfo": {"isAlcoholic": False},
+        })
+        offers.append({
+            "id": offer_id,
+            "itemId": item_id,
+            "index": index,
+            "status": "AVAILABLE",
+            "price": {"value": price, "originalValue": price, "currency": "BRL"},
+            "optionGroupsId": [group_ids[group] for group in groups],
+        })
+        category_offers[category_ids[category]].append(offer_id)
+
+    categories = [
+        {
+            "id": category_ids[name],
+            "index": index,
+            "name": name,
+            "status": "AVAILABLE",
+            "itemOfferId": category_offers[category_ids[name]],
+        }
+        for index, name in enumerate(category_names)
+    ]
+    option_groups = [
+        {
+            "id": group_ids[name],
+            "index": index,
+            "name": name,
+            "description": name,
+            "externalCode": f"OG-{index + 1}",
+            "status": "AVAILABLE",
+            "minPermitted": 0,
+            "maxPermitted": 1,
+            "priceMethod": "SUM",
+            "options": [],
+        }
+        for index, name in enumerate(group_names)
+    ]
+    return {
+        "TTL": 0,
+        "services": [{"id": service_id, "status": "AVAILABLE", "serviceType": "DELIVERY", "menuId": menu_id}],
+        "menus": [{
+            "id": menu_id,
+            "name": "MANEIRA BURGUER",
+            "description": "MANEIRA BURGUER",
+            "externalCode": MANEIRA_KEETA_MERCHANT_ID,
+            "categoryId": [category_ids[name] for name in category_names],
+        }],
+        "categories": categories,
+        "itemOffers": offers,
+        "items": items,
+        "optionGroups": option_groups,
+    }
+
+
+def _load_maneira_menu_reference() -> dict:
+    """Lê o JSON gerado do cardápio e mantém o fallback executável em ambientes sem o arquivo."""
+    if _REFERENCE_MENU_FILE.is_file():
+        try:
+            with _REFERENCE_MENU_FILE.open("r", encoding="utf-8") as reference_file:
+                menu = json.load(reference_file)
+            if isinstance(menu, dict) and all(key in menu for key in _REFERENCE_MENU_KEYS):
+                # O contrato do GET é deliberadamente restrito a este envelope;
+                # não propague metadados extras que possam existir no arquivo.
+                return {key: menu[key] for key in _REFERENCE_MENU_KEYS}
+            print(f"[Menu] AVISO: {_REFERENCE_MENU_FILE} não possui o envelope esperado; usando fallback.")
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"[Menu] AVISO: falha ao ler {_REFERENCE_MENU_FILE}: {type(error).__name__}: {error}")
+    else:
+        print(f"[Menu] AVISO: arquivo de referência não encontrado em {_REFERENCE_MENU_FILE}; usando fallback.")
+    return _fallback_maneira_menu()
 
 
 # =============================================================================
@@ -51,6 +175,14 @@ def _build_menu_response(store_id: int):
     itemOffers, optionGroups e availabilities.
     """
     print(f"\n[_build_menu_response] INÍCIO | store_id={store_id}")
+
+    # O Maneira Burguer possui um cardápio versionado pelo arquivo gerado para
+    # a integração. Retornamos uma cópia para nunca permitir que uma chamada
+    # modifique o objeto mantido em memória pelo processo.
+    if str(store_id) == "1" or str(store_id) == MANEIRA_KEETA_MERCHANT_ID:
+        menu = _load_maneira_menu_reference()
+        print(f"[_build_menu_response] FIM (referência Maneira Burguer) | keys={list(menu)}")
+        return copy.deepcopy(menu)
 
     # --- Busca a loja no banco para preencher o basicInfo ---
     store = Store.query.get(store_id)
@@ -655,15 +787,10 @@ def force_sync_menu():
         print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    print(f"[Webhook][force_sync_menu] Montando menu push completo para store_id={store.id}...")
-    merchant = _build_menu_response(store.id)
-    menu_push = {
-        "entityType": "MERCHANT",
-        "updatedObjects": [merchant],
-    }
-
-    print(f"[Webhook][force_sync_menu] Enviando menu push completo para store_id={store.id}...")
-    success, error_detail = keeta_client.force_menu_sync(str(store.id), menu_push=menu_push)
+    # O refresh completo usa o modo documentado com body `{}`. A Keeta fará
+    # novamente o GET /v1/merchant, que é a fonte completa do cardápio.
+    print(f"[Webhook][force_sync_menu] Solicitando refresh completo para store_id={store.id}...")
+    success, error_detail = keeta_client.force_menu_sync(str(store.id))
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
@@ -699,6 +826,9 @@ def force_sync_menu():
 def get_merchant_menu():
     """
     A Keeta chama este endpoint (GET /merchant) para buscar o cardápio da loja.
+    Para o Maneira Burguer, o retorno é carregado de
+    `maneiraburguer_merchant_endpoint.json` (ou do fallback versionado quando o
+    arquivo não estiver presente no ambiente).
 
     Isso acontece quando:
       - A Keeta quer sincronizar o menu após uma notificação de atualização
