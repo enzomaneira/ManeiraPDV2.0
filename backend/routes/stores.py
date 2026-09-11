@@ -20,7 +20,7 @@ from flask import Blueprint, request, jsonify, g
 from database import db
 from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
 from auth_utils import login_required
-from keeta_client import KEETA_MERCHANT_ID, force_menu_sync
+from keeta_client import force_menu_sync
 
 stores_bp = Blueprint("stores", __name__)
 
@@ -42,7 +42,14 @@ def _notify_keeta_menu_sync(store):
         # O body `{}` fica reservado para um full refresh explícito.
         from routes.keeta_webhook import _build_menu_response
 
-        merchant_id = KEETA_MERCHANT_ID
+        from models import StoreConfig
+
+        config = StoreConfig.query.get(store.id)
+        if not config or not config.keeta_merchant_id:
+            print(f"[Stores][_notify_keeta_menu_sync] AVISO: sem keetaMerchantId registrado | store_id={store.id}")
+            return
+
+        merchant_id = str(config.keeta_merchant_id).strip()
         merchant = _build_menu_response(store.id)
         menu_push = {
             "entityType": "MERCHANT",

@@ -68,7 +68,7 @@ MERCHANT_MENU_API_KEY = os.getenv("MERCHANT_MENU_API_KEY", "123456")
 # operação normal, mas curtos o suficiente para nunca travar um worker.
 REQUEST_TIMEOUT = (5, 15)
 
-KEETA_MERCHANT_ID = os.getenv("KEETA_MERCHANT_ID", "159633716")
+KEETA_MERCHANT_ID = os.getenv("KEETA_MERCHANT_ID", "159584113")
 
 MERCHANT_UPDATE_ENTITY_TYPES = frozenset({
     "MERCHANT",
@@ -939,8 +939,9 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
 
     Nunca mistura `merchantStatus` com `entityType`/`updatedObjects`.
 
-    `merchant_id` é o ID local da loja (Software Service), não o
-    `keetaMerchantId`.
+    `merchant_id` é o ID da loja registrado no onboarding e usado no
+    path de `merchantUpdate`. Ele deve ser obtido da configuração da loja,
+    nunca de um ID global fixo de outra loja.
 
     Retorna (sucesso, mensagem_de_erro).
     """

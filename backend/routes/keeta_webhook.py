@@ -789,8 +789,15 @@ def force_sync_menu():
 
     # O refresh completo usa o modo documentado com body `{}`. A Keeta fará
     # novamente o GET /v1/merchant, que é a fonte completa do cardápio.
-    print(f"[Webhook][force_sync_menu] Solicitando refresh completo para store_id={store.id}...")
-    success, error_detail = keeta_client.force_menu_sync(keeta_client.KEETA_MERCHANT_ID)
+    config = StoreConfig.query.get(store.id)
+    if not config or not config.keeta_merchant_id:
+        print(f"[Webhook][force_sync_menu] FALHA (400): loja sem keetaMerchantId registrado | store_id={store.id}")
+        return jsonify({"error": "Loja ainda não está conectada à Keeta."}), 400
+
+    # O path precisa ser o mesmo merchant ID registrado no onboarding desta loja.
+    keeta_merchant_id = str(config.keeta_merchant_id).strip()
+    print(f"[Webhook][force_sync_menu] Solicitando refresh completo | store_id={store.id} | merchant_id={keeta_merchant_id}...")
+    success, error_detail = keeta_client.force_menu_sync(keeta_merchant_id)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
@@ -889,13 +896,11 @@ def update_store_status():
     is_open = data.get("isOpen", True)
     print(f"[Webhook][update_store_status] Body recebido: {data} | is_open={is_open} | keeta_merchant_id={config.keeta_merchant_id} | local_store_id={store.id}")
 
-    # O endpoint POST /v1/merchantUpdate/{merchantId} espera o NOSSO ID LOCAL
-    # (o mesmo usado como query param ?merchantId= no onboarding), NÃO o ID da
-    # Keeta (keetaMerchantId). Durante o onboarding registramos o mapeamento
-    # merchantId={store.id} ↔ keetaMerchantId={config.keeta_merchant_id},
-    # portanto a Keeta conhece esta loja como merchantId={store.id}.
-    print(f"[Webhook][update_store_status] Chamando keeta_client.update_store_status(local_store_id={store.id}, is_open={is_open})...")
-    success, error_detail = keeta_client.update_store_status(keeta_client.KEETA_MERCHANT_ID, is_open)
+    # O path precisa usar o identificador efetivamente registrado no onboarding
+    # desta loja. Nunca usar um merchant ID global fixo de outra loja.
+    keeta_merchant_id = str(config.keeta_merchant_id).strip()
+    print(f"[Webhook][update_store_status] Chamando merchantUpdate/{keeta_merchant_id} | store_id={store.id} | is_open={is_open}...")
+    success, error_detail = keeta_client.update_store_status(keeta_merchant_id, is_open)
     print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: success={success} | error={error_detail}")
 
     if success:
