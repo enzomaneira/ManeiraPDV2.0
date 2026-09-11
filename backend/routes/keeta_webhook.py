@@ -188,7 +188,13 @@ def _load_maneira_menu_reference() -> dict:
             if isinstance(menu, dict) and all(key in menu for key in _REFERENCE_MENU_KEYS):
                 # O contrato do GET é deliberadamente restrito a este envelope;
                 # não propague metadados extras que possam existir no arquivo.
-                return {key: menu[key] for key in _REFERENCE_MENU_KEYS}
+                normalized_menu = {key: menu[key] for key in _REFERENCE_MENU_KEYS}
+                option_groups = normalized_menu.get("optionGroups")
+                if isinstance(option_groups, list):
+                    for option_group in option_groups:
+                        if isinstance(option_group, dict) and option_group.get("options") == []:
+                            option_group.pop("options")
+                return normalized_menu
             print(f"[Menu] AVISO: {_REFERENCE_MENU_FILE} não possui o envelope esperado; usando fallback.")
         except (OSError, json.JSONDecodeError) as error:
             print(f"[Menu] AVISO: falha ao ler {_REFERENCE_MENU_FILE}: {type(error).__name__}: {error}")

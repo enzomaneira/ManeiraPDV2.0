@@ -755,9 +755,15 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
                 )
 
         if entity_type == "OPTION_GROUP":
+            options_was_provided = "options" in entity
             options = entity.get("options", [])
             if not isinstance(options, list):
                 return f"updatedObjects[{index}].options precisa ser uma lista quando informada"
+            if options_was_provided and not options:
+                return (
+                    f"updatedObjects[{index}].options não pode ser um array vazio; "
+                    "remova o campo quando o grupo não tiver opções"
+                )
             available_count = sum(
                 1 for option in options
                 if isinstance(option, dict) and option.get("status") == "AVAILABLE"
@@ -782,8 +788,8 @@ def _post_merchant_update_payload(merchant_id: str, payload: dict) -> tuple[bool
     has_entity = "entityType" in payload or "updatedObjects" in payload
     if has_status and has_entity:
         return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
-    if has_status and payload.get("merchantStatus") not in {"OPEN", "CLOSED"}:
-        return False, "merchantStatus precisa ser OPEN ou CLOSED"
+    if has_status and payload.get("merchantStatus") not in {"AVAILABLE", "UNAVAILABLE"}:
+        return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
     if has_entity:
         entity_type = payload.get("entityType")
         updated_objects = payload.get("updatedObjects")
@@ -828,8 +834,8 @@ def notify_merchant_update(
 ) -> tuple[bool, str | None]:
     """Executa um, e somente um, dos três formatos documentados."""
     if merchant_status is not None:
-        if merchant_status not in {"OPEN", "CLOSED"}:
-            return False, "merchantStatus precisa ser OPEN ou CLOSED"
+        if merchant_status not in {"AVAILABLE", "UNAVAILABLE"}:
+            return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
         if entity_type is not None or updated_objects is not None:
             return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
         return _post_merchant_update_payload(merchant_id, {"merchantStatus": merchant_status})
@@ -855,6 +861,17 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     items = merchant.get("items")
     item_offers = merchant.get("itemOffers")
     option_groups = merchant.get("optionGroups")
+    if isinstance(option_groups, list):
+        normalized_option_groups = []
+        for option_group in option_groups:
+            if not isinstance(option_group, dict):
+                normalized_option_groups.append(option_group)
+                continue
+            normalized_option_group = dict(option_group)
+            if normalized_option_group.get("options") == []:
+                normalized_option_group.pop("options")
+            normalized_option_groups.append(normalized_option_group)
+        option_groups = normalized_option_groups
     basic_info = dict(merchant.get("basicInfo") or {})
     basic_info.setdefault("name", "MANEIRA BURGUER")
     basic_info.setdefault("document", "12345678000199")
@@ -930,7 +947,7 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     """
     print(f"\n[Keeta][update_store_status] INÍCIO | keeta_merchant_id={keeta_merchant_id} | is_open={is_open}")
 
-    status = "OPEN" if is_open else "CLOSED"
+    status = "AVAILABLE" if is_open else "UNAVAILABLE"
 
     sucesso, erro = notify_merchant_update(
         keeta_merchant_id,
