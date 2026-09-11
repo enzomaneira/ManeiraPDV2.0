@@ -45,7 +45,7 @@ keeta_bp = Blueprint("keeta", __name__)
 
 
 MANEIRA_KEETA_MERCHANT_ID = "159633716"
-_REFERENCE_MENU_KEYS = ("TTL", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
+_REFERENCE_MENU_KEYS = ("TTL", "basicInfo", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
 _REFERENCE_MENU_FILE = Path(
     os.getenv(
         "KEETA_MENU_REFERENCE_FILE",
@@ -125,13 +125,46 @@ def _fallback_maneira_menu() -> dict:
             "minPermitted": 0,
             "maxPermitted": 1,
             "priceMethod": "SUM",
-            "options": [],
         }
         for index, name in enumerate(group_names)
     ]
     return {
         "TTL": 0,
-        "services": [{"id": service_id, "status": "AVAILABLE", "serviceType": "DELIVERY", "menuId": menu_id}],
+        "basicInfo": {
+            "name": "MANEIRA BURGUER",
+            "document": "12345678000199",
+            "merchantType": "RESTAURANT",
+            "address": {
+                "latitude": -23.5505,
+                "longitude": -46.6333,
+                "lat": -23.5505,
+                "lng": -46.6333,
+            },
+            "contactEmails": ["contato@maneiraburguer.com.br"],
+            "contactPhones": {"commercialNumber": "5511999999999"},
+            "minOrderValue": {"value": 0.0, "currency": "BRL"},
+            "averagePreparationTime": 30,
+            "merchantCategories": ["RESTAURANT"],
+        },
+        "services": [{
+            "id": service_id,
+            "status": "AVAILABLE",
+            "serviceType": "DELIVERY",
+            "menuId": menu_id,
+            "serviceHours": {
+                "id": "103912b3-0daf-536f-8aa8-96d7f58d8723",
+                "weekHours": [{
+                    "dayOfWeek": [
+                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                        "FRIDAY", "SATURDAY", "SUNDAY",
+                    ],
+                    "timePeriods": {
+                        "startTime": "11:00:00.000Z",
+                        "endTime": "23:00:00.000Z",
+                    },
+                }],
+            },
+        }],
         "menus": [{
             "id": menu_id,
             "name": "MANEIRA BURGUER",
@@ -352,7 +385,7 @@ def _build_menu_response(store_id: int):
                   f"para esta resposta — corrija o grupo no cardápio para resolver definitivamente.")
             min_permitted = available_options_count
 
-        option_groups.append({
+        option_group_payload = {
             "id":           og_id,
             "index":        og.index if og.index is not None else 0,
             "name":         og.name,
@@ -361,8 +394,10 @@ def _build_menu_response(store_id: int):
             "status":       og.status or "AVAILABLE",
             "minPermitted": min_permitted,
             "maxPermitted": max_permitted,
-            "options":      options_list,
-        })
+        }
+        if options_list:
+            option_group_payload["options"] = options_list
+        option_groups.append(option_group_payload)
 
     # --- 6. AVAILABILITIES ---
     availabilities_db = MenuAvailability.query.filter_by(store_id=store_id).all()
@@ -429,16 +464,27 @@ def _build_menu_response(store_id: int):
         # viola o minLength do schema.
         "id":     keeta_client.merchant_uuid(store_id),
         "status": "AVAILABLE",
-        "basicInfo": {
-            "name":           store_name,
-            "document":       "12345678000199",
-            "corporateName":  f"{store_name} Ltda",
-            "description":    "Os melhores produtos da região!",
-            "contactEmails":  ["contato@minhaloja.com.br"],
-            "contactPhones": {
-                "commercialNumber": "55-11999999999",
+            "basicInfo": {
+                "name":                    store_name,
+                "document":                "12345678000199",
+                "corporateName":           f"{store_name} Ltda",
+                "description":             "Os melhores produtos da região!",
+                "merchantType":             "RESTAURANT",
+                "address": {
+                    "latitude":              -23.5505,
+                    "longitude":             -46.6333,
+                    "lat":                   -23.5505,
+                    "lng":                   -46.6333,
+                },
+                "contactEmails":           ["contato@maneiraburguer.com.br"],
+                "contactPhones": {
+                    "commercialNumber":      "5511999999999",
+                },
+                "minOrderValue":            {"value": 0.0, "currency": "BRL"},
+                "averagePreparationTime":  30,
+                "merchantCategories":      ["RESTAURANT"],
             },
-        },
+
         "services":       services,
         "menus":          menus,
         "categories":     categories,

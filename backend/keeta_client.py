@@ -681,7 +681,7 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
         "ITEM_OFFER": {"id", "itemId", "index", "status", "price", "optionGroupsId"},
         "OPTION_GROUP": {
             "id", "index", "name", "description", "externalCode", "status",
-            "minPermitted", "maxPermitted", "priceMethod", "options",
+            "minPermitted", "maxPermitted", "priceMethod",
         },
         "OPTION": {"id", "itemId", "index", "status", "price"},
         "AVAILABILITY": {"id", "hours"},
@@ -755,9 +755,9 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
                 )
 
         if entity_type == "OPTION_GROUP":
-            options = entity.get("options")
+            options = entity.get("options", [])
             if not isinstance(options, list):
-                return f"updatedObjects[{index}].options precisa ser uma lista completa"
+                return f"updatedObjects[{index}].options precisa ser uma lista quando informada"
             available_count = sum(
                 1 for option in options
                 if isinstance(option, dict) and option.get("status") == "AVAILABLE"
@@ -782,8 +782,8 @@ def _post_merchant_update_payload(merchant_id: str, payload: dict) -> tuple[bool
     has_entity = "entityType" in payload or "updatedObjects" in payload
     if has_status and has_entity:
         return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
-    if has_status and payload.get("merchantStatus") not in {"AVAILABLE", "UNAVAILABLE"}:
-        return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
+    if has_status and payload.get("merchantStatus") not in {"OPEN", "CLOSED"}:
+        return False, "merchantStatus precisa ser OPEN ou CLOSED"
     if has_entity:
         entity_type = payload.get("entityType")
         updated_objects = payload.get("updatedObjects")
@@ -828,8 +828,8 @@ def notify_merchant_update(
 ) -> tuple[bool, str | None]:
     """Executa um, e somente um, dos três formatos documentados."""
     if merchant_status is not None:
-        if merchant_status not in {"AVAILABLE", "UNAVAILABLE"}:
-            return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
+        if merchant_status not in {"OPEN", "CLOSED"}:
+            return False, "merchantStatus precisa ser OPEN ou CLOSED"
         if entity_type is not None or updated_objects is not None:
             return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
         return _post_merchant_update_payload(merchant_id, {"merchantStatus": merchant_status})
@@ -930,7 +930,7 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     """
     print(f"\n[Keeta][update_store_status] INÍCIO | keeta_merchant_id={keeta_merchant_id} | is_open={is_open}")
 
-    status = "AVAILABLE" if is_open else "UNAVAILABLE"
+    status = "OPEN" if is_open else "CLOSED"
 
     sucesso, erro = notify_merchant_update(
         keeta_merchant_id,
