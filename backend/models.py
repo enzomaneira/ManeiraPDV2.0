@@ -79,7 +79,9 @@ class StoreConfig(db.Model):
     Configurações de integração da loja — uma linha por Store (store_id é a PK).
 
     auto_accept:         Se True, aceita pedidos automaticamente sem intervenção manual.
-    keeta_merchant_id:   O ID que a Keeta atribuiu para esta loja.
+    keeta_merchant_id:   O merchant_id interno usado no onboarding e no
+                          path de merchantUpdate (o mesmo valor enviado em
+                          `keetaMerchantId`).
     is_store_open:       Se a loja está aberta/fechada na Keeta.
     keeta_authorized:    Se o app está autorizado por este merchant na Keeta
                           (atualizado via webhook de autorização 1301/1302).
@@ -98,6 +100,7 @@ class StoreConfig(db.Model):
         return {
             "storeId":          self.store_id,
             "autoAccept":       self.auto_accept,
+            "merchantId":       self.keeta_merchant_id,
             "keetaMerchantId":  self.keeta_merchant_id,
             "isStoreOpen":      self.is_store_open,
             "keetaAuthorized":  self.keeta_authorized,

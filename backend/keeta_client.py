@@ -68,7 +68,13 @@ MERCHANT_MENU_API_KEY = os.getenv("MERCHANT_MENU_API_KEY", "123456")
 # operação normal, mas curtos o suficiente para nunca travar um worker.
 REQUEST_TIMEOUT = (5, 15)
 
-KEETA_MERCHANT_ID = os.getenv("KEETA_MERCHANT_ID", "159584113")
+# Identificador do merchant gerado pelo nosso sistema e usado no onboarding
+# (query merchantId), no body keetaMerchantId e no path merchantUpdate.
+INTERNAL_MERCHANT_ID = os.getenv("INTERNAL_MERCHANT_ID", "159633716").strip()
+
+# Alias legado mantido para compatibilidade com integrações antigas. O fluxo
+# atual deve usar INTERNAL_MERCHANT_ID ou o valor persistido após o onboarding.
+KEETA_MERCHANT_ID = INTERNAL_MERCHANT_ID
 
 MERCHANT_UPDATE_ENTITY_TYPES = frozenset({
     "MERCHANT",
@@ -572,55 +578,55 @@ def get_order_details(order_id: str, order_url: str | None = None) -> dict | Non
 #  4. CHAMADAS DE LOJA (Merchant API)
 # =============================================================================
 
-def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | None:
+def register_merchant(merchant_id: str, my_local_store_id: str) -> dict | None:
     """
-    Faz o Onboarding da loja na Keeta.
+    Faz o onboarding da loja usando o mesmo identificador nos dois campos.
 
-    O que faz:
-      - Registra o mapeamento entre o ID da loja local e o ID da Keeta
-      - Informa a URL do webhook onde a Keeta vai enviar eventos de pedido
-      - Informa a URL do endpoint GET /merchant (onde a Keeta busca o cardápio)
+    `merchantId` na query string e `keetaMerchantId` no body representam o
+    mesmo identificador interno fornecido pelo nosso sistema. O mesmo valor
+    também é usado no path de `merchantUpdate/{merchantId}`. O ID real da
+    loja na Keeta não deve ser usado nesse path.
 
-    Quando usar: uma única vez ao conectar uma loja nova.
-
-    Endpoint: PUT /v1/merchantOnboarding?merchantId={meuId}
+    Endpoint: PUT /v1/merchantOnboarding?merchantId={merchant_id}
     """
-    print(f"\n[Keeta][register_merchant] INÍCIO | keeta_merchant_id={keeta_merchant_id} | my_local_store_id={my_local_store_id}")
+    merchant_id = str(merchant_id).strip()
+    local_store_id = str(my_local_store_id).strip()
+    print(
+        f"\n[Keeta][register_merchant] INÍCIO | merchant_id={merchant_id} | "
+        f"my_local_store_id={local_store_id}"
+    )
+
+    if not merchant_id:
+        print("[Keeta][register_merchant] FALHA: merchant_id não pode ser vazio.")
+        return None
+    if not local_store_id:
+        print("[Keeta][register_merchant] FALHA: my_local_store_id não pode ser vazio.")
+        return None
 
     url = f"{BASE_URL}/v1/merchantOnboarding"
-    # Keeta's merchantId is the software-generated merchant identifier. It
-    # must match Merchant.id and the merchantUpdate path parameter.
-    software_merchant_id = merchant_uuid(my_local_store_id)
-    query_params = {"merchantId": software_merchant_id}
-
-    # ATENÇÃO: `keetaMerchantId` DEVE ser um número inteiro, NÃO uma string.
-    # A documentação oficial da Keeta especifica o tipo como `number`, e enviar
-    # como string pode fazer o onboarding ser aceito mas o webhook não ser
-    # efetivamente registrado do lado da Keeta.
+    query_params = {"merchantId": merchant_id}
     try:
-        keeta_merchant_id_int = int(keeta_merchant_id)
-    except (ValueError, TypeError):
-        print(f"[Keeta][register_merchant] FALHA: keetaMerchantId='{keeta_merchant_id}' não é um número válido.")
+        merchant_id_number = int(merchant_id)
+    except (TypeError, ValueError):
+        print(f"[Keeta][register_merchant] FALHA: merchant_id='{merchant_id}' precisa ser numérico.")
         return None
 
     payload = {
         "getMerchantURL": {
-            # O baseURL precisa apontar para a rota real do nosso GET /menu.
-            # O storeId identifica o merchant local e torna a URL única por loja.
-            "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={my_local_store_id}",
-            "apiKey":  MERCHANT_MENU_API_KEY,
+            "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={local_store_id}",
+            "apiKey": MERCHANT_MENU_API_KEY,
         },
-        "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",  # Keeta vai fazer POST aqui para enviar eventos
-        "keetaMerchantId": keeta_merchant_id_int,         # DEVE ser number (int), não string
+        "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",
+        "keetaMerchantId": merchant_id_number,
     }
     body = canonical_json(payload)
     print(
         f"[Keeta][register_merchant] Payload montado | "
-        f"query_merchant_id={software_merchant_id} | "
+        f"merchantId(query)={merchant_id} | keetaMerchantId(body)={merchant_id} | "
         f"body_sha256={hashlib.sha256(body.encode('utf-8')).hexdigest()}"
     )
 
-    full_url_with_params = f"{url}?merchantId={software_merchant_id}"
+    full_url_with_params = f"{url}?merchantId={merchant_id}"
     print(f"[Keeta][register_merchant] PUT {full_url_with_params}")
     try:
         response = requests.put(
@@ -629,13 +635,19 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
             data=body,
             timeout=REQUEST_TIMEOUT,
         )
-        print(f"[Keeta][register_merchant] Resposta | status_code={response.status_code} | body={response.text[:500]}")
-        resultado = response.json()
-        print(f"[Keeta][register_merchant] FIM (sucesso) | keeta_merchant_id={keeta_merchant_id}")
+        print(
+            f"[Keeta][register_merchant] Resposta | status_code={response.status_code} | "
+            f"body={response.text[:500]}"
+        )
+        if response.status_code not in (200, 201, 204):
+            print(f"[Keeta][register_merchant] FALHA HTTP | status_code={response.status_code}")
+            return None
+        resultado = response.json() if response.content else {}
+        print(f"[Keeta][register_merchant] FIM (sucesso) | merchant_id={merchant_id}")
         return resultado
-    except Exception as e:
-        print(f"[Keeta][register_merchant] ERRO: {type(e).__name__}: {e}")
-        print(f"[Keeta][register_merchant] FIM (falha) | keeta_merchant_id={keeta_merchant_id}")
+    except Exception as error:
+        print(f"[Keeta][register_merchant] ERRO: {type(error).__name__}: {error}")
+        print(f"[Keeta][register_merchant] FIM (falha) | merchant_id={merchant_id}")
         return None
 
 

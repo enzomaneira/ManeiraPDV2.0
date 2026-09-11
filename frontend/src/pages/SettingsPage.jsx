@@ -29,25 +29,19 @@ export default function SettingsPage({ config, setConfig }) {
   };
 
   const handleConnectKeeta = async () => {
-    const keetaId = (config.keetaId || '').trim();
-
-    if (!keetaId) {
-        alert("Informe o ID da loja na Keeta antes de ativar a integração.");
-        return;
-    }
-
     setConnecting(true);
     try {
-        console.log("Ativando integração via onboarding direto | keetaStoreID:", keetaId, "| storeID:", keetaId);
+        console.log("Ativando integração via onboarding direto | merchant_id interno configurado no backend");
 
-        const response = await api.put('/keeta/onboard', {
-            keetaStoreId: keetaId,
-            storeId: keetaId,
-        });
+        const response = await api.put('/keeta/onboard', {});
 
         console.log("Resposta do onboarding:", response.data);
 
-        setConfig({ ...config, keetaStatus: 'CONNECTED' });
+        setConfig({
+            ...config,
+            keetaId: response.data?.merchantId || response.data?.keetaMerchantId || config.keetaId,
+            keetaStatus: 'CONNECTED',
+        });
         setMessage({ type: 'success', text: 'Integração com a Keeta ativada com sucesso!' });
         setTimeout(() => setMessage(null), 3000);
     } catch (error) {
@@ -107,19 +101,19 @@ export default function SettingsPage({ config, setConfig }) {
                   
                   {/* Campo de ID */}
                   <div>
-                      <label className="block text-sm font-bold text-slate-600 mb-2">ID da Loja na Keeta</label>
+                      <label className="block text-sm font-bold text-slate-600 mb-2">Merchant ID interno</label>
                       <div className="relative">
                           <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                           <input 
                             type="text" 
                             value={config.keetaId || ''} 
-                            onChange={(e) => setConfig({...config, keetaId: e.target.value})}
-                            placeholder="Ex: 285076..."
+                            readOnly
+                            placeholder="Configurado pelo sistema"
                             className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-yellow-400 focus:outline-none font-medium text-slate-700"
                           />
                       </div>
                       <p className="text-[10px] text-slate-400 mt-1 ml-1">
-                        O ID da sua loja dentro do portal do parceiro Keeta.
+                        Este é o mesmo valor usado no onboarding e no endpoint merchantUpdate.
                       </p>
                   </div>
 

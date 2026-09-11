@@ -20,6 +20,7 @@ from flask import Blueprint, request, jsonify, g
 from database import db
 from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
 from auth_utils import login_required
+import keeta_client
 from keeta_client import force_menu_sync
 
 stores_bp = Blueprint("stores", __name__)
@@ -30,8 +31,8 @@ def _notify_keeta_menu_sync(store):
     Notifica a Keeta (POST /merchantUpdate) sempre que o cardápio muda,
     para que ela puxe o cardápio atualizado via GET /merchant.
 
-    O merchant_id usado aqui é o identificador configurado para o merchant
-    na Keeta (`KEETA_MERCHANT_ID`). O endpoint recebe cada entityType em um
+    O merchant_id usado aqui é o identificador interno persistido no onboarding
+    (`StoreConfig.keeta_merchant_id`). O endpoint recebe cada entityType em um
     POST independente; não usamos o body misto MERCHANT.
 
     Falhas aqui são apenas logadas (não interrompem a resposta ao
@@ -49,7 +50,12 @@ def _notify_keeta_menu_sync(store):
             print(f"[Stores][_notify_keeta_menu_sync] AVISO: sem keetaMerchantId registrado | store_id={store.id}")
             return
 
-        merchant_id = str(config.keeta_merchant_id).strip()
+        merchant_id = str(keeta_client.INTERNAL_MERCHANT_ID).strip()
+        if str(config.keeta_merchant_id).strip() != merchant_id:
+            print(
+                f"[Stores][_notify_keeta_menu_sync] AVISO: StoreConfig possui '{config.keeta_merchant_id}', "
+                f"mas o merchant_id interno configurado é '{merchant_id}'. Usando o interno."
+            )
         merchant = _build_menu_response(store.id)
         menu_push = {
             "entityType": "MERCHANT",
