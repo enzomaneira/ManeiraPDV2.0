@@ -20,7 +20,7 @@ from flask import Blueprint, request, jsonify, g
 from database import db
 from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
 from auth_utils import login_required
-from keeta_client import force_menu_sync
+from keeta_client import KEETA_MERCHANT_ID, force_menu_sync
 
 stores_bp = Blueprint("stores", __name__)
 
@@ -30,21 +30,25 @@ def _notify_keeta_menu_sync(store):
     Notifica a Keeta (POST /merchantUpdate) sempre que o cardápio muda,
     para que ela puxe o cardápio atualizado via GET /merchant.
 
-    IMPORTANTE: o merchant_id usado aqui precisa ser EXATAMENTE o mesmo
-    valor usado como `my_local_store_id` durante o onboarding
-    (register_merchant em keeta_client.py) — que é `str(store.id)`.
-    Não confundir com `store.keeta_merchant_id` (o ID da loja DENTRO da
-    Keeta), que é usado só no onboarding, nunca aqui.
+    O merchant_id usado aqui é o identificador configurado para o merchant
+    na Keeta (`KEETA_MERCHANT_ID`). O endpoint recebe cada entityType em um
+    POST independente; não usamos o body misto MERCHANT.
 
     Falhas aqui são apenas logadas (não interrompem a resposta ao
     frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
     """
     try:
-        # O body vazio/{} faz a Keeta chamar nosso GET /merchant e buscar o
-        # cardápio completo. Não enviamos o merchant no Menu Push para evitar
-        # divergência entre o JSON enviado e o JSON usado pela Keeta.
-        merchant_id = str(store.id)
-        success, err = force_menu_sync(merchant_id)
+        # Alterações normais usam os sete POSTs independentes por entidade.
+        # O body `{}` fica reservado para um full refresh explícito.
+        from routes.keeta_webhook import _build_menu_response
+
+        merchant_id = KEETA_MERCHANT_ID
+        merchant = _build_menu_response(store.id)
+        menu_push = {
+            "entityType": "MERCHANT",
+            "updatedObjects": [merchant],
+        }
+        success, err = force_menu_sync(merchant_id, menu_push=menu_push)
         if not success:
             print(f"[Stores][_notify_keeta_menu_sync] AVISO: falha ao notificar a Keeta | store_id={store.id} | erro={err}")
         else:

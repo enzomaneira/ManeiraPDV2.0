@@ -407,14 +407,133 @@ def seed(store_id: int = 1, reset: bool = False):
 
 
 # =============================================================================
+#  SINCRONIZAÇÃO COM O CARDÁPIO DA BASE URL
+# =============================================================================
+
+def sync_from_baseurl(store_id: int = 1):
+    """Replica no banco o menu retornado pela fonte usada pela BaseURL."""
+    from routes.keeta_webhook import _load_maneira_menu_reference
+
+    menu = _load_maneira_menu_reference()
+    categories_data = menu.get("categories") or []
+    items_data = menu.get("items") or []
+    offers_data = menu.get("itemOffers") or []
+    groups_data = menu.get("optionGroups") or []
+
+    if not categories_data or not items_data or not offers_data:
+        raise ValueError("A BaseURL não retornou categorias, itens e ofertas completos")
+
+    print(f"\n  Sincronizando BaseURL para store_id={store_id}")
+    print(f"  Fonte: categorias={len(categories_data)}, itens={len(items_data)}, ofertas={len(offers_data)}, grupos={len(groups_data)}")
+
+    item_ids = session.query(MenuItem.id).filter(MenuItem.store_id == store_id).subquery()
+    category_ids = session.query(MenuCategory.id).filter(MenuCategory.store_id == store_id).subquery()
+    group_ids = session.query(MenuOptionGroup.id).filter(MenuOptionGroup.store_id == store_id).subquery()
+    availability_ids = session.query(MenuAvailability.id).filter(MenuAvailability.store_id == store_id).subquery()
+
+    session.execute(menu_item_option_groups.delete().where(menu_item_option_groups.c.menu_item_id.in_(item_ids)))
+    session.execute(menu_item_availabilities.delete().where(menu_item_availabilities.c.menu_item_id.in_(item_ids)))
+    session.execute(menu_category_availabilities.delete().where(menu_category_availabilities.c.category_id.in_(category_ids)))
+    session.query(MenuOption).filter(MenuOption.option_group_id.in_(group_ids)).delete(synchronize_session=False)
+    session.query(MenuItem).filter(MenuItem.store_id == store_id).delete(synchronize_session=False)
+    session.query(MenuOptionGroup).filter(MenuOptionGroup.store_id == store_id).delete(synchronize_session=False)
+    session.query(AvailabilityHour).filter(AvailabilityHour.availability_id.in_(availability_ids)).delete(synchronize_session=False)
+    session.query(MenuAvailability).filter(MenuAvailability.store_id == store_id).delete(synchronize_session=False)
+    session.query(MenuCategory).filter(MenuCategory.store_id == store_id).delete(synchronize_session=False)
+    session.flush()
+
+    category_by_source_id = {}
+    for position, source in enumerate(categories_data):
+        category = MenuCategory(
+            store_id=store_id,
+            name=source.get("name") or f"Categoria {position + 1}",
+            description=source.get("description") or "",
+            external_code=source.get("externalCode") or source.get("id") or f"category-{position + 1}",
+            index=source.get("index", position),
+            status=source.get("status") or "AVAILABLE",
+        )
+        session.add(category)
+        category_by_source_id[source.get("id")] = category
+    session.flush()
+
+    offer_by_source_item_id = {offer.get("itemId"): offer for offer in offers_data}
+    category_by_offer_id = {
+        offer_id: category
+        for source_category in categories_data
+        for offer_id in (source_category.get("itemOfferId") or [])
+        for category in [category_by_source_id.get(source_category.get("id"))]
+        if category is not None
+    }
+
+    group_by_source_id = {}
+    for position, source in enumerate(groups_data):
+        group = MenuOptionGroup(
+            store_id=store_id,
+            name=source.get("name") or f"Grupo {position + 1}",
+            description=source.get("description") or "",
+            external_code=source.get("externalCode") or source.get("id") or f"option-group-{position + 1}",
+            index=source.get("index", position),
+            status=source.get("status") or "AVAILABLE",
+            min_permitted=source.get("minPermitted", 0),
+            max_permitted=source.get("maxPermitted", 1),
+            price_method=source.get("priceMethod") or "SUM",
+        )
+        for option_position, option_source in enumerate(source.get("options") or []):
+            price = option_source.get("price") or {}
+            if isinstance(price, dict):
+                price = price.get("value", 0.0)
+            group.options.append(MenuOption(
+                name=option_source.get("name") or option_source.get("externalCode") or option_source.get("id") or f"Opção {option_position + 1}",
+                description=option_source.get("description") or "",
+                external_code=option_source.get("externalCode") or option_source.get("id") or f"option-{option_position + 1}",
+                index=option_source.get("index", option_position),
+                status=option_source.get("status") or "AVAILABLE",
+                price=price or 0.0,
+                max_permitted=option_source.get("maxPermitted"),
+            ))
+        session.add(group)
+        group_by_source_id[source.get("id")] = group
+    session.flush()
+
+    for position, source in enumerate(items_data):
+        offer = offer_by_source_item_id.get(source.get("id"))
+        if not offer:
+            raise ValueError(f"Item {source.get('id')} não possui itemOffer correspondente")
+        price_data = offer.get("price") or {}
+        price = price_data.get("value", 0.0) if isinstance(price_data, dict) else price_data
+        original_price = price_data.get("originalValue", price) if isinstance(price_data, dict) else price
+        category = category_by_offer_id.get(offer.get("id"))
+        item = MenuItem(
+            store_id=store_id,
+            category_id=category.id if category else None,
+            name=source.get("name") or source.get("externalCode") or f"Item {position + 1}",
+            description=source.get("description") or "",
+            external_code=source.get("externalCode") or source.get("id") or f"item-{position + 1}",
+            price=price or 0.0,
+            original_price=original_price or price or 0.0,
+            index=position,
+            status=source.get("status") or "AVAILABLE",
+        )
+        item.option_groups = [group_by_source_id[group_id] for group_id in (offer.get("optionGroupsId") or []) if group_id in group_by_source_id]
+        session.add(item)
+
+    session.commit()
+    print(f"  Sincronização concluída: {len(categories_data)} categorias, {len(items_data)} itens e {len(groups_data)} grupos.")
+
+
+# =============================================================================
 #  MAIN
 # =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Popula o banco com cardápio mock")
+    parser = argparse.ArgumentParser(description="Popula ou sincroniza o cardápio")
     parser.add_argument("--store", type=int, default=1, help="Store ID (default: 1)")
     parser.add_argument("--reset", action="store_true", help="Remove cardápio existente antes de inserir")
+    parser.add_argument("--sync-baseurl", action="store_true", help="Replica no banco o cardápio retornado pela BaseURL")
     args = parser.parse_args()
 
-    seed(store_id=args.store, reset=args.reset)
+    if args.sync_baseurl:
+        sync_from_baseurl(store_id=args.store)
+    else:
+        seed(store_id=args.store, reset=args.reset)
     session.close()

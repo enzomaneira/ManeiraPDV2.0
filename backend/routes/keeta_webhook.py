@@ -790,7 +790,7 @@ def force_sync_menu():
     # O refresh completo usa o modo documentado com body `{}`. A Keeta fará
     # novamente o GET /v1/merchant, que é a fonte completa do cardápio.
     print(f"[Webhook][force_sync_menu] Solicitando refresh completo para store_id={store.id}...")
-    success, error_detail = keeta_client.force_menu_sync(str(store.id))
+    success, error_detail = keeta_client.force_menu_sync(keeta_client.KEETA_MERCHANT_ID)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
@@ -895,7 +895,7 @@ def update_store_status():
     # merchantId={store.id} ↔ keetaMerchantId={config.keeta_merchant_id},
     # portanto a Keeta conhece esta loja como merchantId={store.id}.
     print(f"[Webhook][update_store_status] Chamando keeta_client.update_store_status(local_store_id={store.id}, is_open={is_open})...")
-    success, error_detail = keeta_client.update_store_status(str(store.id), is_open)
+    success, error_detail = keeta_client.update_store_status(keeta_client.KEETA_MERCHANT_ID, is_open)
     print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: success={success} | error={error_detail}")
 
     if success:

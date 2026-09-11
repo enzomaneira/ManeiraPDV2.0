@@ -20,6 +20,7 @@ import requests
 import json
 import os
 import rfc8785
+import uuid
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
@@ -66,6 +67,8 @@ MERCHANT_MENU_API_KEY = os.getenv("MERCHANT_MENU_API_KEY", "123456")
 # (connect_timeout, read_timeout) — generosos o suficiente para não afetar
 # operação normal, mas curtos o suficiente para nunca travar um worker.
 REQUEST_TIMEOUT = (5, 15)
+
+KEETA_MERCHANT_ID = os.getenv("KEETA_MERCHANT_ID", "159633716")
 
 MERCHANT_UPDATE_ENTITY_TYPES = frozenset({
     "MERCHANT",
@@ -636,8 +639,20 @@ def register_merchant(keeta_merchant_id: str, my_local_store_id: str) -> dict | 
         return None
 
 
+def _is_uuid(value) -> bool:
+    """Retorna True apenas para UUIDs textuais válidos."""
+    if not isinstance(value, str):
+        return False
+    try:
+        import uuid
+        uuid.UUID(value)
+        return True
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | None:
-    """Valida um push cirúrgico antes de enviá-lo para a Keeta."""
+    """Valida um único request de merchantUpdate antes do envio."""
     if entity_type not in MERCHANT_UPDATE_ENTITY_TYPES:
         return f"entityType inválido: {entity_type!r}"
     if not isinstance(updated_objects, list) or not updated_objects:
@@ -645,8 +660,9 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
 
     required_fields = {
         "MERCHANT": {"id", "status", "basicInfo", "services"},
-        "BASIC_INFO": {"id", "name"},
-        "SERVICE": {"id", "status", "serviceType", "menuId"},
+        # BASIC_INFO é um envelope: updatedObjects[0].basicInfo nunca pode ser null.
+        "BASIC_INFO": {"basicInfo"},
+        "SERVICE": {"id", "status", "serviceType", "menuId", "serviceHours"},
         "MENU": {"id", "name", "description", "externalCode", "categoryId"},
         "CATEGORY": {"id", "index", "name", "status", "itemOfferId"},
         "ITEM": {"id", "name", "description", "externalCode", "status", "serving", "unit", "nutritionalInfo"},
@@ -668,19 +684,59 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
                 f"updatedObjects[{index}] ({entity_type}) está incompleto; "
                 f"campos ausentes: {', '.join(missing_fields)}"
             )
-        if not isinstance(entity.get("id"), str) or not entity["id"].strip():
+        if entity_type != "BASIC_INFO" and (not isinstance(entity.get("id"), str) or not entity["id"].strip()):
             return f"updatedObjects[{index}].id é obrigatório"
+
+        if entity_type == "BASIC_INFO":
+            basic_info = entity.get("basicInfo")
+            if not isinstance(basic_info, dict):
+                return f"updatedObjects[{index}].basicInfo não pode ser null"
+            required_basic_info = {
+                "name", "document", "merchantType", "address", "contactEmails",
+                "contactPhones", "minOrderValue", "averagePreparationTime", "merchantCategories",
+            }
+            missing_basic_info = sorted(required_basic_info - basic_info.keys())
+            if missing_basic_info:
+                return f"basicInfo incompleto; campos ausentes: {', '.join(missing_basic_info)}"
+            address = basic_info.get("address")
+            if not isinstance(address, dict):
+                return "basicInfo.address precisa ser um objeto"
+            latitude = address.get("latitude", address.get("lat"))
+            longitude = address.get("longitude", address.get("lng"))
+            if latitude is None or longitude is None:
+                return "basicInfo.address precisa conter latitude/longitude ou lat/lng"
+
+        if entity_type == "SERVICE":
+            if not _is_uuid(entity.get("id")):
+                return f"updatedObjects[{index}].id do SERVICE precisa ser um UUID válido"
+            if entity.get("serviceType") != "DELIVERY":
+                return f"updatedObjects[{index}].serviceType precisa ser DELIVERY"
+            if not _is_uuid(entity.get("menuId")):
+                return f"updatedObjects[{index}].menuId precisa ser um UUID válido"
+            if not isinstance(entity.get("serviceHours"), dict):
+                return f"updatedObjects[{index}].serviceHours precisa ser um objeto"
+
+        if entity_type == "MENU":
+            if not _is_uuid(entity.get("id")):
+                return f"updatedObjects[{index}].id do MENU precisa ser um UUID válido"
+            category_ids = entity.get("categoryId")
+            if not isinstance(category_ids, list) or not category_ids:
+                return "MENU.categoryId precisa ser uma lista não vazia de UUIDs"
+            invalid_category_ids = [category_id for category_id in category_ids if not _is_uuid(category_id)]
+            if invalid_category_ids:
+                return "MENU.categoryId só pode conter UUIDs válidos, nunca externalCodes"
+
+        if entity_type in {"CATEGORY", "ITEM", "ITEM_OFFER", "OPTION_GROUP", "OPTION"}:
+            if not _is_uuid(entity.get("id")):
+                return f"updatedObjects[{index}].id precisa ser um UUID válido"
 
         if entity_type == "ITEM_OFFER":
             prices = [entity.get("price"), entity.get("deliveryPrice"), entity.get("pickupPrice")]
             has_delivery_or_pickup_price = any(
                 isinstance(price, dict) and price.get("value") is not None
-                for price in prices[1:]
+                for price in prices
             )
-            # O formato de referência usa `price` para a oferta padrão de
-            # delivery. Nunca aceite somente um preço indoor.
-            has_standard_price = isinstance(prices[0], dict) and prices[0].get("value") is not None
-            if not has_delivery_or_pickup_price and not has_standard_price:
+            if not has_delivery_or_pickup_price:
                 return (
                     f"updatedObjects[{index}] (ITEM_OFFER) precisa ter preço de delivery "
                     "ou pickup; preço indoor isolado não é permitido"
@@ -706,36 +762,31 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
     return None
 
 
-def notify_merchant_update(
-    merchant_id: str,
-    *,
-    merchant_status: str | None = None,
-    entity_type: str | None = None,
-    updated_objects: list | None = None,
-) -> tuple[bool, str | None]:
-    """Executa os três modos documentados de POST /v1/merchantUpdate."""
-    if merchant_status is not None:
-        if merchant_status not in {"AVAILABLE", "UNAVAILABLE"}:
-            return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
-        if entity_type is not None or updated_objects is not None:
-            return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
-        payload = {"merchantStatus": merchant_status}
-    elif entity_type is None and updated_objects is None:
-        # Full refresh: {} instrui a Keeta a chamar novamente o GET /v1/merchant.
-        payload = {}
-    elif entity_type is None or updated_objects is None:
-        return False, "entityType e updatedObjects devem ser enviados juntos"
-    else:
+def _post_merchant_update_payload(merchant_id: str, payload: dict) -> tuple[bool, str | None]:
+    """Envia exatamente um body independente para merchantUpdate."""
+    if not isinstance(payload, dict):
+        return False, "payload precisa ser um objeto JSON"
+    has_status = "merchantStatus" in payload
+    has_entity = "entityType" in payload or "updatedObjects" in payload
+    if has_status and has_entity:
+        return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
+    if has_status and payload.get("merchantStatus") not in {"AVAILABLE", "UNAVAILABLE"}:
+        return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
+    if has_entity:
+        entity_type = payload.get("entityType")
+        updated_objects = payload.get("updatedObjects")
+        if entity_type is None or updated_objects is None:
+            return False, "entityType e updatedObjects devem ser enviados juntos"
         validation_error = _validate_merchant_update(entity_type, updated_objects)
         if validation_error:
             return False, validation_error
-        payload = {"entityType": entity_type, "updatedObjects": updated_objects}
 
-    endpoint_merchant_id = merchant_uuid(merchant_id)
+    endpoint_merchant_id = str(merchant_id).strip()
+    if not endpoint_merchant_id:
+        return False, "merchantId não pode ser vazio"
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
     body = canonical_json(payload)
-    print(f"[Keeta][notify_merchant_update] POST {url} | payload={payload} | body_len={len(body)}")
-
+    print(f"[Keeta][_post_merchant_update_payload] POST {url} | payload={payload} | body_len={len(body)}")
     try:
         response = requests.post(
             url,
@@ -744,7 +795,7 @@ def notify_merchant_update(
             timeout=REQUEST_TIMEOUT,
         )
         print(
-            f"[Keeta][notify_merchant_update] Resposta | status_code={response.status_code} | "
+            f"[Keeta][_post_merchant_update_payload] Resposta | status_code={response.status_code} | "
             f"body={response.text[:300]}"
         )
         success = response.status_code in (200, 201, 204)
@@ -752,8 +803,106 @@ def notify_merchant_update(
         return success, error
     except Exception as error:
         error_detail = f"{type(error).__name__}: {error}"
-        print(f"[Keeta][notify_merchant_update] ERRO: {error_detail}")
+        print(f"[Keeta][_post_merchant_update_payload] ERRO: {error_detail}")
         return False, error_detail
+
+
+def notify_merchant_update(
+    merchant_id: str,
+    *,
+    merchant_status: str | None = None,
+    entity_type: str | None = None,
+    updated_objects: list | None = None,
+) -> tuple[bool, str | None]:
+    """Executa um, e somente um, dos três formatos documentados."""
+    if merchant_status is not None:
+        if merchant_status not in {"AVAILABLE", "UNAVAILABLE"}:
+            return False, "merchantStatus precisa ser AVAILABLE ou UNAVAILABLE"
+        if entity_type is not None or updated_objects is not None:
+            return False, "merchantStatus não pode ser combinado com entityType/updatedObjects"
+        return _post_merchant_update_payload(merchant_id, {"merchantStatus": merchant_status})
+
+    if entity_type is None and updated_objects is None:
+        return _post_merchant_update_payload(merchant_id, {})
+    if entity_type is None or updated_objects is None:
+        return False, "entityType e updatedObjects devem ser enviados juntos"
+    return _post_merchant_update_payload(
+        merchant_id,
+        {"entityType": entity_type, "updatedObjects": updated_objects},
+    )
+
+
+def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | None]:
+    """Envia o menu em sete POSTs independentes, na ordem das dependências."""
+    if not isinstance(merchant, dict):
+        return False, "merchant precisa ser um objeto JSON"
+
+    services = merchant.get("services")
+    menus = merchant.get("menus")
+    categories = merchant.get("categories")
+    items = merchant.get("items")
+    item_offers = merchant.get("itemOffers")
+    option_groups = merchant.get("optionGroups")
+    basic_info = dict(merchant.get("basicInfo") or {})
+    basic_info.setdefault("name", "MANEIRA BURGUER")
+    basic_info.setdefault("document", "12345678000199")
+    basic_info.setdefault("merchantType", "RESTAURANT")
+    basic_info.setdefault("contactEmails", ["contato@minhaloja.com.br"])
+    basic_info.setdefault("contactPhones", {"commercialNumber": "5511999999999"})
+    basic_info.setdefault("minOrderValue", {"value": 0.0, "currency": "BRL"})
+    basic_info.setdefault("averagePreparationTime", 30)
+    basic_info.setdefault("merchantCategories", ["RESTAURANT"])
+    address = dict(basic_info.get("address") or {})
+    latitude = address.get("latitude", address.get("lat", 0.0))
+    longitude = address.get("longitude", address.get("lng", 0.0))
+    address.update({"latitude": latitude, "longitude": longitude, "lat": latitude, "lng": longitude})
+    basic_info["address"] = address
+    if not isinstance(services, list) or not services:
+        return False, "services não pode ser vazio"
+    delivery_service = next(
+        (service for service in services if isinstance(service, dict) and service.get("serviceType") == "DELIVERY"),
+        None,
+    )
+    if delivery_service is None:
+        return False, "DELIVERY serviceType não existe no menu"
+    delivery_service = dict(delivery_service)
+    if not isinstance(delivery_service.get("serviceHours"), dict):
+        delivery_service["serviceHours"] = {
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{delivery_service['id']}:service-hours")),
+            "weekHours": [{
+                "dayOfWeek": [
+                    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                    "FRIDAY", "SATURDAY", "SUNDAY",
+                ],
+                "timePeriods": {"startTime": "11:00:00.000Z", "endTime": "23:00:00.000Z"},
+            }],
+        }
+    if not isinstance(basic_info, dict):
+        return False, "basicInfo não pode ser null"
+    if not isinstance(menus, list) or not menus:
+        return False, "menus não pode ser vazio"
+
+    requests_in_order = [
+        ("SERVICE", [delivery_service]),
+        ("BASIC_INFO", [{"basicInfo": basic_info}]),
+        ("MENU", menus),
+        ("CATEGORY", categories),
+        ("ITEM", items),
+        ("ITEM_OFFER", item_offers),
+        ("OPTION_GROUP", option_groups),
+    ]
+    for entity_type, updated_objects in requests_in_order:
+        if not isinstance(updated_objects, list) or not updated_objects:
+            return False, f"{entity_type}.updatedObjects não pode ser vazio"
+        success, error = notify_merchant_update(
+            merchant_id,
+            entity_type=entity_type,
+            updated_objects=updated_objects,
+        )
+        if not success:
+            return False, f"{entity_type}: {error}"
+        print(f"[Keeta][sync_menu_entities] {entity_type} atualizado com sucesso (204/2xx)")
+    return True, None
 
 
 def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, str | None]:
@@ -769,9 +918,6 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     """
     print(f"\n[Keeta][update_store_status] INÍCIO | keeta_merchant_id={keeta_merchant_id} | is_open={is_open}")
 
-    endpoint_merchant_id = merchant_uuid(keeta_merchant_id)
-    url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
-    print(f"[Keeta][update_store_status] Assinando e enviando exatamente esta URL: {url}")
     status = "AVAILABLE" if is_open else "UNAVAILABLE"
 
     sucesso, erro = notify_merchant_update(
@@ -787,9 +933,9 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
     Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}`.
-    Quando ``menu_push`` é informado, envia o envelope completo de MERCHANT.
-    Quando não é informado, envia body vazio para solicitar um refresh via GET
-    /merchant.
+    Quando ``menu_push`` é informado, divide o merchant em sete POSTs
+    independentes por entityType. Quando não é informado, envia `{}` para
+    solicitar um refresh via GET /merchant.
 
     Nunca mistura `merchantStatus` com `entityType`/`updatedObjects`.
 
@@ -800,56 +946,26 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     """
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
-    endpoint_merchant_id = merchant_uuid(merchant_id)
-    url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
+    endpoint_merchant_id = str(merchant_id).strip()
+    if not endpoint_merchant_id:
+        return False, "merchantId não pode ser vazio"
 
-    if menu_push is None:
-        # Modo 1: {} instrui a Keeta a refazer o GET /v1/merchant.
-        body = canonical_json({})
-        print(
-            f"[Keeta][force_menu_sync] POST {url} | "
-            "refresh_por_get=True | body={}"
-        )
-    else:
+    if menu_push is not None:
         if not isinstance(menu_push, dict):
             return False, "menu_push precisa ser um objeto JSON"
         if menu_push.get("entityType") != "MERCHANT":
             return False, "menu_push.entityType precisa ser MERCHANT"
         updated_objects = menu_push.get("updatedObjects")
-        if not isinstance(updated_objects, list) or not updated_objects:
-            return False, "menu_push.updatedObjects não pode ser vazio"
-        if not isinstance(updated_objects[0], dict):
-            return False, "menu_push.updatedObjects[0] precisa ser um objeto"
-        if updated_objects[0].get("id") != endpoint_merchant_id:
-            return False, "o ID do merchant no payload não corresponde ao path"
+        if not isinstance(updated_objects, list) or len(updated_objects) != 1:
+            return False, "menu_push.updatedObjects precisa conter exatamente um merchant"
         merchant = updated_objects[0]
-        if not isinstance(merchant.get("basicInfo"), dict):
-            return False, "basicInfo é obrigatório no menu push"
-        services = merchant.get("services")
-        if not isinstance(services, list) or not services:
-            return False, "services não pode ser vazio no menu push"
-        if not any(service.get("serviceType") == "DELIVERY" for service in services if isinstance(service, dict)):
-            return False, "o menu push precisa conter um serviceType DELIVERY"
-        body = canonical_json(menu_push)
-        print(f"[Keeta][force_menu_sync] POST {url} | menu_push=True | body_len={len(body)}")
+        if not isinstance(merchant, dict):
+            return False, "menu_push.updatedObjects[0] precisa ser um objeto"
+        return sync_menu_entities(endpoint_merchant_id, merchant)
 
-    try:
-        response = requests.post(
-            url,
-            headers=_build_headers(url, body=body),
-            data=body,
-            timeout=REQUEST_TIMEOUT,
-        )
-        print(f"[Keeta][force_menu_sync] Resposta | status_code={response.status_code} | body={response.text[:300]}")
-        sucesso = response.status_code in (200, 201, 204)
-        erro = None if sucesso else f"Keeta API retornou {response.status_code}: {response.text[:200]}"
-        print(f"[Keeta][force_menu_sync] FIM | merchant_id={merchant_id} | sucesso={sucesso}")
-        return sucesso, erro
-    except Exception as e:
-        erro_msg = f"{type(e).__name__}: {e}"
-        print(f"[Keeta][force_menu_sync] ERRO: {erro_msg}")
-        print(f"[Keeta][force_menu_sync] FIM (falha) | merchant_id={merchant_id}")
-        return False, erro_msg
+    # Full refresh explícito. Alterações de cardápio passam pelo fluxo
+    # independente de sync_menu_entities, não por um envelope MERCHANT misto.
+    return _post_merchant_update_payload(endpoint_merchant_id, {})
 
 
 # =============================================================================
