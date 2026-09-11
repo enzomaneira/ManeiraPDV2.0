@@ -29,11 +29,21 @@ export default function SettingsPage({ config, setConfig }) {
   };
 
   const handleConnectKeeta = async () => {
+    const merchantId = (config.keetaId || '').trim();
+
+    if (!merchantId) {
+        setMessage({ type: 'error', text: 'Informe o merchant ID antes de ativar a integração.' });
+        return;
+    }
+
     setConnecting(true);
     try {
-        console.log("Ativando integração via onboarding direto | merchant_id interno configurado no backend");
+        console.log("Ativando integração via onboarding direto | merchantId:", merchantId);
 
-        const response = await api.put('/keeta/onboard', {});
+        const response = await api.put('/keeta/onboard', {
+            merchantId,
+            keetaStoreId: merchantId,
+        });
 
         console.log("Resposta do onboarding:", response.data);
 
@@ -101,19 +111,19 @@ export default function SettingsPage({ config, setConfig }) {
                   
                   {/* Campo de ID */}
                   <div>
-                      <label className="block text-sm font-bold text-slate-600 mb-2">Merchant ID interno</label>
+                      <label className="block text-sm font-bold text-slate-600 mb-2">Merchant ID da loja</label>
                       <div className="relative">
                           <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                           <input 
                             type="text" 
                             value={config.keetaId || ''} 
-                            readOnly
-                            placeholder="Configurado pelo sistema"
+                            onChange={(e) => setConfig({...config, keetaId: e.target.value})}
+                            placeholder="Ex: 159633716"
                             className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-yellow-400 focus:outline-none font-medium text-slate-700"
                           />
                       </div>
                       <p className="text-[10px] text-slate-400 mt-1 ml-1">
-                        Este é o mesmo valor usado no onboarding e no endpoint merchantUpdate.
+                        Esse valor será usado no onboarding e no endpoint merchantUpdate dessa loja.
                       </p>
                   </div>
 

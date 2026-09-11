@@ -60,8 +60,8 @@ def update_config():
 
     Campos aceitos:
       autoAccept      (bool)  — aceitar pedidos automaticamente
-      keetaMerchantId (str)   — aceito por compatibilidade, mas o valor
-                                 efetivo é o merchant_id interno do sistema
+      keetaMerchantId (str)   — merchant ID da loja usado no onboarding
+                                 e nas notificações merchantUpdate
     """
     print(f"\n[Config][update_config] INÍCIO | user_id={g.current_user.id}")
 
@@ -80,17 +80,11 @@ def update_config():
 
     config.auto_accept = data.get("autoAccept", config.auto_accept)
 
-    # O merchant ID não é editável pelo frontend. O onboarding sempre usa o
-    # identificador interno do software nos dois campos da API Keeta; aceitar
-    # um ID digitado manualmente recriaria o problema de IDs divergentes.
-    requested_merchant_id = data.get("keetaMerchantId")
-    if requested_merchant_id and str(requested_merchant_id).strip() != str(keeta_client.INTERNAL_MERCHANT_ID):
-        print(
-            f"[Config][update_config] AVISO: keetaMerchantId recebido='{requested_merchant_id}' "
-            f"foi ignorado; merchant_id interno='{keeta_client.INTERNAL_MERCHANT_ID}'"
-        )
-    if config.keeta_merchant_id:
-        config.keeta_merchant_id = str(keeta_client.INTERNAL_MERCHANT_ID)
+    requested_merchant_id = str(data.get("keetaMerchantId") or data.get("merchantId") or "").strip()
+    if requested_merchant_id:
+        if not requested_merchant_id.isdigit():
+            return jsonify({"error": "O merchant ID deve conter apenas números."}), 400
+        config.keeta_merchant_id = requested_merchant_id
 
     print(f"[Config][update_config] Config DEPOIS da atualização: autoAccept={config.auto_accept} | keetaMerchantId={config.keeta_merchant_id}")
 

@@ -795,12 +795,7 @@ def force_sync_menu():
         return jsonify({"error": "Loja ainda não está conectada à Keeta."}), 400
 
     # O path usa o merchant_id interno persistido no onboarding desta loja.
-    merchant_id = str(keeta_client.INTERNAL_MERCHANT_ID).strip()
-    if str(config.keeta_merchant_id).strip() != merchant_id:
-        print(
-            f"[Webhook][force_sync_menu] AVISO: StoreConfig possui '{config.keeta_merchant_id}', "
-            f"mas o merchant_id interno configurado é '{merchant_id}'. Usando o interno."
-        )
+    merchant_id = str(config.keeta_merchant_id).strip()
     print(f"[Webhook][force_sync_menu] Solicitando refresh completo | store_id={store.id} | merchant_id={merchant_id}...")
     success, error_detail = keeta_client.force_menu_sync(merchant_id)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
@@ -902,12 +897,7 @@ def update_store_status():
     print(f"[Webhook][update_store_status] Body recebido: {data} | is_open={is_open} | keeta_merchant_id={config.keeta_merchant_id} | local_store_id={store.id}")
 
     # O path usa o merchant_id interno persistido no onboarding desta loja.
-    merchant_id = str(keeta_client.INTERNAL_MERCHANT_ID).strip()
-    if str(config.keeta_merchant_id).strip() != merchant_id:
-        print(
-            f"[Webhook][update_store_status] AVISO: StoreConfig possui '{config.keeta_merchant_id}', "
-            f"mas o merchant_id interno configurado é '{merchant_id}'. Usando o interno."
-        )
+    merchant_id = str(config.keeta_merchant_id).strip()
     print(f"[Webhook][update_store_status] Chamando merchantUpdate/{merchant_id} | store_id={store.id} | is_open={is_open}...")
     success, error_detail = keeta_client.update_store_status(merchant_id, is_open)
     print(f"[Webhook][update_store_status] Resultado da chamada à Keeta: success={success} | error={error_detail}")
@@ -939,13 +929,13 @@ def onboard_merchant():
     digita o ID da loja na Keeta no campo de configuração e clica em
     "Ativar Integração / Autenticar", que dispara esta rota.
 
-    Body esperado (os campos antigos continuam aceitos por compatibilidade):
+    Body esperado:
       {
-        "keetaStoreId": "159584113"
+        "merchantId": "159584113"
       }
 
-    O valor acima não é usado para montar o onboarding. O sistema usa o
-    merchant_id interno configurado em `keeta_client.INTERNAL_MERCHANT_ID`.
+    `keetaStoreId` também é aceito por compatibilidade. O valor informado é
+    usado nos dois campos do onboarding e salvo para os próximos updates.
     """
     print(f"\n[Webhook][onboard_merchant] INÍCIO | user_id={g.current_user.id}")
 
@@ -957,17 +947,15 @@ def onboard_merchant():
     data = request.get_json(silent=True) or {}
     print(f"[Webhook][onboard_merchant] Body recebido: {data}")
 
-    requested_keeta_store_id = str(data.get("keetaStoreId") or "").strip()
-    if requested_keeta_store_id:
-        print(
-            f"[Webhook][onboard_merchant] keetaStoreId recebido='{requested_keeta_store_id}' "
-            "será ignorado; o onboarding usa o merchant_id interno."
-        )
+    merchant_id = str(data.get("merchantId") or data.get("keetaStoreId") or "").strip()
+    if not merchant_id:
+        print("[Webhook][onboard_merchant] FALHA (400): merchantId não informado.")
+        return jsonify({"error": "Informe o merchant ID da loja antes de ativar a integração."}), 400
+    if not merchant_id.isdigit():
+        print(f"[Webhook][onboard_merchant] FALHA (400): merchantId inválido='{merchant_id}'.")
+        return jsonify({"error": "O merchant ID deve conter apenas números."}), 400
 
-    # merchant_id interno é o identificador que será usado na query string,
-    # no body keetaMerchantId e em todos os merchantUpdate posteriores.
-    merchant_id = str(keeta_client.INTERNAL_MERCHANT_ID).strip()
-    print(f"[Webhook][onboard_merchant] merchant_id interno={merchant_id} | store_id local={store.id}")
+    print(f"[Webhook][onboard_merchant] merchant_id informado={merchant_id} | store_id local={store.id}")
 
     # Faz o onboarding com o mesmo valor em merchantId e keetaMerchantId.
     print(f"[Webhook][onboard_merchant] Chamando register_merchant(merchant_id={merchant_id}, my_local_store_id={store.id})...")
@@ -977,8 +965,8 @@ def onboard_merchant():
         print("[Webhook][onboard_merchant] FALHA (502): onboarding não foi confirmado pela Keeta.")
         return jsonify({"error": "A Keeta não confirmou o onboarding da loja."}), 502
 
-    # Salva o merchant_id interno usado nos dois campos do onboarding.
-    print(f"[Webhook][onboard_merchant] Salvando merchant_id interno na StoreConfig | store_id={store.id}")
+    # Salva o merchant_id informado para esta loja e os próximos updates.
+    print(f"[Webhook][onboard_merchant] Salvando merchant_id na StoreConfig | store_id={store.id}")
     config = StoreConfig.query.get(store.id)
     if not config:
         print(f"[Webhook][onboard_merchant] Nenhuma config existente para store_id={store.id}. Criando nova...")

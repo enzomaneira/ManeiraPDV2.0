@@ -50,12 +50,7 @@ def _notify_keeta_menu_sync(store):
             print(f"[Stores][_notify_keeta_menu_sync] AVISO: sem keetaMerchantId registrado | store_id={store.id}")
             return
 
-        merchant_id = str(keeta_client.INTERNAL_MERCHANT_ID).strip()
-        if str(config.keeta_merchant_id).strip() != merchant_id:
-            print(
-                f"[Stores][_notify_keeta_menu_sync] AVISO: StoreConfig possui '{config.keeta_merchant_id}', "
-                f"mas o merchant_id interno configurado é '{merchant_id}'. Usando o interno."
-            )
+        merchant_id = str(config.keeta_merchant_id).strip()
         merchant = _build_menu_response(store.id)
         menu_push = {
             "entityType": "MERCHANT",
