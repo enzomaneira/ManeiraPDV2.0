@@ -906,9 +906,22 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     basic_info.setdefault("averagePreparationTime", 30)
     basic_info.setdefault("merchantCategories", ["RESTAURANT"])
     address = dict(basic_info.get("address") or {})
-    latitude = address.get("latitude", address.get("lat", 0.0))
-    longitude = address.get("longitude", address.get("lng", 0.0))
-    address.update({"latitude": latitude, "longitude": longitude, "lat": latitude, "lng": longitude})
+    latitude = address.get("latitude", address.get("lat", -23.5505))
+    longitude = address.get("longitude", address.get("lng", -46.6333))
+    address.update({
+        "country": address.get("country") or "BR",
+        "state": address.get("state") or "SP",
+        "city": address.get("city") or "São Paulo",
+        "district": address.get("district") or "Centro",
+        "street": address.get("street") or "Avenida Paulista",
+        "number": str(address.get("number") or "1000"),
+        "postalCode": address.get("postalCode") or "01310-100",
+        "latitude": latitude,
+        "longitude": longitude,
+    })
+    # `lat` e `lng` não pertencem ao schema oficial; não os propague no POST.
+    address.pop("lat", None)
+    address.pop("lng", None)
     basic_info["address"] = address
     if not isinstance(services, list) or not services:
         return False, "services não pode ser vazio"

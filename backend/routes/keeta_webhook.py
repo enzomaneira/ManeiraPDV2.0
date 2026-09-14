@@ -59,6 +59,16 @@ def _reference_uuid(value: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"maneira-burguer:{value}"))
 
 
+def _build_item_images(image_url: str | None) -> list[dict]:
+    """Retorna somente imagens que podem ser aceitas pelo contrato da Keeta."""
+    if not isinstance(image_url, str):
+        return []
+    normalized_url = image_url.strip()
+    if not normalized_url.lower().startswith(("https://", "http://")):
+        return []
+    return [{"type": "main", "URL": normalized_url}]
+
+
 def _fallback_maneira_menu() -> dict:
     """Cardápio mínimo completo do Maneira Burguer usado sem o arquivo de referência."""
     menu_id = _reference_uuid("menu")
@@ -90,8 +100,6 @@ def _fallback_maneira_menu() -> dict:
             "description": name,
             "externalCode": external_code,
             "status": "AVAILABLE",
-            "serving": 0,
-            "unit": "UN",
             "nutritionalInfo": {"isAlcoholic": False},
         })
         offers.append({
@@ -99,7 +107,11 @@ def _fallback_maneira_menu() -> dict:
             "itemId": item_id,
             "index": index,
             "status": "AVAILABLE",
+            # `price` é mantido por compatibilidade com clientes antigos; os
+            # preços explícitos de delivery e pickup são os que a Keeta usa.
             "price": {"value": price, "originalValue": price, "currency": "BRL"},
+            "deliveryPrice": {"value": price, "currency": "BRL"},
+            "pickupPrice": {"value": price, "currency": "BRL"},
             "optionGroupsId": [group_ids[group] for group in groups],
         })
         category_offers[category_ids[category]].append(offer_id)
@@ -114,8 +126,34 @@ def _fallback_maneira_menu() -> dict:
         }
         for index, name in enumerate(category_names)
     ]
-    option_groups = [
-        {
+    # A Keeta exige `options` quando um optionGroup é referenciado por um
+    # itemOffer. Os itemIds abaixo apontam para itens reais deste próprio
+    # Merchant, e todos os IDs são determinísticos entre deploys.
+    option_specs = {
+        "Molhos": (("Ketchup", "118743587", 0.0), ("Maionese", "118743587", 0.0), ("Mostarda", "118743587", 0.0), ("Barbecue", "118743587", 0.0)),
+        "Cheddar e Bacon": (("Cheddar Extra", "118743586", 4.0), ("Bacon Extra", "118743586", 5.0)),
+        "Complemento": (("Batata Frita", "118743586", 8.0), ("Onion Rings", "118743587", 10.0)),
+        "Bebida": (("Refrigerante 350ml", "118968811", 0.0), ("Suco Natural 350ml", "118712564", 0.0)),
+        "Sucos": (("Suco de Laranja", "118712564", 0.0), ("Suco de Manga", "118712564", 0.0)),
+        "Refrigerantes": (("Coca-Cola 350ml", "118968811", 0.0), ("Guaraná 350ml", "118968811", 0.0)),
+    }
+    item_ids_by_external_code = {
+        external_code: _reference_uuid(f"item:{external_code}")
+        for _, external_code, *_ in item_data
+    }
+    option_groups = []
+    for index, name in enumerate(group_names):
+        options = [
+            {
+                "id": _reference_uuid(f"option:{name}:{option_name}"),
+                "itemId": item_ids_by_external_code[item_external_code],
+                "index": option_index,
+                "status": "AVAILABLE",
+                "price": {"value": option_price, "originalValue": option_price, "currency": "BRL"},
+            }
+            for option_index, (option_name, item_external_code, option_price) in enumerate(option_specs[name])
+        ]
+        option_groups.append({
             "id": group_ids[name],
             "index": index,
             "name": name,
@@ -125,9 +163,8 @@ def _fallback_maneira_menu() -> dict:
             "minPermitted": 0,
             "maxPermitted": 1,
             "priceMethod": "SUM",
-        }
-        for index, name in enumerate(group_names)
-    ]
+            "options": options,
+        })
     return {
         "id": keeta_client.merchant_uuid(1),
         "status": "AVAILABLE",
@@ -147,8 +184,6 @@ def _fallback_maneira_menu() -> dict:
                 "complement": "",
                 "latitude": -23.5505,
                 "longitude": -46.6333,
-                "lat": -23.5505,
-                "lng": -46.6333,
             },
             "contactEmails": ["contato@maneiraburguer.com.br"],
             "contactPhones": {"commercialNumber": "5511999999999"},
@@ -266,9 +301,7 @@ def _build_menu_response(store_id: int):
             "description":  item.description or item.name,
             "externalCode": item.external_code or item_id_str,
             "status":       item.status or "AVAILABLE",
-            "images":       [{"type": None, "URL": item.image_url, "CRC-32": None}] if item.image_url else [],
-            "serving":      0,
-            "unit":         "UN",
+            "images":       _build_item_images(item.image_url),
         })
 
         item_offers.append({
@@ -279,10 +312,20 @@ def _build_menu_response(store_id: int):
             # já tem default="AVAILABLE", mas aplicamos o mesmo fallback aqui
             # por segurança (defesa em profundidade).
             "status": item.status or "AVAILABLE",
+            # O preço explícito de delivery evita que a Keeta interprete a
+            # oferta como tendo apenas preço indoor.
             "price": {
                 "originalValue": item.price,
                 "currency":      "BRL",
                 "value":         item.price,
+            },
+            "deliveryPrice": {
+                "currency": "BRL",
+                "value": item.price,
+            },
+            "pickupPrice": {
+                "currency": "BRL",
+                "value": item.price,
             },
         })
 
@@ -500,8 +543,6 @@ def _build_menu_response(store_id: int):
                     "complement":           "",
                     "latitude":             -23.5505,
                     "longitude":            -46.6333,
-                    "lat":                  -23.5505,
-                    "lng":                  -46.6333,
                 },
                 "contactEmails":           ["contato@maneiraburguer.com.br"],
                 "contactPhones": {
