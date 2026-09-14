@@ -671,13 +671,19 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
         return "updatedObjects não pode ser vazio quando entityType está presente"
 
     required_fields = {
-        "MERCHANT": {"id", "status", "basicInfo", "services"},
+        # A Keeta documenta MERCHANT como atualização completa: todos os
+        # campos obrigatórios do objeto Merchant precisam estar em um único
+        # updatedObjects[0].
+        "MERCHANT": {
+            "id", "status", "basicInfo", "services", "items", "menus",
+            "categories", "itemOffers",
+        },
         # BASIC_INFO é um envelope: updatedObjects[0].basicInfo nunca pode ser null.
         "BASIC_INFO": {"basicInfo"},
         "SERVICE": {"id", "status", "serviceType", "menuId", "serviceHours"},
         "MENU": {"id", "name", "description", "externalCode", "categoryId"},
         "CATEGORY": {"id", "index", "name", "status", "itemOfferId"},
-        "ITEM": {"id", "name", "description", "externalCode", "status", "serving", "unit", "nutritionalInfo"},
+        "ITEM": {"id", "name", "externalCode", "status"},
         "ITEM_OFFER": {"id", "itemId", "index", "status", "price", "optionGroupsId"},
         "OPTION_GROUP": {
             "id", "index", "name", "description", "externalCode", "status",
@@ -698,6 +704,18 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
             )
         if entity_type != "BASIC_INFO" and (not isinstance(entity.get("id"), str) or not entity["id"].strip()):
             return f"updatedObjects[{index}].id é obrigatório"
+
+        if entity_type == "MERCHANT":
+            merchant_id = entity.get("id")
+            if not isinstance(merchant_id, str) or not 36 <= len(merchant_id) <= 100:
+                return f"updatedObjects[{index}].id do MERCHANT precisa ter entre 36 e 100 caracteres"
+            if entity.get("status") not in {"AVAILABLE", "UNAVAILABLE"}:
+                return f"updatedObjects[{index}].status precisa ser AVAILABLE ou UNAVAILABLE"
+            for collection_name in ("services", "items", "menus", "categories", "itemOffers"):
+                if not isinstance(entity.get(collection_name), list) or not entity[collection_name]:
+                    return f"updatedObjects[{index}].{collection_name} precisa ser uma lista não vazia"
+            if not isinstance(entity.get("basicInfo"), dict):
+                return f"updatedObjects[{index}].basicInfo precisa ser um objeto"
 
         if entity_type == "BASIC_INFO":
             basic_info = entity.get("basicInfo")
@@ -851,10 +869,16 @@ def notify_merchant_update(
 
 
 def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | None]:
-    """Envia o menu em sete POSTs independentes, na ordem das dependências."""
+    """Envia o Merchant completo em um único POST de merchantUpdate.
+
+    A documentação atual da Keeta informa que atualizações modulares não são
+    suportadas: para atualizar o cardápio, o entityType deve ser MERCHANT e
+    updatedObjects deve conter o objeto Merchant completo.
+    """
     if not isinstance(merchant, dict):
         return False, "merchant precisa ser um objeto JSON"
 
+    full_merchant = dict(merchant)
     services = merchant.get("services")
     menus = merchant.get("menus")
     categories = merchant.get("categories")
@@ -888,49 +912,48 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     basic_info["address"] = address
     if not isinstance(services, list) or not services:
         return False, "services não pode ser vazio"
-    delivery_service = next(
-        (service for service in services if isinstance(service, dict) and service.get("serviceType") == "DELIVERY"),
-        None,
-    )
-    if delivery_service is None:
-        return False, "DELIVERY serviceType não existe no menu"
-    delivery_service = dict(delivery_service)
-    if not isinstance(delivery_service.get("serviceHours"), dict):
-        delivery_service["serviceHours"] = {
-            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{delivery_service['id']}:service-hours")),
-            "weekHours": [{
-                "dayOfWeek": [
-                    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
-                    "FRIDAY", "SATURDAY", "SUNDAY",
-                ],
-                "timePeriods": {"startTime": "11:00:00.000Z", "endTime": "23:00:00.000Z"},
-            }],
-        }
+
+    normalized_services = []
+    for service in services:
+        if not isinstance(service, dict):
+            return False, "services deve conter somente objetos"
+        normalized_service = dict(service)
+        if normalized_service.get("serviceType") == "DELIVERY" and not isinstance(normalized_service.get("serviceHours"), dict):
+            normalized_service["serviceHours"] = {
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{normalized_service['id']}:service-hours")),
+                "weekHours": [{
+                    "dayOfWeek": [
+                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                        "FRIDAY", "SATURDAY", "SUNDAY",
+                    ],
+                    "timePeriods": {"startTime": "11:00:00.000Z", "endTime": "23:00:00.000Z"},
+                }],
+            }
+        normalized_services.append(normalized_service)
+
     if not isinstance(basic_info, dict):
         return False, "basicInfo não pode ser null"
     if not isinstance(menus, list) or not menus:
         return False, "menus não pode ser vazio"
+    if not isinstance(categories, list) or not categories:
+        return False, "categories não pode ser vazio"
+    if not isinstance(items, list) or not items:
+        return False, "items não pode ser vazio"
+    if not isinstance(item_offers, list) or not item_offers:
+        return False, "itemOffers não pode ser vazio"
 
-    requests_in_order = [
-        ("SERVICE", [delivery_service]),
-        ("BASIC_INFO", [{"basicInfo": basic_info}]),
-        ("MENU", menus),
-        ("CATEGORY", categories),
-        ("ITEM", items),
-        ("ITEM_OFFER", item_offers),
-        ("OPTION_GROUP", option_groups),
-    ]
-    for entity_type, updated_objects in requests_in_order:
-        if not isinstance(updated_objects, list) or not updated_objects:
-            return False, f"{entity_type}.updatedObjects não pode ser vazio"
-        success, error = notify_merchant_update(
-            merchant_id,
-            entity_type=entity_type,
-            updated_objects=updated_objects,
-        )
-        if not success:
-            return False, f"{entity_type}: {error}"
-        print(f"[Keeta][sync_menu_entities] {entity_type} atualizado com sucesso (204/2xx)")
+    full_merchant["services"] = normalized_services
+    full_merchant["basicInfo"] = basic_info
+    full_merchant["optionGroups"] = option_groups or []
+
+    success, error = notify_merchant_update(
+        merchant_id,
+        entity_type="MERCHANT",
+        updated_objects=[full_merchant],
+    )
+    if not success:
+        return False, f"MERCHANT: {error}"
+    print("[Keeta][sync_menu_entities] MERCHANT completo atualizado com sucesso (204/2xx)")
     return True, None
 
 
@@ -962,9 +985,9 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
     Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}`.
-    Quando ``menu_push`` é informado, divide o merchant em sete POSTs
-    independentes por entityType. Quando não é informado, envia `{}` para
-    solicitar um refresh via GET /merchant.
+    Quando ``menu_push`` é informado, envia o objeto Merchant completo em um
+    único POST com `entityType=MERCHANT`. Quando não é informado, envia `{}`
+    para solicitar um refresh via GET /merchant.
 
     Nunca mistura `merchantStatus` com `entityType`/`updatedObjects`.
 

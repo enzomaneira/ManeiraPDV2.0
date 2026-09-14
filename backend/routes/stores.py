@@ -32,15 +32,14 @@ def _notify_keeta_menu_sync(store):
     para que ela puxe o cardápio atualizado via GET /merchant.
 
     O merchant_id usado aqui é o identificador interno persistido no onboarding
-    (`StoreConfig.keeta_merchant_id`). O endpoint recebe cada entityType em um
-    POST independente; não usamos o body misto MERCHANT.
+    (`StoreConfig.keeta_merchant_id`). Como a Keeta exige atualização completa,
+    enviamos o Merchant inteiro em um único POST com entityType MERCHANT.
 
     Falhas aqui são apenas logadas (não interrompem a resposta ao
     frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
     """
     try:
-        # Alterações normais usam os sete POSTs independentes por entidade.
-        # O body `{}` fica reservado para um full refresh explícito.
+        # Alterações normais enviam o Merchant completo em um único POST.
         from routes.keeta_webhook import _build_menu_response
 
         from models import StoreConfig

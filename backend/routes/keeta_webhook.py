@@ -129,12 +129,22 @@ def _fallback_maneira_menu() -> dict:
         for index, name in enumerate(group_names)
     ]
     return {
-        "TTL": 0,
+        "id": keeta_client.merchant_uuid(1),
+        "status": "AVAILABLE",
+        "TTL": 500,
         "basicInfo": {
             "name": "MANEIRA BURGUER",
             "document": "12345678000199",
             "merchantType": "RESTAURANT",
             "address": {
+                "country": "BR",
+                "state": "SP",
+                "city": "São Paulo",
+                "district": "Centro",
+                "street": "Avenida Paulista",
+                "number": "1000",
+                "postalCode": "01310-100",
+                "complement": "",
                 "latitude": -23.5505,
                 "longitude": -46.6333,
                 "lat": -23.5505,
@@ -189,6 +199,9 @@ def _load_maneira_menu_reference() -> dict:
                 # O contrato do GET é deliberadamente restrito a este envelope;
                 # não propague metadados extras que possam existir no arquivo.
                 normalized_menu = {key: menu[key] for key in _REFERENCE_MENU_KEYS}
+                normalized_menu.setdefault("id", keeta_client.merchant_uuid(1))
+                normalized_menu.setdefault("status", "AVAILABLE")
+                normalized_menu["TTL"] = normalized_menu.get("TTL") or 500
                 option_groups = normalized_menu.get("optionGroups")
                 if isinstance(option_groups, list):
                     for option_group in option_groups:
@@ -477,10 +490,18 @@ def _build_menu_response(store_id: int):
                 "description":             "Os melhores produtos da região!",
                 "merchantType":             "RESTAURANT",
                 "address": {
-                    "latitude":              -23.5505,
-                    "longitude":             -46.6333,
-                    "lat":                   -23.5505,
-                    "lng":                   -46.6333,
+                    "country":              "BR",
+                    "state":                "SP",
+                    "city":                 "São Paulo",
+                    "district":             "Centro",
+                    "street":               "Avenida Paulista",
+                    "number":               "1000",
+                    "postalCode":           "01310-100",
+                    "complement":           "",
+                    "latitude":             -23.5505,
+                    "longitude":            -46.6333,
+                    "lat":                  -23.5505,
+                    "lng":                  -46.6333,
                 },
                 "contactEmails":           ["contato@maneiraburguer.com.br"],
                 "contactPhones": {
@@ -829,8 +850,8 @@ def force_sync_menu():
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja do usuário logado.
 
-    Faz POST /v1/merchantUpdate/{merchantId} com body vazio. A Keeta então
-    chama nosso GET /merchant para buscar o cardápio completo.
+    Faz POST /v1/merchantUpdate/{merchantId} com `entityType=MERCHANT` e
+    o objeto Merchant completo em `updatedObjects[0]`.
     """
     print(f"\n[Webhook][force_sync_menu] INÍCIO | user_id={g.current_user.id}")
 
@@ -839,8 +860,8 @@ def force_sync_menu():
         print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    # O refresh completo usa o modo documentado com body `{}`. A Keeta fará
-    # novamente o GET /v1/merchant, que é a fonte completa do cardápio.
+    # A documentação informa que atualizações modulares não são suportadas.
+    # Portanto, enviamos o objeto Merchant completo em um único update.
     config = StoreConfig.query.get(store.id)
     if not config or not config.keeta_merchant_id:
         print(f"[Webhook][force_sync_menu] FALHA (400): loja sem merchant_id registrado | store_id={store.id}")
@@ -848,8 +869,13 @@ def force_sync_menu():
 
     # O path usa o merchant_id interno persistido no onboarding desta loja.
     merchant_id = str(config.keeta_merchant_id).strip()
-    print(f"[Webhook][force_sync_menu] Solicitando refresh completo | store_id={store.id} | merchant_id={merchant_id}...")
-    success, error_detail = keeta_client.force_menu_sync(merchant_id)
+    merchant = _build_menu_response(store.id)
+    menu_push = {
+        "entityType": "MERCHANT",
+        "updatedObjects": [merchant],
+    }
+    print(f"[Webhook][force_sync_menu] Enviando Merchant completo | store_id={store.id} | merchant_id={merchant_id}...")
+    success, error_detail = keeta_client.force_menu_sync(merchant_id, menu_push=menu_push)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
