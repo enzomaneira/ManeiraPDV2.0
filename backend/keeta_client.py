@@ -21,6 +21,7 @@ import json
 import os
 import rfc8785
 import uuid
+import traceback
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
@@ -800,6 +801,8 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
 
 def _post_merchant_update_payload(merchant_id: str, payload: dict) -> tuple[bool, str | None]:
     """Envia exatamente um body independente para merchantUpdate."""
+    request_id = uuid.uuid4().hex[:12]
+    started_at = time.perf_counter()
     if not isinstance(payload, dict):
         return False, "payload precisa ser um objeto JSON"
     has_status = "merchantStatus" in payload
@@ -822,24 +825,47 @@ def _post_merchant_update_payload(merchant_id: str, payload: dict) -> tuple[bool
         return False, "merchantId não pode ser vazio"
     url = f"{BASE_URL}/v1/merchantUpdate/{endpoint_merchant_id}"
     body = canonical_json(payload)
-    print(f"[Keeta][_post_merchant_update_payload] POST {url} | payload={payload} | body_len={len(body)}")
+    print(
+        f"[Keeta][_post_merchant_update_payload] INÍCIO | request_id={request_id} | "
+        f"merchant_id={endpoint_merchant_id} | url={url} | payload={payload} | "
+        f"body={body!r} | body_len={len(body)} | signature_base_url={SIGNATURE_BASE_URL}"
+    )
     try:
+        headers = _build_headers(url, body=body)
+        print(
+            f"[Keeta][_post_merchant_update_payload] Enviando | request_id={request_id} | "
+            f"method=POST | content_type={headers.get('Content-Type')} | "
+            f"body_sha256={hashlib.sha256(body.encode('utf-8')).hexdigest()}"
+        )
         response = requests.post(
             url,
-            headers=_build_headers(url, body=body),
-            data=body,
+            headers=headers,
+            data=body.encode("utf-8"),
             timeout=REQUEST_TIMEOUT,
         )
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        response_body = response.text[:500].replace("\n", " ")
         print(
-            f"[Keeta][_post_merchant_update_payload] Resposta | status_code={response.status_code} | "
-            f"body={response.text[:300]}"
+            f"[Keeta][_post_merchant_update_payload] Resposta | request_id={request_id} | "
+            f"status_code={response.status_code} | elapsed_ms={elapsed_ms:.1f} | "
+            f"content_type={response.headers.get('Content-Type')!r} | "
+            f"body={response_body!r}"
         )
         success = response.status_code in (200, 201, 204)
-        error = None if success else f"Keeta API retornou {response.status_code}: {response.text[:200]}"
+        error = None if success else f"Keeta API retornou {response.status_code}: {response_body}"
+        print(
+            f"[Keeta][_post_merchant_update_payload] FIM | request_id={request_id} | "
+            f"success={success} | error={error!r}"
+        )
         return success, error
     except Exception as error:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
         error_detail = f"{type(error).__name__}: {error}"
-        print(f"[Keeta][_post_merchant_update_payload] ERRO: {error_detail}")
+        print(
+            f"[Keeta][_post_merchant_update_payload] ERRO | request_id={request_id} | "
+            f"elapsed_ms={elapsed_ms:.1f} | detail={error_detail}"
+        )
+        print(traceback.format_exc())
         return False, error_detail
 
 
