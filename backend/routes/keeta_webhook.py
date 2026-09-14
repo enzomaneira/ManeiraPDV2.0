@@ -121,6 +121,8 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
             "description": name,
             "externalCode": external_code,
             "status": "AVAILABLE",
+            "images": _build_item_images(None),
+            "deliveryPrice": {"value": price, "originalValue": price, "currency": "BRL"},
             "nutritionalInfo": {"isAlcoholic": False},
         })
         offers.append({
@@ -141,6 +143,7 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
             "id": category_ids[name],
             "index": index,
             "name": name,
+            "description": name,
             "status": "AVAILABLE",
             "itemOfferId": category_offers[category_ids[name]],
             "availabilityId": [availability_id],
