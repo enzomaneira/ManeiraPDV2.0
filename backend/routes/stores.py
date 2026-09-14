@@ -31,17 +31,15 @@ def _notify_keeta_menu_sync(store):
     Notifica a Keeta (POST /merchantUpdate) sempre que o cardápio muda,
     para que ela puxe o cardápio atualizado via GET /merchant.
 
-    O merchant_id usado aqui é o identificador interno persistido no onboarding
-    (`StoreConfig.keeta_merchant_id`). Como a Keeta exige atualização completa,
-    enviamos o Merchant inteiro em um único POST com entityType MERCHANT.
+    O merchant_id usado aqui é o identificador persistido no onboarding
+    (`StoreConfig.keeta_merchant_id`). O body vazio dispara o fluxo pull, e a
+    Keeta busca o Merchant atualizado pelo endpoint GET /merchant.
 
     Falhas aqui são apenas logadas (não interrompem a resposta ao
     frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
     """
     try:
-        # Alterações normais enviam o Merchant completo em um único POST.
-        from routes.keeta_webhook import _build_menu_response
-
+        # Alterações normais disparam o pull do GET /merchant.
         from models import StoreConfig
 
         config = StoreConfig.query.get(store.id)
@@ -50,12 +48,7 @@ def _notify_keeta_menu_sync(store):
             return
 
         merchant_id = str(config.keeta_merchant_id).strip()
-        merchant = _build_menu_response(store.id)
-        menu_push = {
-            "entityType": "MERCHANT",
-            "updatedObjects": [merchant],
-        }
-        success, err = force_menu_sync(merchant_id, menu_push=menu_push)
+        success, err = force_menu_sync(merchant_id)
         if not success:
             print(f"[Stores][_notify_keeta_menu_sync] AVISO: falha ao notificar a Keeta | store_id={store.id} | erro={err}")
         else:

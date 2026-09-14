@@ -95,6 +95,7 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
     service_id = _reference_uuid("service-delivery")
     category_names = ("Porções", "Hamburguers", "Bebidas")
     category_ids = {name: _reference_uuid(f"category:{name}") for name in category_names}
+    availability_id = _reference_uuid("availability:always-open")
     group_names = ("Molhos", "Cheddar e Bacon", "Complemento", "Bebida", "Sucos", "Refrigerantes")
     group_ids = {name: _reference_uuid(f"option-group:{name}") for name in group_names}
     item_data = (
@@ -131,6 +132,7 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
             # de delivery. Não enviar campos de preço indoor não suportados.
             "price": {"value": price, "originalValue": price, "currency": "BRL"},
             "optionGroupsId": [group_ids[group] for group in groups],
+            "availabilityId": [availability_id],
         })
         category_offers[category_ids[category]].append(offer_id)
 
@@ -141,6 +143,7 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
             "name": name,
             "status": "AVAILABLE",
             "itemOfferId": category_offers[category_ids[name]],
+            "availabilityId": [availability_id],
         }
         for index, name in enumerate(category_names)
     ]
@@ -239,6 +242,21 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
         "itemOffers": offers,
         "items": items,
         "optionGroups": option_groups,
+        "availabilities": [{
+            "id": availability_id,
+            "startDate": "2024-01-01",
+            "endDate": "2099-12-31",
+            "hours": [{
+                "dayOfWeek": [
+                    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
+                    "FRIDAY", "SATURDAY", "SUNDAY",
+                ],
+                "timePeriods": {
+                    "startTime": "11:00:00.000Z",
+                    "endTime": "23:00:00.000Z",
+                },
+            }],
+        }],
     }
 
 
@@ -919,8 +937,8 @@ def force_sync_menu():
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja do usuário logado.
 
-    Faz POST /v1/merchantUpdate/{merchantId} com `entityType=MERCHANT` e
-    o objeto Merchant completo em `updatedObjects[0]`.
+    O menu usa o fluxo pull documentado: POST /v1/merchantUpdate/{merchantId}
+    com body `{}`. A Keeta então chama novamente o GET /merchant.
     """
     print(f"\n[Webhook][force_sync_menu] INÍCIO | user_id={g.current_user.id}")
 
@@ -929,8 +947,8 @@ def force_sync_menu():
         print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    # A documentação informa que atualizações modulares não são suportadas.
-    # Portanto, enviamos o objeto Merchant completo em um único update.
+    # O entityType MERCHANT não atualiza o cardápio. O body vazio é o gatilho
+    # para a Keeta executar o pull do GET /merchant.
     config = StoreConfig.query.get(store.id)
     if not config or not config.keeta_merchant_id:
         print(f"[Webhook][force_sync_menu] FALHA (400): loja sem merchant_id registrado | store_id={store.id}")
@@ -938,13 +956,8 @@ def force_sync_menu():
 
     # O path usa o merchant_id interno persistido no onboarding desta loja.
     merchant_id = str(config.keeta_merchant_id).strip()
-    merchant = _build_menu_response(store.id)
-    menu_push = {
-        "entityType": "MERCHANT",
-        "updatedObjects": [merchant],
-    }
-    print(f"[Webhook][force_sync_menu] Enviando Merchant completo | store_id={store.id} | merchant_id={merchant_id}...")
-    success, error_detail = keeta_client.force_menu_sync(merchant_id, menu_push=menu_push)
+    print(f"[Webhook][force_sync_menu] Solicitando pull do GET /merchant | store_id={store.id} | merchant_id={merchant_id}...")
+    success, error_detail = keeta_client.force_menu_sync(merchant_id)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:

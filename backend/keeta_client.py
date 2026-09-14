@@ -869,11 +869,11 @@ def notify_merchant_update(
 
 
 def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | None]:
-    """Envia o Merchant completo em um único POST de merchantUpdate.
+    """Solicita a sincronização do cardápio pelo fluxo pull da Keeta.
 
-    A documentação atual da Keeta informa que atualizações modulares não são
-    suportadas: para atualizar o cardápio, o entityType deve ser MERCHANT e
-    updatedObjects deve conter o objeto Merchant completo.
+    O `entityType=MERCHANT` não publica o cardápio. O Merchant recebido é
+    mantido para compatibilidade da assinatura antiga; a chamada efetiva envia
+    `{}` e a Keeta busca o conteúdo pelo GET /merchant.
     """
     if not isinstance(merchant, dict):
         return False, "merchant precisa ser um objeto JSON"
@@ -973,14 +973,13 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     full_merchant["basicInfo"] = basic_info
     full_merchant["optionGroups"] = option_groups or []
 
-    success, error = notify_merchant_update(
-        merchant_id,
-        entity_type="MERCHANT",
-        updated_objects=[full_merchant],
-    )
+    # A Keeta não processa cardápio pelo entityType MERCHANT. Depois de
+    # validar/construir o Merchant local, o único gatilho de sincronização é o
+    # pull via body vazio.
+    success, error = _post_merchant_update_payload(merchant_id, {})
     if not success:
-        return False, f"MERCHANT: {error}"
-    print("[Keeta][sync_menu_entities] MERCHANT completo atualizado com sucesso (204/2xx)")
+        return False, f"PULL: {error}"
+    print("[Keeta][sync_menu_entities] Pull do GET /merchant solicitado com sucesso (204/2xx)")
     return True, None
 
 
@@ -1007,16 +1006,15 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     return sucesso, erro
 
 
-def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bool, str | None]:
+def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
     """
     Força a Keeta a re-sincronizar o cardápio completo da loja.
 
-    Envia uma notificação para `POST /v1/merchantUpdate/{merchantId}`.
-    Quando ``menu_push`` é informado, envia o objeto Merchant completo em um
-    único POST com `entityType=MERCHANT`. Quando não é informado, envia `{}`
-    para solicitar um refresh via GET /merchant.
+    Envia `POST /v1/merchantUpdate/{merchantId}` com body `{}`.
+    Esse é o gatilho para a Keeta executar o pull pelo GET /merchant.
 
-    Nunca mistura `merchantStatus` com `entityType`/`updatedObjects`.
+    Não envia `entityType=MERCHANT`, pois esse tipo de atualização não publica
+    o cardápio.
 
     `merchant_id` é o ID da loja registrado no onboarding e usado no
     path de `merchantUpdate`. Ele deve ser obtido da configuração da loja,
@@ -1030,21 +1028,8 @@ def force_menu_sync(merchant_id: str, menu_push: dict | None = None) -> tuple[bo
     if not endpoint_merchant_id:
         return False, "merchantId não pode ser vazio"
 
-    if menu_push is not None:
-        if not isinstance(menu_push, dict):
-            return False, "menu_push precisa ser um objeto JSON"
-        if menu_push.get("entityType") != "MERCHANT":
-            return False, "menu_push.entityType precisa ser MERCHANT"
-        updated_objects = menu_push.get("updatedObjects")
-        if not isinstance(updated_objects, list) or len(updated_objects) != 1:
-            return False, "menu_push.updatedObjects precisa conter exatamente um merchant"
-        merchant = updated_objects[0]
-        if not isinstance(merchant, dict):
-            return False, "menu_push.updatedObjects[0] precisa ser um objeto"
-        return sync_menu_entities(endpoint_merchant_id, merchant)
-
-    # Full refresh explícito. Alterações de cardápio passam pelo fluxo
-    # independente de sync_menu_entities, não por um envelope MERCHANT misto.
+    # Full refresh explícito: body vazio instrui a Keeta a chamar novamente
+    # o endpoint GET /merchant configurado no onboarding.
     return _post_merchant_update_payload(endpoint_merchant_id, {})
 
 
