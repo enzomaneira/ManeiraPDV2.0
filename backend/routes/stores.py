@@ -48,7 +48,10 @@ def _notify_keeta_menu_sync(store):
             return
 
         merchant_id = str(config.keeta_merchant_id).strip()
-        success, err = force_menu_sync(merchant_id)
+        from routes.keeta_webhook import _build_menu_response
+
+        merchant = _build_menu_response(store.id)
+        success, err = force_menu_sync(merchant_id, merchant)
         if not success:
             print(f"[Stores][_notify_keeta_menu_sync] AVISO: falha ao notificar a Keeta | store_id={store.id} | erro={err}")
         else:

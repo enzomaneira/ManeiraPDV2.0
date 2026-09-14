@@ -1116,8 +1116,8 @@ def force_sync_menu():
         print(f"[Webhook][force_sync_menu] FALHA (404): usuário sem restaurante vinculado")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    # O entityType MERCHANT não atualiza o cardápio. O body vazio é o gatilho
-    # para a Keeta executar o pull do GET /merchant.
+    # O menu é enviado como Merchant completo (entityType=MERCHANT). O body
+    # vazio documentado pela Keeta retorna 400 nesta integração em produção.
     config = StoreConfig.query.get(store.id)
     if not config or not config.keeta_merchant_id:
         print(f"[Webhook][force_sync_menu] FALHA (400): loja sem merchant_id registrado | store_id={store.id}")
@@ -1125,8 +1125,9 @@ def force_sync_menu():
 
     # O path usa o merchant_id interno persistido no onboarding desta loja.
     merchant_id = str(config.keeta_merchant_id).strip()
-    print(f"[Webhook][force_sync_menu] Solicitando pull do GET /merchant | store_id={store.id} | merchant_id={merchant_id}...")
-    success, error_detail = keeta_client.force_menu_sync(merchant_id)
+    print(f"[Webhook][force_sync_menu] Solicitando menu push | store_id={store.id} | merchant_id={merchant_id}...")
+    merchant = _build_menu_response(store.id)
+    success, error_detail = keeta_client.force_menu_sync(merchant_id, merchant)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:

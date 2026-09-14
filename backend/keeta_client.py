@@ -895,25 +895,65 @@ def notify_merchant_update(
 
 
 def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | None]:
-    """Solicita a sincronização do cardápio pelo fluxo pull da Keeta.
+    """Envia o cardápio completo pelo fluxo de menu push da Keeta.
 
-    O `entityType=MERCHANT` não publica o cardápio. O Merchant recebido é
-    mantido para compatibilidade da assinatura antiga; a chamada efetiva envia
-    `{}` e a Keeta busca o conteúdo pelo GET /merchant.
+    O Merchant recebido é normalizado para o schema estrito do push e enviado
+    como `entityType=MERCHANT`, solicitando a atualização completa do menu.
     """
     if not isinstance(merchant, dict):
         return False, "merchant precisa ser um objeto JSON"
 
     full_merchant = dict(merchant)
-    # O ID do objeto Merchant deve ser exatamente o merchantId usado no
-    # onboarding e no path de merchantUpdate.
-    full_merchant["id"] = str(merchant_id).strip()
+    # O path usa o Keeta merchantId, mas o id do objeto Merchant é um
+    # identificador do software e precisa ter pelo menos 36 caracteres.
+    full_merchant["id"] = merchant_uuid(merchant_id)
     services = merchant.get("services")
     menus = merchant.get("menus")
     categories = merchant.get("categories")
     items = merchant.get("items")
     item_offers = merchant.get("itemOffers")
     option_groups = merchant.get("optionGroups")
+
+    # O GET /merchant tolera aliases usados pelo Open Delivery v1.5.0, mas o
+    # merchantUpdate é mais estrito: Item.images usa `URL` (maiúsculo) e
+    # ItemOffer deve conter apenas `price`, não os aliases deliveryPrice e
+    # pickupPrice enviados no retorno compatível do GET.
+    if isinstance(items, list):
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                normalized_items.append(item)
+                continue
+            normalized_item = dict(item)
+            normalized_item.pop("deliveryPrice", None)
+            normalized_item.pop("pickupPrice", None)
+            normalized_item.pop("price", None)
+            images = normalized_item.get("images")
+            if isinstance(images, list):
+                normalized_item["images"] = [
+                    {
+                        "type": image.get("type"),
+                        "URL": image.get("URL") or image.get("url"),
+                    }
+                    for image in images
+                    if isinstance(image, dict)
+                    and image.get("type") in {"main", "thumb"}
+                    and (image.get("URL") or image.get("url"))
+                ]
+            normalized_items.append(normalized_item)
+        items = normalized_items
+
+    if isinstance(item_offers, list):
+        normalized_item_offers = []
+        for item_offer in item_offers:
+            if not isinstance(item_offer, dict):
+                normalized_item_offers.append(item_offer)
+                continue
+            normalized_item_offer = dict(item_offer)
+            normalized_item_offer.pop("deliveryPrice", None)
+            normalized_item_offer.pop("pickupPrice", None)
+            normalized_item_offers.append(normalized_item_offer)
+        item_offers = normalized_item_offers
     if isinstance(option_groups, list):
         # Um optionGroup vazio não pode permanecer referenciado por uma oferta.
         valid_option_group_ids = set()
@@ -997,15 +1037,21 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
 
     full_merchant["services"] = normalized_services
     full_merchant["basicInfo"] = basic_info
+    full_merchant["items"] = items
+    full_merchant["itemOffers"] = item_offers
     full_merchant["optionGroups"] = option_groups or []
 
-    # A Keeta não processa cardápio pelo entityType MERCHANT. Depois de
-    # validar/construir o Merchant local, o único gatilho de sincronização é o
-    # pull via body vazio.
-    success, error = _post_merchant_update_payload(merchant_id, {})
+    # O body vazio é documentado como pull, mas a API de produção está
+    # respondendo 400 para esse formato. O payload completo MERCHANT é o
+    # formato de menu push que efetivamente retorna 204 e ainda faz a Keeta
+    # atualizar o cardápio inteiro.
+    success, error = _post_merchant_update_payload(
+        merchant_id,
+        {"entityType": "MERCHANT", "updatedObjects": [full_merchant]},
+    )
     if not success:
-        return False, f"PULL: {error}"
-    print("[Keeta][sync_menu_entities] Pull do GET /merchant solicitado com sucesso (204/2xx)")
+        return False, f"MENU_PUSH: {error}"
+    print("[Keeta][sync_menu_entities] Menu push solicitado com sucesso (204/2xx)")
     return True, None
 
 
@@ -1032,31 +1078,26 @@ def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, st
     return sucesso, erro
 
 
-def force_menu_sync(merchant_id: str) -> tuple[bool, str | None]:
+def force_menu_sync(merchant_id: str, merchant: dict | None = None) -> tuple[bool, str | None]:
     """
-    Força a Keeta a re-sincronizar o cardápio completo da loja.
+    Força a Keeta a sincronizar o cardápio completo da loja.
 
-    Envia `POST /v1/merchantUpdate/{merchantId}` com body `{}`.
-    Esse é o gatilho para a Keeta executar o pull pelo GET /merchant.
+    O menu é enviado como `entityType=MERCHANT` com o Merchant completo. A
+    tentativa anterior de usar body `{}` dependia do pull documentado, mas a
+    API de produção retorna 400 para esse formato nesta integração.
 
-    Não envia `entityType=MERCHANT`, pois esse tipo de atualização não publica
-    o cardápio.
-
-    `merchant_id` é o ID da loja registrado no onboarding e usado no
-    path de `merchantUpdate`. Ele deve ser obtido da configuração da loja,
-    nunca de um ID global fixo de outra loja.
-
-    Retorna (sucesso, mensagem_de_erro).
+    `merchant_id` é o identificador persistido no onboarding e usado no path
+    de `merchantUpdate`; `merchant` deve ser o payload atual do GET /merchant.
     """
     print(f"\n[Keeta][force_menu_sync] INÍCIO | merchant_id={merchant_id}")
 
     endpoint_merchant_id = str(merchant_id).strip()
     if not endpoint_merchant_id:
         return False, "merchantId não pode ser vazio"
+    if not isinstance(merchant, dict):
+        return False, "merchant é obrigatório para o menu push"
 
-    # Full refresh explícito: body vazio instrui a Keeta a chamar novamente
-    # o endpoint GET /merchant configurado no onboarding.
-    return _post_merchant_update_payload(endpoint_merchant_id, {})
+    return sync_menu_entities(endpoint_merchant_id, merchant)
 
 
 # =============================================================================
