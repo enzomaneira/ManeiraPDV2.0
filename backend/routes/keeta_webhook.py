@@ -33,6 +33,8 @@ import copy
 import json
 import os
 from pathlib import Path
+import time
+import traceback
 import uuid
 import keeta_client
 from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
@@ -616,6 +618,148 @@ def _build_menu_response(store_id: int):
     return response
 
 
+def _log_menu_diagnostics(menu: dict, store_id: int, merchant_id: str) -> None:
+    """Registra um diagnóstico seguro do Merchant antes de devolvê-lo à Keeta.
+
+    O diagnóstico não registra headers de autenticação nem o JSON completo. Ele
+    verifica a estrutura, IDs e referências entre entidades para que um erro
+    ``Parameter Error`` possa ser relacionado a um campo específico no log.
+    """
+    required_keys = ("id", "status", "basicInfo", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
+    violations = []
+    warnings = []
+
+    if not isinstance(menu, dict):
+        print(f"[Menu][DIAGNOSTIC] ERRO | store_id={store_id} | payload não é objeto: {type(menu).__name__}")
+        return
+
+    missing_keys = [key for key in required_keys if key not in menu]
+    if missing_keys:
+        violations.append(f"campos obrigatórios ausentes: {missing_keys}")
+
+    actual_merchant_id = str(menu.get("id", ""))
+    if actual_merchant_id != str(merchant_id):
+        violations.append(
+            f"id do Merchant divergente: payload={actual_merchant_id!r}, onboarding={str(merchant_id)!r}"
+        )
+
+    entities = {}
+    counts = {}
+    for entity_name in ("services", "menus", "categories", "itemOffers", "items", "optionGroups", "availabilities"):
+        value = menu.get(entity_name, [])
+        counts[entity_name] = len(value) if isinstance(value, list) else type(value).__name__
+        if not isinstance(value, list):
+            violations.append(f"{entity_name} precisa ser uma lista; recebido {type(value).__name__}")
+            entities[entity_name] = {}
+            continue
+
+        ids = {}
+        for index, entity in enumerate(value):
+            if not isinstance(entity, dict):
+                violations.append(f"{entity_name}[{index}] precisa ser um objeto")
+                continue
+            entity_id = entity.get("id")
+            if not isinstance(entity_id, str) or not entity_id.strip():
+                violations.append(f"{entity_name}[{index}].id ausente ou inválido")
+                continue
+            if entity_id in ids:
+                violations.append(f"ID duplicado em {entity_name}: {entity_id!r}")
+            ids[entity_id] = index
+        entities[entity_name] = ids
+
+    def _check_scalar_reference(source_name, target_name, field):
+        target_ids = entities.get(target_name, {})
+        for index, entity in enumerate(menu.get(source_name, [])):
+            if not isinstance(entity, dict) or field not in entity or entity[field] is None:
+                continue
+            reference = str(entity[field])
+            if reference not in target_ids:
+                violations.append(
+                    f"{source_name}[{index}].{field}={reference!r} não existe em {target_name}"
+                )
+
+    def _check_list_references(source_name, target_name, field):
+        target_ids = entities.get(target_name, {})
+        for index, entity in enumerate(menu.get(source_name, [])):
+            if not isinstance(entity, dict) or field not in entity or entity[field] is None:
+                continue
+            references = entity[field]
+            if not isinstance(references, list):
+                violations.append(f"{source_name}[{index}].{field} precisa ser uma lista")
+                continue
+            unknown = [str(reference) for reference in references if str(reference) not in target_ids]
+            if unknown:
+                violations.append(
+                    f"{source_name}[{index}].{field} referencia ID(s) inexistente(s): {unknown}"
+                )
+
+    _check_scalar_reference("services", "menus", "menuId")
+    _check_list_references("menus", "categories", "categoryId")
+    _check_list_references("categories", "itemOffers", "itemOfferId")
+    _check_scalar_reference("itemOffers", "items", "itemId")
+    _check_list_references("itemOffers", "optionGroups", "optionGroupsId")
+    _check_list_references("itemOffers", "availabilities", "availabilityId")
+
+    offers_by_item_id = {
+        str(offer.get("itemId")): offer
+        for offer in menu.get("itemOffers", [])
+        if isinstance(offer, dict) and offer.get("itemId") is not None
+    }
+    for index, item in enumerate(menu.get("items", [])):
+        if not isinstance(item, dict):
+            continue
+        item_prices = (item.get("deliveryPrice"), item.get("pickupPrice"), item.get("price"))
+        offer = offers_by_item_id.get(str(item.get("id")), {})
+        offer_prices = (offer.get("deliveryPrice"), offer.get("pickupPrice"), offer.get("price"))
+        has_price = any(isinstance(price, dict) and price.get("value") is not None for price in item_prices + offer_prices)
+        if not has_price:
+            violations.append(
+                f"items[{index}] id={item.get('id')!r} não possui preço delivery/pickup no item nem na oferta"
+            )
+
+    for index, group in enumerate(menu.get("optionGroups", [])):
+        if not isinstance(group, dict):
+            continue
+        options = group.get("options")
+        if not isinstance(options, list):
+            violations.append(f"optionGroups[{index}].options precisa ser uma lista")
+            continue
+        available_count = sum(
+            1 for option in options
+            if isinstance(option, dict) and option.get("status") == "AVAILABLE"
+        )
+        min_permitted = group.get("minPermitted")
+        max_permitted = group.get("maxPermitted")
+        if isinstance(min_permitted, int) and available_count < min_permitted:
+            violations.append(
+                f"optionGroups[{index}] id={group.get('id')!r}: "
+                f"minPermitted={min_permitted}, opções AVAILABLE={available_count}"
+            )
+        if isinstance(min_permitted, int) and isinstance(max_permitted, int) and max_permitted < min_permitted:
+            violations.append(
+                f"optionGroups[{index}] id={group.get('id')!r}: "
+                f"maxPermitted={max_permitted} menor que minPermitted={min_permitted}"
+            )
+        if not options:
+            warnings.append(f"optionGroups[{index}] id={group.get('id')!r} está sem opções")
+
+    payload_size = len(json.dumps(menu, ensure_ascii=False, separators=(",", ":")))
+    print(
+        f"[Menu][DIAGNOSTIC] resumo | store_id={store_id} | merchant_id={actual_merchant_id!r} | "
+        f"payload_chars={payload_size} | counts={counts}"
+    )
+    if violations:
+        print(f"[Menu][DIAGNOSTIC] FALHAS ({len(violations)}):")
+        for violation in violations[:50]:
+            print(f"[Menu][DIAGNOSTIC]   - {violation}")
+        if len(violations) > 50:
+            print(f"[Menu][DIAGNOSTIC]   - ... mais {len(violations) - 50} falha(s)")
+    else:
+        print("[Menu][DIAGNOSTIC] validações estruturais básicas: OK")
+    for warning in warnings:
+        print(f"[Menu][DIAGNOSTIC] AVISO: {warning}")
+
+
 # =============================================================================
 #  ROOT — Atalho de conveniência para inspecionar o cardápio manualmente
 # =============================================================================
@@ -1014,19 +1158,40 @@ def get_merchant_menu():
 
     Documentação: https://api-docs.mykeeta.com/apis/opendelivery/merchantendpoints
     """
+    request_id = uuid.uuid4().hex[:12]
+    raw_store_id = request.args.get("storeId")
     store_id = request.args.get("storeId", 1, type=int)
-    print(f"\n[Webhook][get_merchant_menu] INÍCIO | storeId={store_id} | endpoint_publico=True")
-
-    # Para GET /merchant, a Keeta espera o Merchant diretamente. Não envolver
-    # este retorno em entityType/updatedObjects, pois esses campos são usados
-    # somente em uma notificação de atualização enviada via POST.
-    merchant = _build_menu_response(store_id)
-
+    started_at = time.perf_counter()
     print(
-        f"[Webhook][get_merchant_menu] FIM (sucesso) | store_id={store_id} | "
-        f"merchant_id={merchant.get('id')}"
+        f"\n[Webhook][get_merchant_menu] INÍCIO | request_id={request_id} | "
+        f"storeId_raw={raw_store_id!r} | store_id={store_id} | "
+        f"remote_addr={request.remote_addr!r} | user_agent={request.user_agent.string!r} | "
+        f"x_app_merchant_id={request.headers.get('X-App-MerchantId')!r}"
     )
-    return jsonify(merchant), 200, {"Content-Type": "application/json"}
+
+    try:
+        # Para GET /merchant, a Keeta espera o Merchant diretamente. Não envolver
+        # este retorno em entityType/updatedObjects, pois esses campos são usados
+        # somente em uma notificação de atualização enviada via POST.
+        merchant = _build_menu_response(store_id)
+        merchant_id = _merchant_id_for_store(store_id)
+        _log_menu_diagnostics(merchant, store_id, merchant_id)
+
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        print(
+            f"[Webhook][get_merchant_menu] FIM (sucesso) | request_id={request_id} | "
+            f"store_id={store_id} | merchant_id={merchant.get('id')} | elapsed_ms={elapsed_ms:.1f}"
+        )
+        return jsonify(merchant), 200, {"Content-Type": "application/json"}
+    except Exception as error:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        print(
+            f"[Webhook][get_merchant_menu] FALHA | request_id={request_id} | "
+            f"store_id={store_id} | elapsed_ms={elapsed_ms:.1f} | "
+            f"error_type={type(error).__name__} | error={error}"
+        )
+        print(traceback.format_exc())
+        return jsonify({"error": "Internal server error", "requestId": request_id}), 500
 
 
 # =============================================================================
