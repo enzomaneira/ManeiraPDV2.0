@@ -114,17 +114,36 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
     items = []
     offers = []
     category_offers = {category_id: [] for category_id in category_ids.values()}
+
+    # O fallback continua funcionando sem banco, mas aproveita as imagens dos
+    # itens da loja 1 quando elas estiverem disponíveis.
+    image_urls_by_external_code = {}
+    try:
+        database_items = MenuItem.query.filter_by(store_id=1).all()
+    except Exception:
+        database_items = []
+    for database_item in database_items:
+        image_url = getattr(database_item, "image_url", None)
+        if isinstance(image_url, str) and image_url.strip():
+            image_urls_by_external_code[str(database_item.external_code)] = image_url.strip()
+
     for index, (name, external_code, price, category, groups) in enumerate(item_data):
         item_id = _reference_uuid(f"item:{external_code}")
         offer_id = _reference_uuid(f"item-offer:{external_code}")
+        price_details = {"value": price, "originalValue": price, "currency": "BRL"}
+        image_url = image_urls_by_external_code.get(external_code)
+        images = []
+        if isinstance(image_url, str) and image_url.lower().startswith(("https://", "http://")):
+            images = [{"type": "main", "url": image_url}]
+
         items.append({
             "id": item_id,
             "name": name,
             "description": name,
             "externalCode": external_code,
             "status": "AVAILABLE",
-            "images": _build_item_images(None),
-            "deliveryPrice": {"value": price, "originalValue": price, "currency": "BRL"},
+            "images": images,
+            "deliveryPrice": price_details,
             "nutritionalInfo": {"isAlcoholic": False},
         })
         offers.append({
@@ -132,9 +151,12 @@ def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict
             "itemId": item_id,
             "index": index,
             "status": "AVAILABLE",
-            # No Open Delivery v1.5.0, `price` representa o preço da oferta
-            # de delivery. Não enviar campos de preço indoor não suportados.
-            "price": {"value": price, "originalValue": price, "currency": "BRL"},
+            # `price` é o preço de delivery no Open Delivery v1.5.0. Os
+            # aliases explícitos mantêm o fallback compatível com validadores
+            # que exigem deliveryPrice/pickupPrice no itemOffer.
+            "price": price_details,
+            "deliveryPrice": price_details,
+            "pickupPrice": price_details,
             "optionGroupsId": [group_ids[group] for group in groups],
             "availabilityId": [availability_id],
         })
