@@ -897,8 +897,9 @@ def notify_merchant_update(
 def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | None]:
     """Envia o cardápio completo pelo fluxo de menu push da Keeta.
 
-    O Merchant recebido é normalizado para o schema estrito do push e enviado
-    como `entityType=MERCHANT`, solicitando a atualização completa do menu.
+    O Merchant recebido é normalizado para o schema estrito do push. O
+    primeiro Menu é extraído e enviado como `entityType=MENU`, com todas as
+    entidades do cardápio no nível raiz do objeto Menu.
     """
     if not isinstance(merchant, dict):
         return False, "merchant precisa ser um objeto JSON"
@@ -1041,13 +1042,25 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     full_merchant["itemOffers"] = item_offers
     full_merchant["optionGroups"] = option_groups or []
 
-    # O body vazio é documentado como pull, mas a API de produção está
-    # respondendo 400 para esse formato. O payload completo MERCHANT é o
-    # formato de menu push que efetivamente retorna 204 e ainda faz a Keeta
-    # atualizar o cardápio inteiro.
-    success, error = _post_merchant_update_payload(
+    # O fluxo de menu push exige um objeto MENU, não o Merchant completo.
+    # Mantemos o Merchant normalizado acima para preservar a mesma construção
+    # usada pelo fluxo de GET /merchant, mas enviamos somente o primeiro menu
+    # com as entidades relacionadas achatadas no próprio objeto Menu.
+    first_menu = menus[0]
+    if not isinstance(first_menu, dict):
+        return False, "menus[0] precisa ser um objeto"
+
+    menu_payload = dict(first_menu)
+    menu_payload.setdefault("status", "AVAILABLE")
+    menu_payload["categories"] = categories
+    menu_payload["items"] = items
+    menu_payload["itemOffers"] = item_offers
+    menu_payload["optionGroups"] = option_groups or []
+
+    success, error = notify_merchant_update(
         merchant_id,
-        {"entityType": "MERCHANT", "updatedObjects": [full_merchant]},
+        entity_type="MENU",
+        updated_objects=[menu_payload],
     )
     if not success:
         return False, f"MENU_PUSH: {error}"
