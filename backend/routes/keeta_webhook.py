@@ -45,7 +45,7 @@ keeta_bp = Blueprint("keeta", __name__)
 
 
 MANEIRA_KEETA_MERCHANT_ID = "159633716"
-_REFERENCE_MENU_KEYS = ("TTL", "basicInfo", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
+_REFERENCE_MENU_KEYS = ("basicInfo", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
 _REFERENCE_MENU_FILE = Path(
     os.getenv(
         "KEETA_MENU_REFERENCE_FILE",
@@ -69,7 +69,27 @@ def _build_item_images(image_url: str | None) -> list[dict]:
     return [{"type": "main", "URL": normalized_url}]
 
 
-def _fallback_maneira_menu() -> dict:
+def _merchant_id_for_store(store_id: int | str) -> str:
+    """Retorna exatamente o merchantId usado no onboarding desta loja."""
+    requested_id = str(store_id).strip()
+    try:
+        config = StoreConfig.query.get(int(requested_id))
+        if config and config.keeta_merchant_id:
+            return str(config.keeta_merchant_id).strip()
+
+        config = StoreConfig.query.filter_by(keeta_merchant_id=requested_id).first()
+        if config and config.keeta_merchant_id:
+            return str(config.keeta_merchant_id).strip()
+    except (TypeError, ValueError, RuntimeError):
+        # Permite usar o fallback em testes/rotas fora de um contexto SQLAlchemy.
+        pass
+
+    if requested_id == MANEIRA_KEETA_MERCHANT_ID or requested_id == "1":
+        return MANEIRA_KEETA_MERCHANT_ID
+    return requested_id
+
+
+def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict:
     """Cardápio mínimo completo do Maneira Burguer usado sem o arquivo de referência."""
     menu_id = _reference_uuid("menu")
     service_id = _reference_uuid("service-delivery")
@@ -107,11 +127,9 @@ def _fallback_maneira_menu() -> dict:
             "itemId": item_id,
             "index": index,
             "status": "AVAILABLE",
-            # `price` é mantido por compatibilidade com clientes antigos; os
-            # preços explícitos de delivery e pickup são os que a Keeta usa.
+            # No Open Delivery v1.5.0, `price` representa o preço da oferta
+            # de delivery. Não enviar campos de preço indoor não suportados.
             "price": {"value": price, "originalValue": price, "currency": "BRL"},
-            "deliveryPrice": {"value": price, "currency": "BRL"},
-            "pickupPrice": {"value": price, "currency": "BRL"},
             "optionGroupsId": [group_ids[group] for group in groups],
         })
         category_offers[category_ids[category]].append(offer_id)
@@ -166,9 +184,9 @@ def _fallback_maneira_menu() -> dict:
             "options": options,
         })
     return {
-        "id": keeta_client.merchant_uuid(1),
+        # Deve ser exatamente o merchantId informado no onboarding.
+        "id": str(merchant_id),
         "status": "AVAILABLE",
-        "TTL": 500,
         "basicInfo": {
             "name": "MANEIRA BURGUER",
             "document": "12345678000199",
@@ -224,7 +242,7 @@ def _fallback_maneira_menu() -> dict:
     }
 
 
-def _load_maneira_menu_reference() -> dict:
+def _load_maneira_menu_reference(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict:
     """Lê o JSON gerado do cardápio e mantém o fallback executável em ambientes sem o arquivo."""
     if _REFERENCE_MENU_FILE.is_file():
         try:
@@ -234,21 +252,21 @@ def _load_maneira_menu_reference() -> dict:
                 # O contrato do GET é deliberadamente restrito a este envelope;
                 # não propague metadados extras que possam existir no arquivo.
                 normalized_menu = {key: menu[key] for key in _REFERENCE_MENU_KEYS}
-                normalized_menu.setdefault("id", keeta_client.merchant_uuid(1))
+                # O id do arquivo não pode prevalecer: a Keeta exige que o
+                # Merchant.id seja o mesmo merchantId do onboarding.
+                normalized_menu["id"] = str(merchant_id)
                 normalized_menu.setdefault("status", "AVAILABLE")
-                normalized_menu["TTL"] = normalized_menu.get("TTL") or 500
-                option_groups = normalized_menu.get("optionGroups")
-                if isinstance(option_groups, list):
-                    for option_group in option_groups:
-                        if isinstance(option_group, dict) and option_group.get("options") == []:
-                            option_group.pop("options")
+                # TTL e lastUpdate são ignorados pela Keeta e não fazem parte
+                # do contrato mínimo do GET /merchant.
+                normalized_menu.pop("TTL", None)
+                normalized_menu.pop("lastUpdate", None)
                 return normalized_menu
             print(f"[Menu] AVISO: {_REFERENCE_MENU_FILE} não possui o envelope esperado; usando fallback.")
         except (OSError, json.JSONDecodeError) as error:
             print(f"[Menu] AVISO: falha ao ler {_REFERENCE_MENU_FILE}: {type(error).__name__}: {error}")
     else:
         print(f"[Menu] AVISO: arquivo de referência não encontrado em {_REFERENCE_MENU_FILE}; usando fallback.")
-    return _fallback_maneira_menu()
+    return _fallback_maneira_menu(merchant_id)
 
 
 # =============================================================================
@@ -262,12 +280,14 @@ def _build_menu_response(store_id: int):
     itemOffers, optionGroups e availabilities.
     """
     print(f"\n[_build_menu_response] INÍCIO | store_id={store_id}")
+    merchant_id = _merchant_id_for_store(store_id)
+    print(f"[_build_menu_response] merchant_id do onboarding={merchant_id}")
 
     # O Maneira Burguer possui um cardápio versionado pelo arquivo gerado para
     # a integração. Retornamos uma cópia para nunca permitir que uma chamada
     # modifique o objeto mantido em memória pelo processo.
     if str(store_id) == "1" or str(store_id) == MANEIRA_KEETA_MERCHANT_ID:
-        menu = _load_maneira_menu_reference()
+        menu = _load_maneira_menu_reference(merchant_id)
         print(f"[_build_menu_response] FIM (referência Maneira Burguer) | keys={list(menu)}")
         return copy.deepcopy(menu)
 
@@ -314,18 +334,12 @@ def _build_menu_response(store_id: int):
             "status": item.status or "AVAILABLE",
             # O preço explícito de delivery evita que a Keeta interprete a
             # oferta como tendo apenas preço indoor.
+            # No contrato Open Delivery, `price` é o preço de delivery da
+            # oferta. Nunca deixar uma oferta apenas com preço indoor.
             "price": {
-                "originalValue": item.price,
+                "originalValue": item.original_price if item.original_price is not None else item.price,
                 "currency":      "BRL",
                 "value":         item.price,
-            },
-            "deliveryPrice": {
-                "currency": "BRL",
-                "value": item.price,
-            },
-            "pickupPrice": {
-                "currency": "BRL",
-                "value": item.price,
             },
         })
 
@@ -407,6 +421,7 @@ def _build_menu_response(store_id: int):
     option_groups_db = MenuOptionGroup.query.filter_by(store_id=store_id).order_by(MenuOptionGroup.index).all()
     option_groups = []
     option_group_ids_map = {}
+    option_group_ids_with_options = set()
 
     for og in option_groups_db:
         og_id = str(og.id)
@@ -447,6 +462,13 @@ def _build_menu_response(store_id: int):
                   f"para esta resposta — corrija o grupo no cardápio para resolver definitivamente.")
             min_permitted = available_options_count
 
+        # Um grupo sem opções não pode ser referenciado por uma oferta. Não o
+        # retornamos no Merchant para evitar que a Keeta rejeite o cardápio.
+        if not options_list:
+            option_group_ids_map.pop(og.id, None)
+            continue
+
+        option_group_ids_with_options.add(og.id)
         option_group_payload = {
             "id":           og_id,
             "index":        og.index if og.index is not None else 0,
@@ -455,10 +477,10 @@ def _build_menu_response(store_id: int):
             "externalCode": og.external_code or og_id,
             "status":       og.status or "AVAILABLE",
             "minPermitted": min_permitted,
-            "maxPermitted": max_permitted,
+            "maxPermitted": min(max_permitted, len(options_list)),
+            "priceMethod":  og.price_method or "SUM",
+            "options":      options_list,
         }
-        if options_list:
-            option_group_payload["options"] = options_list
         option_groups.append(option_group_payload)
 
     # --- 6. AVAILABILITIES ---
@@ -499,7 +521,11 @@ def _build_menu_response(store_id: int):
         offer_id = f"offer-{item_db_id}"
         for of in item_offers:
             if of["id"] == offer_id:
-                of["optionGroupsId"] = [option_group_ids_map[og_id] for (og_id,) in og_ids if og_id in option_group_ids_map]
+                of["optionGroupsId"] = [
+                    option_group_ids_map[og_id]
+                    for (og_id,) in og_ids
+                    if og_id in option_group_ids_with_options and og_id in option_group_ids_map
+                ]
                 break
 
         av_ids = db.session.query(menu_item_availabilities.c.availability_id).filter(
@@ -524,7 +550,9 @@ def _build_menu_response(store_id: int):
         # O schema oficial exige um `id` de 36 a 100 caracteres (ver
         # keeta_client.merchant_uuid). Usar apenas str(store_id) (ex: "1")
         # viola o minLength do schema.
-        "id":     keeta_client.merchant_uuid(store_id),
+        # O topo precisa repetir o merchantId usado no onboarding, não o ID
+        # inteiro interno da loja e nem um UUID gerado localmente.
+        "id":     merchant_id,
         "status": "AVAILABLE",
             "basicInfo": {
                 "name":                    store_name,

@@ -707,8 +707,8 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
 
         if entity_type == "MERCHANT":
             merchant_id = entity.get("id")
-            if not isinstance(merchant_id, str) or not 36 <= len(merchant_id) <= 100:
-                return f"updatedObjects[{index}].id do MERCHANT precisa ter entre 36 e 100 caracteres"
+            if not isinstance(merchant_id, str) or not merchant_id.strip():
+                return f"updatedObjects[{index}].id do MERCHANT precisa ser o merchantId do onboarding"
             if entity.get("status") not in {"AVAILABLE", "UNAVAILABLE"}:
                 return f"updatedObjects[{index}].status precisa ser AVAILABLE ou UNAVAILABLE"
             for collection_name in ("services", "items", "menus", "categories", "itemOffers"):
@@ -757,10 +757,13 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
                 return "MENU.categoryId só pode conter UUIDs válidos, nunca externalCodes"
 
         if entity_type in {"CATEGORY", "ITEM", "ITEM_OFFER", "OPTION_GROUP", "OPTION"}:
-            if not _is_uuid(entity.get("id")):
-                return f"updatedObjects[{index}].id precisa ser um UUID válido"
+            if not isinstance(entity.get("id"), str) or not entity["id"].strip():
+                return f"updatedObjects[{index}].id precisa ser uma string não vazia"
 
         if entity_type == "ITEM_OFFER":
+            # No Open Delivery v1.5.0, `price` é o preço da oferta de
+            # delivery. Os aliases deliveryPrice/pickupPrice também são
+            # aceitos para compatibilidade, mas não são obrigatórios.
             prices = [entity.get("price"), entity.get("deliveryPrice"), entity.get("pickupPrice")]
             has_delivery_or_pickup_price = any(
                 isinstance(price, dict) and price.get("value") is not None
@@ -773,14 +776,11 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
                 )
 
         if entity_type == "OPTION_GROUP":
-            options_was_provided = "options" in entity
-            options = entity.get("options", [])
-            if not isinstance(options, list):
-                return f"updatedObjects[{index}].options precisa ser uma lista quando informada"
-            if options_was_provided and not options:
+            options = entity.get("options")
+            if not isinstance(options, list) or not options:
                 return (
-                    f"updatedObjects[{index}].options não pode ser um array vazio; "
-                    "remova o campo quando o grupo não tiver opções"
+                    f"updatedObjects[{index}].options precisa ser uma lista não vazia "
+                    "quando o optionGroup é enviado"
                 )
             available_count = sum(
                 1 for option in options
@@ -879,6 +879,9 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
         return False, "merchant precisa ser um objeto JSON"
 
     full_merchant = dict(merchant)
+    # O ID do objeto Merchant deve ser exatamente o merchantId usado no
+    # onboarding e no path de merchantUpdate.
+    full_merchant["id"] = str(merchant_id).strip()
     services = merchant.get("services")
     menus = merchant.get("menus")
     categories = merchant.get("categories")
@@ -886,16 +889,27 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     item_offers = merchant.get("itemOffers")
     option_groups = merchant.get("optionGroups")
     if isinstance(option_groups, list):
+        # Um optionGroup vazio não pode permanecer referenciado por uma oferta.
+        valid_option_group_ids = set()
         normalized_option_groups = []
         for option_group in option_groups:
             if not isinstance(option_group, dict):
-                normalized_option_groups.append(option_group)
                 continue
             normalized_option_group = dict(option_group)
-            if normalized_option_group.get("options") == []:
-                normalized_option_group.pop("options")
+            options = normalized_option_group.get("options")
+            if not isinstance(options, list) or not options:
+                continue
+            valid_option_group_ids.add(normalized_option_group.get("id"))
             normalized_option_groups.append(normalized_option_group)
         option_groups = normalized_option_groups
+        if isinstance(item_offers, list):
+            for item_offer in item_offers:
+                if isinstance(item_offer, dict) and isinstance(item_offer.get("optionGroupsId"), list):
+                    item_offer["optionGroupsId"] = [
+                        option_group_id
+                        for option_group_id in item_offer["optionGroupsId"]
+                        if option_group_id in valid_option_group_ids
+                    ]
     basic_info = dict(merchant.get("basicInfo") or {})
     basic_info.setdefault("name", "MANEIRA BURGUER")
     basic_info.setdefault("document", "12345678000199")
