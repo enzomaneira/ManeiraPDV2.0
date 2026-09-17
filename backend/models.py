@@ -27,6 +27,8 @@ class User(db.Model):
     name          = db.Column(db.String(255), nullable=False)
     email         = db.Column(db.String(255), nullable=False, unique=True, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    reset_token_hash = db.Column(db.String(64), nullable=True, index=True)
+    reset_token_expires_at = db.Column(db.DateTime, nullable=True)
     created_at    = db.Column(db.String(100), nullable=True)
 
     # Relacionamento 1:1 com a loja (Store) desse usuário

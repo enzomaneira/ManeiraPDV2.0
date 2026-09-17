@@ -44,6 +44,8 @@ export const authService = {
     login: (email, password) => api.post('/auth/login', { email, password }),
     register: (name, email, password, storeName) =>
         api.post('/auth/register', { name, email, password, storeName }),
+    requestPasswordReset: (email) => api.post('/auth/request-password-reset', { email }),
+    resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
     me: () => api.get('/auth/me'),
 };
 

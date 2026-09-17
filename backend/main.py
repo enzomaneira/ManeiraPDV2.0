@@ -147,6 +147,9 @@ def _run_lightweight_migrations():
     print("[DB][_run_lightweight_migrations] INÍCIO")
 
     statements = [
+        # User: tokens de recuperação de senha (o token em texto puro nunca é salvo)
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash VARCHAR(64)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP",
         # StoreConfig: campos do webhook de autorização Keeta (eventos 1301/1302)
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_authorized BOOLEAN DEFAULT FALSE",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_auth_id VARCHAR(100)",

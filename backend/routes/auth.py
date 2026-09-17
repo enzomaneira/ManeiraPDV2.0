@@ -8,7 +8,12 @@
 #    GET  /api/auth/me        → retorna os dados do usuário logado (token)
 # =============================================================================
 
-from datetime import datetime
+import hashlib
+import os
+import secrets
+import smtplib
+from datetime import datetime, timedelta
+from email.message import EmailMessage
 from flask import Blueprint, request, jsonify, g
 
 from database import db
@@ -16,6 +21,42 @@ from models import User, Store, StoreConfig
 from auth_utils import generate_token, login_required
 
 auth_bp = Blueprint("auth", __name__)
+
+RESET_TOKEN_TTL_MINUTES = 30
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _send_password_reset_email(email: str, reset_url: str) -> bool:
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user or "no-reply@maneirapdv.local")
+
+    if not smtp_host:
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "Redefinição de senha — ManeiraPDV"
+    message["From"] = smtp_from
+    message["To"] = email
+    message.set_content(
+        "Recebemos uma solicitação para redefinir sua senha do ManeiraPDV.\n\n"
+        f"Acesse este link para criar uma nova senha (válido por {RESET_TOKEN_TTL_MINUTES} minutos):\n"
+        f"{reset_url}\n\n"
+        "Se você não solicitou a redefinição, ignore este e-mail."
+    )
+
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
+        if os.getenv("SMTP_USE_TLS", "true").lower() == "true":
+            smtp.starttls()
+        if smtp_user and smtp_password:
+            smtp.login(smtp_user, smtp_password)
+        smtp.send_message(message)
+    return True
 
 
 @auth_bp.post("/register")
@@ -114,6 +155,72 @@ def register():
     print("=" * 70 + "\n")
 
     return jsonify(response_data), 201
+
+
+@auth_bp.post("/request-password-reset")
+def request_password_reset():
+    """Cria um token de uso único e envia o link de redefinição por e-mail."""
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    generic_response = {
+        "message": "Se existir uma conta com este e-mail, enviaremos instruções para redefinir a senha."
+    }
+
+    if not email:
+        return jsonify(generic_response)
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify(generic_response)
+
+    raw_token = secrets.token_urlsafe(32)
+    user.reset_token_hash = _hash_reset_token(raw_token)
+    user.reset_token_expires_at = datetime.utcnow() + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
+    db.session.commit()
+
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    reset_url = f"{frontend_url}/reset-password?token={raw_token}"
+
+    try:
+        email_sent = _send_password_reset_email(email, reset_url)
+    except Exception as error:
+        db.session.rollback()
+        print(f"[Auth][password-reset] Falha ao enviar e-mail: {type(error).__name__}: {error}")
+        return jsonify({"error": "Não foi possível enviar o e-mail de recuperação."}), 500
+
+    response_data = dict(generic_response)
+    # Útil somente em desenvolvimento local sem SMTP. Nunca habilite em produção.
+    if not email_sent and os.getenv("RESET_PASSWORD_EXPOSE_TOKEN", "false").lower() == "true":
+        response_data["resetToken"] = raw_token
+        response_data["resetUrl"] = reset_url
+        print(f"[Auth][password-reset] Token de desenvolvimento gerado para {email}.")
+    elif not email_sent:
+        print("[Auth][password-reset] SMTP_HOST não configurado; token não exposto.")
+
+    return jsonify(response_data)
+
+
+@auth_bp.post("/reset-password")
+def reset_password():
+    """Valida o token de recuperação e troca a senha, invalidando o token."""
+    data = request.get_json(silent=True) or {}
+    token = (data.get("token") or "").strip()
+    password = data.get("password") or ""
+
+    if len(password) < 6:
+        return jsonify({"error": "A senha deve ter pelo menos 6 caracteres."}), 400
+    if not token:
+        return jsonify({"error": "Token de recuperação inválido ou expirado."}), 400
+
+    user = User.query.filter_by(reset_token_hash=_hash_reset_token(token)).first()
+    if not user or not user.reset_token_expires_at or user.reset_token_expires_at < datetime.utcnow():
+        return jsonify({"error": "Token de recuperação inválido ou expirado."}), 400
+
+    user.set_password(password)
+    user.reset_token_hash = None
+    user.reset_token_expires_at = None
+    db.session.commit()
+    return jsonify({"message": "Senha redefinida com sucesso. Você já pode entrar."})
 
 
 @auth_bp.post("/login")

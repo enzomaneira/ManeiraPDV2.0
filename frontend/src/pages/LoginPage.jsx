@@ -89,6 +89,12 @@ export default function LoginPage() {
                         {loading ? 'Entrando...' : 'Entrar'}
                     </button>
 
+                    <div className="flex justify-center">
+                        <Link to="/forgot-password" className="text-sm text-indigo-600 font-bold hover:underline">
+                            Esqueci minha senha
+                        </Link>
+                    </div>
+
                     <p className="text-center text-sm text-slate-500">
                         Ainda não tem uma conta?{' '}
                         <Link to="/register" className="text-indigo-600 font-bold hover:underline">
