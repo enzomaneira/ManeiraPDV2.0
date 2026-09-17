@@ -39,7 +39,7 @@ export default function MenuPage() {
   const [ogInlineEditing, setOgInlineEditing] = useState(null); // null=criando, number=editando grupo
   // --- Option inline na aba ---
   const [optInlineTarget, setOptInlineTarget] = useState(null); // {groupId, optionId} ou null
-  const [optInlineForm, setOptInlineForm] = useState({ name: '', description: '', externalCode: '', price: '0', status: 'AVAILABLE' });
+  const [optInlineForm, setOptInlineForm] = useState({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
   const [optInlineSaving, setOptInlineSaving] = useState(false);
   // --- Expansão de grupos na aba ---
   const [expandedOGs, setExpandedOGs] = useState({});
@@ -58,12 +58,14 @@ export default function MenuPage() {
   const [ogManagerSaving, setOgManagerSaving] = useState(false);
   // Options dentro do gerenciador
   const [optionEditTarget, setOptionEditTarget] = useState(null);  // {groupId, optionId} ou null=novo
-  const [optionManagerForm, setOptionManagerForm] = useState({ name: '', description: '', externalCode: '', price: '0', status: 'AVAILABLE' });
+  const [optionManagerForm, setOptionManagerForm] = useState({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
   const [optionManagerSaving, setOptionManagerSaving] = useState(false);
 
   // ===== Carrega dados =====
-  const fetchData = async () => {
-    setLoading(true);
+  const getErrorMessage = (error, fallback) => error.response?.data?.error || fallback;
+  const showMessage = (type, text) => setMessage({ type, text });
+  const fetchData = async (showSpinner = true) => {
+    if (showSpinner) setLoading(true);
     try {
       const [catRes, itemRes, ogRes, avRes] = await Promise.all([
         categoryService.getAll(),
@@ -77,14 +79,14 @@ export default function MenuPage() {
       setAvailabilities(avRes.data || []);
     } catch (error) {
       console.error('Erro ao carregar cardápio:', error);
-      setMessage({ type: 'error', text: 'Erro ao carregar dados.' });
+      showMessage('error', getErrorMessage(error, 'Erro ao carregar dados.'));
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => { fetchData(); }, []);
-  useEffect(() => { if (!loading) fetchData(); }, [selectedCategoryId]);
+  useEffect(() => { if (!loading) fetchData(false); }, [selectedCategoryId]);
 
   // ===== Sync Keeta =====
   const handleSyncMenu = async () => {
@@ -101,14 +103,14 @@ export default function MenuPage() {
   const openNewCategory = () => { setEditingCategory(null); setCatForm({ name: '', description: '', externalCode: '' }); setShowCatModal(true); };
   const openEditCategory = (cat) => { setEditingCategory(cat); setCatForm({ name: cat.name, description: cat.description || '', externalCode: cat.externalCode }); setShowCatModal(true); };
   const handleSaveCategory = async (e) => {
-    e.preventDefault(); const name = catForm.name.trim(); if (!name) return;
+    e.preventDefault(); const name = catForm.name.trim(); if (!name) { showMessage('error', 'Nome da categoria é obrigatório.'); return; }
     setCatSaving(true);
     try {
       const payload = { name, description: catForm.description.trim(), externalCode: catForm.externalCode.trim() || `cat-${Date.now()}` };
       if (editingCategory) await categoryService.update(editingCategory.id, payload);
       else await categoryService.create(payload);
       setShowCatModal(false); fetchData();
-    } catch { setMessage({ type: 'error', text: 'Erro ao salvar categoria.' }); }
+    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar categoria.')); }
     finally { setCatSaving(false); }
   };
   const handleDeleteCategory = async (cat) => {
@@ -128,21 +130,20 @@ export default function MenuPage() {
   };
   const openEditItem = (item) => {
     setEditingItem(item); setItemTab('info');
-    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price || ''), originalPrice: String(item.originalPrice || item.price || ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '' });
+    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '' });
     setShowItemModal(true);
-    // Garante que a categoria está selecionada
-    if (item.categoryId && !selectedCategoryId) setSelectedCategoryId(item.categoryId);
   };
   const handleSaveItem = async (e) => {
-    e.preventDefault(); const name = itemForm.name.trim(); const price = parseFloat(itemForm.price);
-    if (!name || isNaN(price) || price < 0) { setMessage({ type: 'error', text: 'Nome e preço são obrigatórios.' }); return; }
+    e.preventDefault(); const name = itemForm.name.trim(); const price = parseFloat(String(itemForm.price).replace(',', '.')); const originalPrice = itemForm.originalPrice === '' ? price : parseFloat(String(itemForm.originalPrice).replace(',', '.'));
+    if (!name || isNaN(price) || price < 0 || isNaN(originalPrice) || originalPrice < price) { showMessage('error', 'Informe nome, preço válido e preço original maior ou igual ao preço atual.'); return; }
     setItemSaving(true);
-    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim() || String(Date.now()), price, originalPrice: parseFloat(itemForm.originalPrice) || price, status: itemForm.status, imageUrl: itemForm.imageUrl.trim(), categoryId: selectedCategoryId };
+    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim() || `item-${Date.now()}`, price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim() };
+    if (!editingItem) payload.categoryId = selectedCategoryId;
     try {
       if (editingItem) await menuService.update(editingItem.id, payload);
       else await menuService.create(payload);
       setShowItemModal(false); fetchData();
-    } catch { setMessage({ type: 'error', text: 'Erro ao salvar item.' }); }
+    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar item.')); }
     finally { setItemSaving(false); }
   };
   const handleDeleteItem = async (item) => {
@@ -162,8 +163,8 @@ export default function MenuPage() {
         name: ogInlineForm.name.trim(),
         description: ogInlineForm.description.trim(),
         externalCode: ogInlineForm.externalCode.trim() || `og-${Date.now()}`,
-        minPermitted: parseInt(ogInlineForm.minPermitted) || 0,
-        maxPermitted: parseInt(ogInlineForm.maxPermitted) || 1,
+        minPermitted: Number(ogInlineForm.minPermitted),
+        maxPermitted: Number(ogInlineForm.maxPermitted),
         priceMethod: ogInlineForm.priceMethod, status: ogInlineForm.status,
       };
       let groupId, warning;
@@ -194,33 +195,28 @@ export default function MenuPage() {
     });
   };
 
-  const handleDeleteOGInline = async (og) => {
-    if (!confirm(`Remover "${og.name}" e suas opções?`)) return;
-    try { await optionGroupService.delete(og.id); await fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao remover.' }); setTimeout(() => setMessage(null), 3000); }
-  };
-
   // --- Options inline ---
   const startNewOptionInline = (groupId) => {
     setOptInlineTarget({ groupId, optionId: null });
-    setOptInlineForm({ name: '', description: '', externalCode: '', price: '0', status: 'AVAILABLE' });
+    setOptInlineForm({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
   };
   const startEditOptionInline = (groupId, opt) => {
     setOptInlineTarget({ groupId, optionId: opt.id });
     setOptInlineForm({
       name: opt.name, description: opt.description || '', externalCode: opt.externalCode || '',
-      price: String(opt.price || 0), status: opt.status || 'AVAILABLE'
+      itemId: String(opt.itemId || ''), price: String(opt.price ?? 0), status: opt.status || 'AVAILABLE'
     });
   };
   const handleSaveOptionInline = async (e) => {
     e.preventDefault();
-    if (!optInlineTarget || !optInlineForm.name.trim()) return;
+    if (!optInlineTarget || !optInlineForm.name.trim()) { showMessage('error', 'Nome da opção é obrigatório.'); return; }
     setOptInlineSaving(true);
     try {
       const payload = {
         name: optInlineForm.name.trim(), description: optInlineForm.description.trim(),
         externalCode: optInlineForm.externalCode.trim() || `opt-${Date.now()}`,
-        price: parseFloat(optInlineForm.price) || 0, status: optInlineForm.status,
+        itemId: optInlineForm.itemId || undefined,
+        price: parseFloat(String(optInlineForm.price).replace(',', '.')) || 0, status: optInlineForm.status,
       };
       let warning;
       if (optInlineTarget.optionId) {
@@ -232,7 +228,7 @@ export default function MenuPage() {
       }
       setOptInlineTarget(null); await fetchData();
       if (warning) { setMessage({ type: 'error', text: warning }); setTimeout(() => setMessage(null), 6000); }
-    } catch { setMessage({ type: 'error', text: 'Erro ao salvar opção.' }); setTimeout(() => setMessage(null), 3000); }
+    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar opção.')); }
     finally { setOptInlineSaving(false); }
   };
   const handleDeleteOptionInline = async (groupId, optionId, name) => {
@@ -249,8 +245,8 @@ export default function MenuPage() {
 
   const handleLinkExistingOG = async (groupId) => {
     if (!editingItem) return;
-    try { await menuService.linkOptionGroup(editingItem.id, groupId); fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao vincular.' }); setTimeout(() => setMessage(null), 3000); }
+    try { await menuService.linkOptionGroup(editingItem.id, groupId); await fetchData(); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao vincular.')); }
   };
 
   const handleUnlinkOG = async (groupId) => {
@@ -316,8 +312,8 @@ export default function MenuPage() {
       const payload = {
         name, description: ogManagerForm.description.trim(),
         externalCode: ogManagerForm.externalCode.trim() || `og-${Date.now()}`,
-        minPermitted: parseInt(ogManagerForm.minPermitted) || 0,
-        maxPermitted: parseInt(ogManagerForm.maxPermitted) || 1,
+        minPermitted: Number(ogManagerForm.minPermitted),
+        maxPermitted: Number(ogManagerForm.maxPermitted),
         priceMethod: ogManagerForm.priceMethod, status: ogManagerForm.status,
       };
       let res;
@@ -332,7 +328,7 @@ export default function MenuPage() {
         setMessage({ type: 'success', text: ogEditingId ? 'Grupo atualizado!' : 'Grupo criado!' });
       }
       setTimeout(() => setMessage(null), 6000);
-    } catch (err) {
+    } catch {
       setMessage({ type: 'error', text: 'Erro ao salvar grupo de opções.' });
       setTimeout(() => setMessage(null), 3000);
     } finally { setOgManagerSaving(false); }
@@ -348,14 +344,14 @@ export default function MenuPage() {
   // --- Options no gerenciador ---
   const openNewOption = (groupId) => {
     setOptionEditTarget({ groupId, optionId: null });
-    setOptionManagerForm({ name: '', description: '', externalCode: '', price: '0', status: 'AVAILABLE' });
+    setOptionManagerForm({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
   };
 
   const openEditOption = (groupId, opt) => {
     setOptionEditTarget({ groupId, optionId: opt.id });
     setOptionManagerForm({
       name: opt.name, description: opt.description || '', externalCode: opt.externalCode || '',
-      price: String(opt.price || 0), status: opt.status || 'AVAILABLE'
+      itemId: String(opt.itemId || ''), price: String(opt.price ?? 0), status: opt.status || 'AVAILABLE'
     });
   };
 
@@ -369,7 +365,8 @@ export default function MenuPage() {
       const payload = {
         name: optionManagerForm.name.trim(), description: optionManagerForm.description.trim(),
         externalCode: optionManagerForm.externalCode.trim() || `opt-${Date.now()}`,
-        price: parseFloat(optionManagerForm.price) || 0,
+        itemId: optionManagerForm.itemId || undefined,
+        price: parseFloat(String(optionManagerForm.price).replace(',', '.')) || 0,
         status: optionManagerForm.status,
       };
       let res;
@@ -670,7 +667,7 @@ export default function MenuPage() {
                     ) : (
                       <div className="space-y-2">
                         {optionGroups.map(og => {
-                          const isLinked = (editingItem.optionGroupsId || []).includes(og.id);
+                          const isLinked = (editingItem.optionGroupsId || editingItem.optionGroups?.map(group => group.id) || []).includes(og.id);
                           const isExpanded = expandedOGs[og.id];
                           return (
                             <div key={og.id} className={`rounded-xl border overflow-hidden transition-all ${isLinked ? 'border-purple-300 shadow-sm' : 'border-slate-200'}`}>
@@ -736,10 +733,15 @@ export default function MenuPage() {
                                         <input type="text" placeholder="Nome *" value={optInlineForm.name}
                                           onChange={e => setOptInlineForm({ ...optInlineForm, name: e.target.value })}
                                           className="flex-1 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" autoFocus />
-                                        <input type="number" step="0.01" placeholder="R$" value={optInlineForm.price}
+                                        <input type="number" step="0.01" min="0" placeholder="R$" value={optInlineForm.price}
                                           onChange={e => setOptInlineForm({ ...optInlineForm, price: e.target.value })}
                                           className="w-24 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" />
                                       </div>
+                                      <select value={optInlineForm.itemId} onChange={e => setOptInlineForm({ ...optInlineForm, itemId: e.target.value })}
+                                        className="w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg">
+                                        <option value="">Item real (opcional para legado)</option>
+                                        {items.filter(item => !item.isOptionItem || item.id === Number(optInlineForm.itemId)).map(item => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}
+                                      </select>
                                       <div className="flex gap-2">
                                         <button type="submit" disabled={optInlineSaving}
                                           className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${optInlineSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
@@ -768,7 +770,7 @@ export default function MenuPage() {
                 </div>
               )}
               {itemTab === 'options' && !editingItem && (
-                <div className="text-center py-8 text-slate-400"><p className="font-medium">Salve o item primeiro para gerenciar grupos de opções.</p></div>
+                <div className="text-center py-8 text-slate-400"><p className="font-medium">Salve o item primeiro para gerenciar grupos de opções.</p><button type="button" onClick={() => setItemTab('info')} className="mt-3 text-indigo-600 font-bold text-sm">Voltar para informações</button></div>
               )}
 
               {/* ===== Aba: Disponibilidade ===== */}
@@ -792,7 +794,7 @@ export default function MenuPage() {
                     <p className="text-xs font-bold text-slate-500 mb-2">Vincular Regra Existente</p>
                     <div className="flex flex-wrap gap-2">
                       {availabilities.map(av => {
-                        const isLinked = editingItem.availabilityId?.includes(av.id);
+                        const isLinked = (editingItem.availabilityId || editingItem.availabilities?.map(availability => availability.id) || []).includes(av.id);
                         return (
                           <button key={av.id} onClick={() => isLinked ? handleUnlinkAvail(av.id) : handleLinkExistingAvail(av.id)}
                             className={`text-xs px-3 py-1.5 rounded-full font-medium transition-all ${isLinked ? 'bg-teal-100 text-teal-700 hover:bg-red-100 hover:text-red-700' : 'bg-slate-100 text-slate-500 hover:bg-teal-50 hover:text-teal-600'}`}>
@@ -807,9 +809,9 @@ export default function MenuPage() {
                   {/* Exibir disponibilidades vinculadas */}
                   {availabilities.filter(av => editingItem.availabilityId?.includes(av.id)).map(av => (
                     <div key={av.id} className="border border-teal-200 rounded-xl p-4 bg-teal-50/30">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-700">{av.name}</span>
-                        <button onClick={async () => { await availabilityService.delete(av.id); fetchData(); }} className="text-xs text-red-400 hover:text-red-600">🗑️</button>
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-700">{av.name}</span>
+                            <button onClick={async () => { if (!confirm(`Remover a regra “${av.name}”?`)) return; try { await availabilityService.delete(av.id); await fetchData(); } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover disponibilidade.')); } }} className="text-xs text-red-400 hover:text-red-600">Remover</button>
                       </div>
                       <div className="text-xs text-slate-400 mt-1">{av.startDate && av.endDate ? `${av.startDate} até ${av.endDate}` : 'Sem limite de data'}</div>
                       <div className="flex flex-wrap gap-1 mt-2">
@@ -820,7 +822,7 @@ export default function MenuPage() {
                 </div>
               )}
               {itemTab === 'availability' && !editingItem && (
-                <div className="text-center py-8 text-slate-400"><p className="font-medium">Salve o item primeiro para gerenciar disponibilidade.</p></div>
+                <div className="text-center py-8 text-slate-400"><p className="font-medium">Salve o item primeiro para gerenciar disponibilidade.</p><button type="button" onClick={() => setItemTab('info')} className="mt-3 text-indigo-600 font-bold text-sm">Voltar para informações</button></div>
               )}
             </div>
           </div>
@@ -982,7 +984,7 @@ export default function MenuPage() {
                                 <input type="text" placeholder="Nome da opção *" value={optionManagerForm.name}
                                   onChange={e => setOptionManagerForm({ ...optionManagerForm, name: e.target.value })}
                                   className="flex-1 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" autoFocus />
-                                <input type="number" step="0.01" placeholder="R$" value={optionManagerForm.price}
+                                <input type="number" step="0.01" min="0" placeholder="R$" value={optionManagerForm.price}
                                   onChange={e => setOptionManagerForm({ ...optionManagerForm, price: e.target.value })}
                                   className="w-24 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" />
                               </div>

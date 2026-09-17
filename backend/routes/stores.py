@@ -26,6 +26,61 @@ from keeta_client import force_menu_sync
 stores_bp = Blueprint("stores", __name__)
 
 
+VALID_STATUSES = {"AVAILABLE", "UNAVAILABLE"}
+VALID_PRICE_METHODS = {"SUM", "HIGHEST", "LOWEST"}
+
+def _parse_price(value, field_name="Preço", required=True):
+    if value is None or value == "":
+        if required:
+            raise ValueError(f"{field_name} é obrigatório.")
+        return None
+    try:
+        price = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} inválido.")
+    if price < 0:
+        raise ValueError(f"{field_name} não pode ser negativo.")
+    return price
+
+
+def _validate_status(value, field_name="Status"):
+    status = str(value or "AVAILABLE").upper()
+    if status not in VALID_STATUSES:
+        raise ValueError(f"{field_name} inválido.")
+    return status
+
+
+def _validate_selection_limits(min_value, max_value):
+    try:
+        minimum = int(min_value)
+        maximum = int(max_value)
+    except (TypeError, ValueError):
+        raise ValueError("Os limites mínimo e máximo devem ser números inteiros.")
+    if minimum < 0 or maximum < 1 or minimum > maximum:
+        raise ValueError("O mínimo deve ser ≥ 0, o máximo deve ser ≥ 1 e o mínimo não pode superar o máximo.")
+    return minimum, maximum
+
+
+def _owned_category(store, category_id, required=True):
+    if category_id in (None, ""):
+        if required:
+            raise ValueError("O item precisa pertencer a uma categoria (categoryId).")
+        return None
+    category = MenuCategory.query.filter_by(id=category_id, store_id=store.id).first()
+    if not category:
+        raise ValueError("Categoria não encontrada para esta loja.")
+    return category
+
+
+def _owned_option_item(store, item_id):
+    if item_id in (None, ""):
+        return None
+    item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
+    if not item:
+        raise ValueError("Subitem não encontrado para esta loja.")
+    return item
+
+
 def _notify_keeta_menu_sync(store):
     """
     Notifica a Keeta (POST /merchantUpdate) sempre que o cardápio muda,
@@ -301,25 +356,24 @@ def create_my_menu_item():
     if not name:
         return jsonify({"error": "Nome do item é obrigatório."}), 400
 
-    try:
-        price = float(data.get("price"))
-        if price < 0:
-            raise ValueError("price negativo")
-    except (TypeError, ValueError):
-        return jsonify({"error": "Preço inválido."}), 400
-
     category_id = data.get("categoryId")
-    if not category_id:
-        return jsonify({"error": "O item precisa pertencer a uma categoria (categoryId)."}), 400
+    try:
+        _owned_category(store, category_id)
+        price = _parse_price(data.get("price"))
+        original_price = _parse_price(data.get("originalPrice", price), "Preço original")
+        if original_price < price:
+            raise ValueError("O preço original não pode ser menor que o preço atual.")
+        status = _validate_status(data.get("status"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     description = (data.get("description") or "").strip()
     external_code = (data.get("externalCode") or data.get("external_code") or "").strip()
     if not external_code:
         external_code = str(int(db.session.query(db.func.max(MenuItem.id)).scalar() or 0) + 1)
 
-    original_price = data.get("originalPrice", price)
-    status = data.get("status", "AVAILABLE")
-    image_url = data.get("imageUrl", "")
+    image_url = (data.get("imageUrl") or "").strip()
+    is_option_item = bool(data.get("isOptionItem", False))
 
     # Calcula o próximo index dentro da categoria
     max_index = db.session.query(db.func.max(MenuItem.index)).filter_by(
@@ -333,10 +387,11 @@ def create_my_menu_item():
             name=name,
             description=description,
             external_code=external_code,
-            price=float(price),
-            original_price=float(original_price),
+            price=price,
+            original_price=original_price,
             status=status,
             image_url=image_url,
+            is_option_item=is_option_item,
             index=max_index + 1,
         )
         print(f"[Stores][create_my_menu_item] Item: name='{item.name}' | price={item.price} | extCode={item.external_code} | catId={category_id}")
@@ -372,18 +427,27 @@ def update_my_menu_item(item_id):
 
     if "name" in data:
         item.name = (data["name"] or "").strip()
+        if not item.name:
+            return jsonify({"error": "Nome do item é obrigatório."}), 400
     if "description" in data:
         item.description = (data["description"] or "").strip()
     if "externalCode" in data:
         item.external_code = str(data["externalCode"]).strip()
-    if "price" in data and data["price"] is not None:
-        item.price = float(data["price"])
-    if "originalPrice" in data and data["originalPrice"] is not None:
-        item.original_price = float(data["originalPrice"])
-    if "categoryId" in data:
-        item.category_id = data["categoryId"] if data["categoryId"] else None
-    if "status" in data:
-        item.status = data["status"]
+    try:
+        if "price" in data:
+            item.price = _parse_price(data["price"])
+        if "originalPrice" in data:
+            item.original_price = _parse_price(data["originalPrice"], "Preço original")
+        if item.original_price is not None and item.original_price < item.price:
+            raise ValueError("O preço original não pode ser menor que o preço atual.")
+        if "categoryId" in data:
+            item.category_id = _owned_category(store, data["categoryId"]).id
+        if "status" in data:
+            item.status = _validate_status(data["status"])
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if "isOptionItem" in data:
+        item.is_option_item = bool(data["isOptionItem"])
     if "imageUrl" in data:
         item.image_url = data["imageUrl"]
     if "index" in data:
@@ -454,19 +518,27 @@ def create_my_option_group():
     if not name:
         return jsonify({"error": "Nome é obrigatório."}), 400
     try:
+        minimum, maximum = _validate_selection_limits(data.get("minPermitted", 0), data.get("maxPermitted", 1))
+        price_method = str(data.get("priceMethod", "SUM")).upper()
+        if price_method not in VALID_PRICE_METHODS:
+            raise ValueError("Método de preço inválido.")
         group = MenuOptionGroup(
             store_id=store.id, name=name,
             description=(data.get("description") or "").strip(),
-            external_code=(data.get("externalCode") or f"og-{name}").strip(),
-            min_permitted=int(data.get("minPermitted", 0)),
-            max_permitted=int(data.get("maxPermitted", 1)),
-            price_method=data.get("priceMethod", "SUM"),
+            external_code=(data.get("externalCode") or f"og-{store.id}-{int(__import__('time').time() * 1000)}").strip(),
+            min_permitted=minimum,
+            max_permitted=maximum,
+            price_method=price_method,
+            index=(db.session.query(db.func.max(MenuOptionGroup.index)).filter_by(store_id=store.id).scalar() or -1) + 1,
         )
         db.session.add(group)
         db.session.commit()
-    except Exception as e:
+    except ValueError as error:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Erro ao criar grupo."}), 500
 
     _notify_keeta_menu_sync(store)
     result = group.to_dict()
@@ -486,10 +558,23 @@ def update_my_option_group(group_id):
     if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
     data = request.get_json(silent=True) or {}
-    for f in ["name","description","externalCode","status","priceMethod"]:
-        if f in data: setattr(group, f if f != "externalCode" else "external_code", data[f])
-    if "minPermitted" in data: group.min_permitted = int(data["minPermitted"])
-    if "maxPermitted" in data: group.max_permitted = int(data["maxPermitted"])
+    try:
+        if "name" in data:
+            group.name = (data["name"] or "").strip()
+            if not group.name:
+                raise ValueError("Nome é obrigatório.")
+        if "description" in data: group.description = (data["description"] or "").strip()
+        if "externalCode" in data: group.external_code = str(data["externalCode"]).strip()
+        if "status" in data: group.status = _validate_status(data["status"])
+        if "priceMethod" in data:
+            group.price_method = str(data["priceMethod"]).upper()
+            if group.price_method not in VALID_PRICE_METHODS:
+                raise ValueError("Método de preço inválido.")
+        group.min_permitted, group.max_permitted = _validate_selection_limits(
+            data.get("minPermitted", group.min_permitted), data.get("maxPermitted", group.max_permitted)
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     try:
         db.session.commit()
@@ -542,18 +627,25 @@ def create_option(group_id):
     if not name:
         return jsonify({"error": "Nome é obrigatório."}), 400
     try:
+        item = _owned_option_item(store, data.get("itemId"))
+        price = _parse_price(data.get("price", 0), required=False)
         option = MenuOption(
-            option_group_id=group.id, name=name,
+            option_group_id=group.id, item_id=item.id if item else None, name=name,
             description=(data.get("description") or "").strip(),
-            external_code=(data.get("externalCode") or f"opt-{name}").strip(),
-            price=float(data.get("price", 0)),
+            external_code=(data.get("externalCode") or f"opt-{store.id}-{int(__import__('time').time() * 1000)}").strip(),
+            price=price if price is not None else 0.0,
+            status=_validate_status(data.get("status")),
+            index=(db.session.query(db.func.max(MenuOption.index)).filter_by(option_group_id=group.id).scalar() or -1) + 1,
             max_permitted=data.get("maxPermitted"),
         )
         db.session.add(option)
         db.session.commit()
-    except Exception as e:
+    except ValueError as error:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        db.session.rollback()
+        return jsonify({"error": "Erro ao criar opção."}), 500
 
     _notify_keeta_menu_sync(store)
     result = option.to_dict()
@@ -569,20 +661,36 @@ def update_option(group_id, option_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    option = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
+    option = MenuOption.query.join(MenuOption.option_group).filter(
+        MenuOption.id == option_id,
+        MenuOption.option_group_id == group_id,
+        MenuOptionGroup.store_id == store.id,
+    ).first()
     if not option:
         return jsonify({"error": "Opção não encontrada."}), 404
     data = request.get_json(silent=True) or {}
-    for f in ["name","description","externalCode","status"]:
-        if f in data: setattr(option, f if f != "externalCode" else "external_code", data[f])
-    if "price" in data and data["price"] is not None: option.price = float(data["price"])
-    if "maxPermitted" in data: option.max_permitted = data["maxPermitted"]
+    try:
+        if "name" in data:
+            option.name = (data["name"] or "").strip()
+            if not option.name:
+                raise ValueError("Nome é obrigatório.")
+        if "description" in data: option.description = (data["description"] or "").strip()
+        if "externalCode" in data: option.external_code = str(data["externalCode"]).strip()
+        if "status" in data: option.status = _validate_status(data["status"])
+        if "price" in data: option.price = _parse_price(data["price"], required=False) or 0.0
+        if "itemId" in data:
+            item = _owned_option_item(store, data["itemId"])
+            option.item_id = item.id if item else None
+        if "maxPermitted" in data: option.max_permitted = data["maxPermitted"]
+        if "index" in data: option.index = int(data["index"])
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     try:
         db.session.commit()
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Erro ao atualizar opção."}), 500
 
     _notify_keeta_menu_sync(store)
     result = option.to_dict()
@@ -598,7 +706,11 @@ def delete_option(group_id, option_id):
     store = _get_store_or_404()
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
-    option = MenuOption.query.filter_by(id=option_id, option_group_id=group_id).first()
+    option = MenuOption.query.join(MenuOption.option_group).filter(
+        MenuOption.id == option_id,
+        MenuOption.option_group_id == group_id,
+        MenuOptionGroup.store_id == store.id,
+    ).first()
     if not option:
         return jsonify({"error": "Opção não encontrada."}), 404
 
@@ -634,7 +746,8 @@ def link_option_group(item_id):
     group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
     if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
-    item.option_groups.append(group)
+    if group not in item.option_groups:
+        item.option_groups.append(group)
     db.session.commit()
 
     _notify_keeta_menu_sync(store)
@@ -774,7 +887,8 @@ def link_availability(item_id):
     a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
     if not a:
         return jsonify({"error": "Disponibilidade não encontrada."}), 404
-    item.availabilities.append(a)
+    if a not in item.availabilities:
+        item.availabilities.append(a)
     db.session.commit()
 
     _notify_keeta_menu_sync(store)

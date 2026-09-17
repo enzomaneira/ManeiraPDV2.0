@@ -158,7 +158,7 @@ def _run_lightweight_migrations():
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS other_fees_total DOUBLE PRECISION",
         # OrderItem: opções/adicionais do item
         "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
-        # MenuItem: novos campos para suportar Open Delivery (categories, description, externalCode, status, image)
+        # MenuItem: novos campos para suportar Open Delivery e subitens reais.
         "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS description VARCHAR(500) DEFAULT ''",
         "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS external_code VARCHAR(100)",
         "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS category_id INTEGER",
@@ -166,6 +166,11 @@ def _run_lightweight_migrations():
         "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'AVAILABLE'",
         "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS image_url VARCHAR(500)",
         "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS index INTEGER DEFAULT 0",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS is_option_item BOOLEAN DEFAULT FALSE",
+        # MenuOption: item_id é nullable para leitura/edição backward-compatible.
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS item_id INTEGER",
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS index INTEGER DEFAULT 0",
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'AVAILABLE'",
     ]
 
     # Preenche external_code com o id para registros existentes que ficaram NULL
@@ -173,6 +178,8 @@ def _run_lightweight_migrations():
         "UPDATE menu_items SET external_code = CAST(id AS VARCHAR) WHERE external_code IS NULL",
         "UPDATE menu_items SET original_price = price WHERE original_price IS NULL",
         "UPDATE menu_items SET status = 'AVAILABLE' WHERE status IS NULL",
+        "UPDATE menu_items SET is_option_item = FALSE WHERE is_option_item IS NULL",
+        "UPDATE menu_options SET status = 'AVAILABLE' WHERE status IS NULL",
     ]
 
     for stmt in statements:

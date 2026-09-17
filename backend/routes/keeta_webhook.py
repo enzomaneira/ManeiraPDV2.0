@@ -479,7 +479,9 @@ def _build_menu_response(store_id: int):
                 available_options_count += 1
             options_list.append({
                 "id":           str(opt.id),
-                "itemId":       f"sub-item-{opt.id}",
+                # Opções novas apontam para o item real; registros legados
+                # continuam usando o identificador sintético até a migração.
+                "itemId":       str(opt.item_id) if opt.item_id is not None else f"sub-item-{opt.id}",
                 "index":        opt_idx,
                 "status":       opt_status,
                 "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},

@@ -120,7 +120,7 @@ class MenuCategory(db.Model):
     __tablename__ = "menu_categories"
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    store_id      = db.Column(db.Integer, nullable=False, index=True)
+    store_id      = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=False, index=True)
     name          = db.Column(db.String(150), nullable=False)
     description   = db.Column(db.String(500), nullable=True, default="")
     external_code = db.Column(db.String(100), nullable=False)  # código externo (PDV Code)
@@ -156,7 +156,7 @@ class MenuItem(db.Model):
     __tablename__ = "menu_items"
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    store_id      = db.Column(db.Integer, nullable=False, index=True)
+    store_id      = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=False, index=True)
     category_id   = db.Column(db.Integer, db.ForeignKey("menu_categories.id"), nullable=True)
     name          = db.Column(db.String(150), nullable=False)
     description   = db.Column(db.String(500), nullable=True, default="")
@@ -166,6 +166,9 @@ class MenuItem(db.Model):
     status        = db.Column(db.String(20), nullable=False, default="AVAILABLE")
     image_url     = db.Column(db.String(500), nullable=True)
     index         = db.Column(db.Integer, nullable=False, default=0)
+    # Itens marcados como opção continuam sendo MenuItem completos, mas não
+    # aparecem como produto raiz na exportação do cardápio.
+    is_option_item = db.Column(db.Boolean, nullable=False, default=False, index=True)
 
     category = db.relationship("MenuCategory", back_populates="items")
 
@@ -182,12 +185,17 @@ class MenuItem(db.Model):
             "originalPrice": self.original_price or self.price,
             "status":        self.status,
             "imageUrl":      self.image_url,
-            "index":         self.index,
+            "index":          self.index,
+            "isOptionItem":   self.is_option_item,
+            # IDs são incluídos no contrato administrativo para que o frontend
+            # consiga editar os vínculos sem depender do payload da Keeta.
+            "optionGroupsId": [group.id for group in self.option_groups.all()],
+            "availabilityId": [availability.id for availability in self.availabilities.all()],
         }
 
 
 # =============================================================================
-#  TABELAS DE ASSOCIAÇÃO (many-to-many)
+#  TABELAS DE ASSOCIAÇÃO
 # =============================================================================
 
 # Item ↔ OptionGroup (um item pode ter vários grupos de opções)
@@ -220,7 +228,7 @@ class MenuOptionGroup(db.Model):
     __tablename__ = "menu_option_groups"
 
     id            = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    store_id      = db.Column(db.Integer, nullable=False, index=True)
+    store_id      = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=False, index=True)
     name          = db.Column(db.String(150), nullable=False)
     description   = db.Column(db.String(500), nullable=True, default="")
     external_code = db.Column(db.String(100), nullable=False)
@@ -263,6 +271,9 @@ class MenuOption(db.Model):
 
     id              = db.Column(db.Integer, primary_key=True, autoincrement=True)
     option_group_id = db.Column(db.Integer, db.ForeignKey("menu_option_groups.id", ondelete="CASCADE"), nullable=False)
+    # A opção é uma projeção de um item real do cardápio. Nullable apenas para
+    # permitir leitura de registros antigos durante a migração progressiva.
+    item_id         = db.Column(db.Integer, db.ForeignKey("menu_items.id"), nullable=True, index=True)
     name            = db.Column(db.String(150), nullable=False)
     description     = db.Column(db.String(500), nullable=True, default="")
     external_code   = db.Column(db.String(100), nullable=False)
@@ -272,19 +283,37 @@ class MenuOption(db.Model):
     max_permitted   = db.Column(db.Integer, nullable=True)                # limite de vezes que esta opção pode ser escolhida
 
     option_group = db.relationship("MenuOptionGroup", back_populates="options")
+    item = db.relationship("MenuItem", foreign_keys=[item_id], back_populates="option_references")
 
     def to_dict(self):
         return {
             "id":             self.id,
             "optionGroupId":  self.option_group_id,
-            "name":           self.name,
-            "description":    self.description or "",
-            "externalCode":   self.external_code,
+            "itemId":         self.item_id,
+            "name":           self.item.name if self.item else self.name,
+            "description":    (self.item.description if self.item else self.description) or "",
+            "externalCode":   (self.item.external_code if self.item else self.external_code),
             "index":          self.index,
             "status":         self.status,
-            "price":          self.price or 0.0,
+            "price":          self.price if self.price is not None else (self.item.price if self.item else 0.0),
             "maxPermitted":   self.max_permitted,
+            "item":           {
+                "id": self.item.id,
+                "name": self.item.name,
+                "description": self.item.description or "",
+                "price": self.item.price,
+                "status": self.item.status,
+                "externalCode": self.item.external_code,
+            } if self.item else None,
         }
+
+
+# O item pode ser usado como subitem em vários grupos, sem duplicar sua
+# identidade. A relação é opcional para preservar opções legadas durante a
+# migração de dados.
+MenuItem.option_references = db.relationship(
+    "MenuOption", foreign_keys="MenuOption.item_id", back_populates="item"
+)
 
 
 # =============================================================================
@@ -302,7 +331,7 @@ class MenuAvailability(db.Model):
     __tablename__ = "menu_availabilities"
 
     id          = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    store_id    = db.Column(db.Integer, nullable=False, index=True)
+    store_id    = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=False, index=True)
     name        = db.Column(db.String(150), nullable=False)          # nome descritivo
     start_date  = db.Column(db.String(20), nullable=True)            # YYYY-MM-DD (opcional)
     end_date    = db.Column(db.String(20), nullable=True)            # YYYY-MM-DD (opcional)
