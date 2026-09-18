@@ -245,8 +245,14 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
         order.store_id = int(local_merchant_id)
         print(f"[Orders][save_order_from_keeta] store_id definido: {order.store_id}")
     except Exception as e:
-        order.store_id = order.store_id or 1
-        print(f"[Orders][save_order_from_keeta] ERRO ao converter local_merchant_id='{local_merchant_id}' para int: {e}. Usando fallback store_id={order.store_id}")
+        # Nunca direcionar silenciosamente um pedido de uma loja desconhecida
+        # para a loja 1. O webhook deve resolver o vínculo antes de chamar este
+        # serviço; se não resolver, o pedido precisa ser rejeitado/logado.
+        print(
+            f"[Orders][save_order_from_keeta] PEDIDO NÃO SALVO: "
+            f"local_merchant_id inválido='{local_merchant_id}': {e}"
+        )
+        return
 
     # --- Status inicial ---
     # Se o pedido ainda não tem status, verificamos se o auto-aceite está ativo.

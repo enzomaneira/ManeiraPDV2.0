@@ -91,6 +91,94 @@ def _merchant_id_for_store(store_id: int | str) -> str:
     return requested_id
 
 
+def _extract_merchant_identifiers(payload: dict | None) -> list[str]:
+    """Extrai IDs de loja/merchant dos formatos possíveis do pedido/evento."""
+    identifiers = []
+    visited = set()
+    identifier_keys = {
+        "merchantId", "merchantID", "shopId", "shopID", "storeId", "storeID",
+    }
+
+    def visit(node, depth=0):
+        if not isinstance(node, dict) or depth > 4 or id(node) in visited:
+            return
+        visited.add(id(node))
+        for key in identifier_keys:
+            value = node.get(key)
+            if isinstance(value, (str, int)) and str(value).strip():
+                normalized = str(value).strip()
+                if normalized not in identifiers:
+                    identifiers.append(normalized)
+        for value in node.values():
+            if isinstance(value, dict):
+                visit(value, depth + 1)
+            elif isinstance(value, list):
+                for child in value:
+                    if isinstance(child, dict):
+                        visit(child, depth + 1)
+
+    visit(payload)
+    return identifiers
+
+
+def _resolve_local_store_id(
+    *,
+    merchant_id_header: str | None = None,
+    store_id_query: str | None = None,
+    event: dict | None = None,
+    order_data: dict | None = None,
+) -> str | None:
+    """Resolve o ID local sem permitir que pedidos de lojas diferentes se misturem.
+
+    O webhook é compartilhado por todas as lojas. A Keeta pode enviar o ID
+    externo da loja no header/payload, enquanto as versões antigas do cadastro
+    enviavam o nosso store_id na URL. Primeiro tentamos o mapeamento externo
+    (`StoreConfig.keeta_merchant_id`), depois aceitamos um ID local já existente.
+    """
+    external_candidates = []
+    for value in (merchant_id_header, store_id_query):
+        if value is not None and str(value).strip():
+            external_candidates.append(str(value).strip())
+    external_candidates.extend(_extract_merchant_identifiers(event))
+    external_candidates.extend(_extract_merchant_identifiers(order_data))
+
+    candidates = []
+    for candidate in external_candidates:
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        config = StoreConfig.query.filter_by(keeta_merchant_id=candidate).first()
+        if config:
+            print(
+                f"[Webhook][_resolve_local_store_id] Mapeamento externo encontrado: "
+                f"keeta_merchant_id={candidate} -> store_id local={config.store_id}"
+            )
+            return str(config.store_id)
+
+    # Compatibilidade com cadastros antigos que colocavam o store_id local no
+    # header ou na query string do webhook.
+    for candidate in (store_id_query, merchant_id_header):
+        try:
+            local_store_id = int(str(candidate).strip())
+        except (TypeError, ValueError):
+            continue
+        config = StoreConfig.query.get(local_store_id)
+        store = Store.query.get(local_store_id)
+        if config or store:
+            print(
+                f"[Webhook][_resolve_local_store_id] ID local legado encontrado: "
+                f"{candidate} -> store_id local={local_store_id}"
+            )
+            return str(local_store_id)
+
+    print(
+        "[Webhook][_resolve_local_store_id] FALHA: nenhum identificador recebido "
+        f"corresponde a StoreConfig. candidates={candidates}"
+    )
+    return None
+
+
 def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict:
     """Cardápio mínimo completo do Maneira Burguer usado sem o arquivo de referência."""
     menu_id = _reference_uuid("menu")
@@ -841,7 +929,14 @@ def receive_order_event():
     received_signature = request.headers.get("X-App-Signature", "")
     print(f"[Webhook][receive_order_event] Assinatura recebida: {received_signature[:30]}...")
 
-    assinatura_valida = keeta_client.validate_webhook_signature(body_str, received_signature)
+    # A URL do webhook agora pode conter ?storeId=<id_local>; a assinatura
+    # precisa ser validada contra a URL efetivamente cadastrada/recebida.
+    signature_url = request.url
+    assinatura_valida = keeta_client.validate_webhook_signature(
+        body_str,
+        received_signature,
+        webhook_url=signature_url,
+    )
     print(f"[Webhook][receive_order_event] Assinatura válida? {assinatura_valida}")
 
     if not assinatura_valida:
@@ -864,7 +959,12 @@ def receive_order_event():
     # resolvemos o store_id local correto abaixo, a partir do keeta_merchant_id
     # que vem dentro do JSON do pedido.
     merchant_id_header = request.headers.get("X-App-MerchantId")
-    print(f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | order_url={order_url} | merchant_id_header={merchant_id_header!r}")
+    store_id_query = request.args.get("storeId")
+    print(
+        f"[Webhook][receive_order_event] event_type={event_type} | order_id={order_id} | "
+        f"order_url={order_url} | merchant_id_header={merchant_id_header!r} | "
+        f"store_id_query={store_id_query!r}"
+    )
 
     if not order_id:
         print("[Webhook][receive_order_event] FIM (ignorado): sem orderId no evento.")
@@ -889,43 +989,26 @@ def receive_order_event():
         order_data = keeta_client.get_order_details(order_id, order_url=order_url)
 
         if order_data:
-            # --- Resolve o store_id LOCAL correto para este pedido ---
-            # O pedido pertence a uma loja da Keeta cujo ID (keeta_merchant_id)
-            # vem dentro do JSON do pedido. Precisamos achar a StoreConfig local
-            # cujo keeta_merchant_id bata, para descobrir o nosso store_id.
-            # Prioridade:
-            #   1) Header X-App-MerchantId (se a Keeta enviar)
-            #   2) Busca inversa por keeta_merchant_id no JSON do pedido
-            #   3) Fallback "1" só em último caso (evita crash, mas loga aviso)
-            local_store_id = merchant_id_header
+            # O webhook é compartilhado por todas as lojas. Nunca usar store_id=1
+            # como fallback: isso faz um pedido de uma loja aparecer em outra.
+            local_store_id = _resolve_local_store_id(
+                merchant_id_header=merchant_id_header,
+                store_id_query=store_id_query,
+                event=event,
+                order_data=order_data,
+            )
 
-            if not local_store_id:
-                # Keeta pode enviar o id da loja em diferentes campos, dependendo
-                # da versão/schema. Tentamos os mais comuns.
-                keeta_store_id_from_order = (
-                    order_data.get("merchantId")
-                    or order_data.get("storeId")
-                    or (order_data.get("store") or {}).get("id")
-                    if isinstance(order_data.get("store"), dict)
-                    else order_data.get("store")
+            if local_store_id is None:
+                print(
+                    f"[Webhook][receive_order_event] PEDIDO NÃO SALVO: "
+                    f"não foi possível mapear o pedido {order_id} para uma loja local."
                 )
-
-                print(f"[Webhook][receive_order_event] Header sem merchant_id. Procurando keeta_merchant_id no pedido: {keeta_store_id_from_order!r}")
-
-                if keeta_store_id_from_order is not None:
-                    config = StoreConfig.query.filter_by(keeta_merchant_id=str(keeta_store_id_from_order)).first()
-                    if config:
-                        local_store_id = str(config.store_id)
-                        print(f"[Webhook][receive_order_event] StoreConfig encontrada: keeta_merchant_id={keeta_store_id_from_order} -> store_id local={local_store_id}")
-                    else:
-                        print(f"[Webhook][receive_order_event] AVISO: nenhuma StoreConfig com keeta_merchant_id={keeta_store_id_from_order}. Usando fallback '1'.")
-
-            if not local_store_id:
-                print(f"[Webhook][receive_order_event] AVISO: não foi possível resolver o store_id local do pedido {order_id}. Usando fallback '1' — todo pedido cairá na mesma loja se isso persistir.")
-                local_store_id = "1"
-
-            print(f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. Salvando no banco (store_id local={local_store_id})...")
-            save_order_from_keeta(order_data, local_store_id)
+            else:
+                print(
+                    f"[Webhook][receive_order_event] Detalhes obtidos com sucesso. "
+                    f"Salvando no banco (store_id local={local_store_id})..."
+                )
+                save_order_from_keeta(order_data, local_store_id)
         else:
             print(f"[Webhook][receive_order_event] AVISO: não foi possível obter detalhes do pedido {order_id} na Keeta (timeout ou erro na chamada).")
 

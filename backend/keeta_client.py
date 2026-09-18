@@ -617,7 +617,10 @@ def register_merchant(merchant_id: str, my_local_store_id: str) -> dict | None:
             "baseURL": f"{MY_PUBLIC_URL}/menu?storeId={local_store_id}",
             "apiKey": MERCHANT_MENU_API_KEY,
         },
-        "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders",
+        # Inclui o store_id local como fallback de roteamento. O header e o
+        # payload da Keeta normalmente carregam o merchant externo, mas a query
+        # permite identificar a loja mesmo quando esses campos não são enviados.
+        "ordersWebhookURL": f"{MY_PUBLIC_URL}/orders?storeId={local_store_id}",
         "keetaMerchantId": merchant_id_number,
     }
     body = canonical_json(payload)
@@ -1117,7 +1120,11 @@ def force_menu_sync(merchant_id: str, merchant: dict | None = None) -> tuple[boo
 #  5. VALIDAÇÃO DO WEBHOOK
 # =============================================================================
 
-def validate_webhook_signature(body: str, received_signature: str) -> bool:
+def validate_webhook_signature(
+    body: str,
+    received_signature: str,
+    webhook_url: str | None = None,
+) -> bool:
     """
     Valida se um webhook recebido realmente veio da Keeta.
 
@@ -1140,13 +1147,40 @@ def validate_webhook_signature(body: str, received_signature: str) -> bool:
     """
     print(f"[Keeta][validate_webhook_signature] INÍCIO | body_len={len(body)} | received_signature_preview={received_signature[:20]}...")
 
-    webhook_url = f"{MY_PUBLIC_URL}/orders"
+    webhook_url = webhook_url or f"{MY_PUBLIC_URL}/orders"
+    from urllib.parse import parse_qsl, urlsplit
 
-    candidatos = {
-        "url+body":        f"{webhook_url}&{body}" if body and body.strip() else webhook_url,
-        "url+body(sem_barra)": (f"{webhook_url.rstrip('/')}&{body}" if body and body.strip() else webhook_url.rstrip("/")),
-        "body_apenas":     body,
-    }
+    parsed_url = urlsplit(webhook_url)
+    base_webhook_url = parsed_url._replace(query="", fragment="").geturl()
+    sorted_query = "&".join(
+        f"{key}={value}" for key, value in sorted(parse_qsl(parsed_url.query, keep_blank_values=True))
+    )
+    body_part = body if body and body.strip() else ""
+    candidates = []
+
+    def add_candidate(name, value):
+        if value not in {candidate[1] for candidate in candidates}:
+            candidates.append((name, value))
+
+    # Primeiro tentamos a fórmula oficial com a query do webhook; depois as
+    # variantes legadas já aceitas antes do roteamento por storeId.
+    official_parts = [base_webhook_url]
+    if sorted_query:
+        official_parts.append(sorted_query)
+    if body_part:
+        official_parts.append(body_part)
+    add_candidate("url+query+body", "&".join(official_parts))
+    add_candidate(
+        "url+body",
+        f"{base_webhook_url}&{body_part}" if body_part else base_webhook_url,
+    )
+    add_candidate(
+        "url_completa+body",
+        f"{webhook_url}&{body_part}" if body_part else webhook_url,
+    )
+    add_candidate("body_apenas", body)
+
+    candidatos = dict(candidates)
 
     for nome, string_to_sign in candidatos.items():
         expected_signature = hmac.new(
