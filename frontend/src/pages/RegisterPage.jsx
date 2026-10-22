@@ -67,6 +67,7 @@ export default function RegisterPage() {
                                 type="text"
                                 required
                                 value={name}
+                                maxLength={120}
                                 onChange={(e) => setName(e.target.value)}
                                 placeholder="Enzo Maneira"
                                 className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700"
@@ -82,6 +83,7 @@ export default function RegisterPage() {
                                 type="text"
                                 required
                                 value={storeName}
+                                maxLength={150}
                                 onChange={(e) => setStoreName(e.target.value)}
                                 placeholder="Restaurante do Enzo"
                                 className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700"
@@ -100,6 +102,7 @@ export default function RegisterPage() {
                                 type="email"
                                 required
                                 value={email}
+                                maxLength={254}
                                 onChange={(e) => setEmail(e.target.value)}
                                 placeholder="voce@exemplo.com"
                                 className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700"
@@ -116,6 +119,7 @@ export default function RegisterPage() {
                                     type="password"
                                     required
                                     minLength={6}
+                                    maxLength={128}
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     placeholder="••••••••"
@@ -132,6 +136,7 @@ export default function RegisterPage() {
                                     type="password"
                                     required
                                     minLength={6}
+                                    maxLength={128}
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
                                     placeholder="••••••••"

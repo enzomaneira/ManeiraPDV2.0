@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import api from '../services/api';
+import AccountSettings from '../components/AccountSettings';
 import { Save, Store, Globe, Wifi, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function SettingsPage({ config, setConfig }) {
@@ -9,27 +10,24 @@ export default function SettingsPage({ config, setConfig }) {
   const [message, setMessage] = useState(null);
 
   const handleSave = async () => {
-    const normalizedMerchantId = (config.keetaId || '').trim();
-
     setSaving(true);
     setMessage(null);
     try {
+        // O merchant ID só é salvo pelo botão "Ativar Integração" (onboarding).
         const response = await api.post('/config', {
-            id: 1,
             autoAccept: config.autoAccept,
-            keetaMerchantId: normalizedMerchantId,
         });
 
         setConfig(prev => ({
             ...prev,
-            keetaId: response.data?.keetaMerchantId || normalizedMerchantId,
+            autoAccept: response.data?.autoAccept ?? prev.autoAccept,
         }));
-        
+
         setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' });
         setTimeout(() => setMessage(null), 3000);
     } catch (error) {
         console.error("Erro ao salvar:", error);
-        setMessage({ type: 'error', text: 'Erro ao salvar. Verifique o backend.' });
+        setMessage({ type: 'error', text: error?.response?.data?.error || 'Erro ao salvar. Verifique o backend.' });
     } finally {
         setSaving(false);
     }
@@ -135,7 +133,7 @@ export default function SettingsPage({ config, setConfig }) {
                           />
                       </div>
                       <p className="text-[10px] text-slate-400 mt-1 ml-1">
-                        Esse valor será usado no onboarding e no endpoint merchantUpdate dessa loja.
+                        Para salvar ou trocar o merchant ID, clique em "Ativar Integração". Cada merchant ID só pode estar em um restaurante.
                       </p>
                   </div>
 
@@ -190,6 +188,8 @@ export default function SettingsPage({ config, setConfig }) {
               </div>
           </div>
       </div>
+
+      <AccountSettings />
     </div>
   );
 }

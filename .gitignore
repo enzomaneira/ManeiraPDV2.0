@@ -23,3 +23,7 @@ Thumbs.db
 keeta_logs/
 __pycache__/
 *.pyc
+
+# Credenciais locais — nunca versionar
+maneirapdv-credentials.txt
+*credentials*.txt

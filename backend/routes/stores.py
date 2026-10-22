@@ -6,6 +6,7 @@
 #
 #  Endpoints:
 #    GET    /api/stores/me                  → dados da loja
+#    PUT    /api/stores/me                  → renomear a loja
 #    GET    /api/stores/me/categories       → listar categorias
 #    POST   /api/stores/me/categories       → criar categoria
 #    PUT    /api/stores/me/categories/<id>  → editar categoria
@@ -155,6 +156,29 @@ def get_my_store():
 
     print(f"[Stores][get_my_store] Loja encontrada: {store.to_dict()}")
     print(f"[Stores][get_my_store] FIM (sucesso) | store_id={store.id}")
+    return jsonify(store.to_dict())
+
+
+@stores_bp.put("/me")
+@login_required
+def update_my_store():
+    """Renomeia a loja do usuário logado. Body: { "name": "Novo nome" }"""
+    from routes.auth import validate_name, STORE_NAME_MAX_LENGTH
+
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    error = validate_name(name, "o nome do restaurante", STORE_NAME_MAX_LENGTH)
+    if error:
+        return jsonify({"error": error}), 400
+
+    store.name = name
+    db.session.commit()
+    print(f"[Stores][update_my_store] Loja renomeada | store_id={store.id}")
+    _notify_keeta_menu_sync(store)
     return jsonify(store.to_dict())
 
 

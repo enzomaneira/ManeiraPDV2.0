@@ -191,7 +191,15 @@ def _run_lightweight_migrations():
             db.session.rollback()
             print(f"[DB][_run_lightweight_migrations] AVISO ao executar '{stmt}': {type(e).__name__}: {e}")
 
-    for stmt in backfill_statements:
+    # Índices criados depois do backfill. Um merchant da Keeta pertence a uma
+    # única loja local (evita pedidos caindo no restaurante errado).
+    index_statements = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_store_config_keeta_merchant_id "
+        "ON store_config (keeta_merchant_id) "
+        "WHERE keeta_merchant_id IS NOT NULL AND keeta_merchant_id <> ''",
+    ]
+
+    for stmt in backfill_statements + index_statements:
         try:
             db.session.execute(text(stmt))
             db.session.commit()

@@ -78,13 +78,17 @@ def update_config():
     config = StoreConfig.query.get(store.id) or StoreConfig(store_id=store.id)
     print(f"[Config][update_config] Config ANTES da atualização: autoAccept={config.auto_accept} | keetaMerchantId={config.keeta_merchant_id}")
 
-    config.auto_accept = data.get("autoAccept", config.auto_accept)
+    if "autoAccept" in data:
+        if not isinstance(data["autoAccept"], bool):
+            return jsonify({"error": "autoAccept deve ser verdadeiro ou falso."}), 400
+        config.auto_accept = data["autoAccept"]
 
+    # O merchant ID só pode ser definido pelo onboarding (PUT /api/keeta/onboard),
+    # que confirma com a Keeta e impede usar o ID de outra loja. Aqui só
+    # aceitamos o mesmo valor que já está salvo (o frontend reenvia o campo).
     requested_merchant_id = str(data.get("keetaMerchantId") or data.get("merchantId") or "").strip()
-    if requested_merchant_id:
-        if not requested_merchant_id.isdigit():
-            return jsonify({"error": "O merchant ID deve conter apenas números."}), 400
-        config.keeta_merchant_id = requested_merchant_id
+    if requested_merchant_id and requested_merchant_id != (config.keeta_merchant_id or ""):
+        return jsonify({"error": "Para alterar o merchant ID, use \"Ativar Integração\"."}), 400
 
     print(f"[Config][update_config] Config DEPOIS da atualização: autoAccept={config.auto_accept} | keetaMerchantId={config.keeta_merchant_id}")
 

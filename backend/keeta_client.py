@@ -28,7 +28,15 @@ from datetime import datetime
 #  CREDENCIAIS (em produção, use variáveis de ambiente)
 # -----------------------------------------------------------------------------
 CLIENT_ID     = os.getenv("KEETA_CLIENT_ID", "2816859805")
-CLIENT_SECRET = os.getenv("KEETA_CLIENT_SECRET", "2f6729bdd4be467aa15df35244f2a65e")
+
+# O secret assina as chamadas à Keeta e valida a assinatura dos webhooks.
+# Nunca deixe um valor padrão aqui: o repositório é público.
+CLIENT_SECRET = os.getenv("KEETA_CLIENT_SECRET", "").strip()
+if not CLIENT_SECRET:
+    if os.getenv("DEBUG", "false").lower() == "true":
+        print("[Keeta][INIT] AVISO: KEETA_CLIENT_SECRET ausente; chamadas e webhooks da Keeta vão falhar.")
+    else:
+        raise RuntimeError("KEETA_CLIENT_SECRET não configurada. Defina a variável de ambiente antes de subir o backend.")
 
 # Base da API da Keeta. O host precisa ser o mesmo host usado na URL HTTP
 # e na string da assinatura. Em algumas contas/regiões a Keeta usa o host
@@ -1146,6 +1154,10 @@ def validate_webhook_signature(
     Retorna True se a assinatura é válida (é da Keeta), False caso contrário.
     """
     print(f"[Keeta][validate_webhook_signature] INÍCIO | body_len={len(body)} | received_signature_preview={received_signature[:20]}...")
+
+    if not CLIENT_SECRET:
+        print("[Keeta][validate_webhook_signature] REJEITADO: KEETA_CLIENT_SECRET não configurada.")
+        return False
 
     webhook_url = webhook_url or f"{MY_PUBLIC_URL}/orders"
     from urllib.parse import parse_qsl, urlsplit

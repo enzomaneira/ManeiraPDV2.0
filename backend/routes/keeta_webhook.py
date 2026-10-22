@@ -36,6 +36,7 @@ from pathlib import Path
 import time
 import traceback
 import uuid
+from sqlalchemy.exc import IntegrityError
 import keeta_client
 from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
 from models import menu_item_option_groups, menu_item_availabilities, menu_category_availabilities
@@ -888,9 +889,11 @@ def keeta_root():
     abaixo). Por isso esta rota não tem — e não precisa ter — validação de
     X-API-KEY.
 
-    Usa store_id=1 como padrão.
+    Exige ?storeId= (sem padrão, para não servir o cardápio de outra loja).
     """
-    store_id = request.args.get("storeId", 1, type=int)
+    store_id = request.args.get("storeId", type=int)
+    if not store_id or not Store.query.get(store_id):
+        return jsonify({"error": "Informe um storeId válido."}), 400
     print(f"[keeta_root] GET /api/keeta | storeId={store_id}")
     return jsonify(_build_menu_response(store_id))
 
@@ -1268,8 +1271,13 @@ def get_merchant_menu():
     """
     request_id = uuid.uuid4().hex[:12]
     raw_store_id = request.args.get("storeId")
-    store_id = request.args.get("storeId", 1, type=int)
+    store_id = request.args.get("storeId", type=int)
     started_at = time.perf_counter()
+    # O onboarding sempre registra a URL com ?storeId=; sem ele não há como
+    # saber de qual loja é o cardápio (antes caía na loja 1).
+    if not store_id or not Store.query.get(store_id):
+        print(f"[Webhook][get_merchant_menu] FALHA (400) | request_id={request_id} | storeId_raw={raw_store_id!r}")
+        return jsonify({"error": "Informe um storeId válido.", "requestId": request_id}), 400
     print(
         f"\n[Webhook][get_merchant_menu] INÍCIO | request_id={request_id} | "
         f"storeId_raw={raw_store_id!r} | store_id={store_id} | "
@@ -1393,6 +1401,13 @@ def onboard_merchant():
 
     print(f"[Webhook][onboard_merchant] merchant_id informado={merchant_id} | store_id local={store.id}")
 
+    # Um merchant da Keeta só pode estar ligado a uma loja local; senão os
+    # pedidos dele poderiam cair no restaurante de outro usuário.
+    owner_config = StoreConfig.query.filter_by(keeta_merchant_id=merchant_id).first()
+    if owner_config and owner_config.store_id != store.id:
+        print(f"[Webhook][onboard_merchant] FALHA (409): merchant_id={merchant_id} já pertence ao store_id={owner_config.store_id}.")
+        return jsonify({"error": "Este merchant ID já está vinculado a outro restaurante."}), 409
+
     # Faz o onboarding com o mesmo valor em merchantId e keetaMerchantId.
     print(f"[Webhook][onboard_merchant] Chamando register_merchant(merchant_id={merchant_id}, my_local_store_id={store.id})...")
     result = keeta_client.register_merchant(merchant_id, my_local_store_id=str(store.id))
@@ -1410,7 +1425,12 @@ def onboard_merchant():
         db.session.add(config)
 
     config.keeta_merchant_id = merchant_id
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        print(f"[Webhook][onboard_merchant] FALHA (409): merchant_id={merchant_id} vinculado a outra loja durante o onboarding.")
+        return jsonify({"error": "Este merchant ID já está vinculado a outro restaurante."}), 409
     print(f"[Webhook][onboard_merchant] Config salva: {config.to_dict()}")
 
     print(f"[Webhook][onboard_merchant] FIM (sucesso) | store_id={store.id} | merchant_id={merchant_id}")

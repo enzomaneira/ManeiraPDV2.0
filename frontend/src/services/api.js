@@ -47,6 +47,13 @@ export const authService = {
     requestPasswordReset: (email) => api.post('/auth/request-password-reset', { email }),
     resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
     me: () => api.get('/auth/me'),
+    updateMe: (data) => api.put('/auth/me', data),
+    changePassword: (currentPassword, newPassword) =>
+        api.post('/auth/change-password', { currentPassword, newPassword }),
+};
+
+export const storeService = {
+    rename: (name) => api.put('/stores/me', { name }),
 };
 
 export const orderService = {
