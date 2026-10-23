@@ -7,6 +7,10 @@ import {
 } from 'lucide-react';
 import { formatCurrency } from '../utils/formatters';
 
+// Nova disponibilidade vale todos os dias, o dia inteiro (antes era só segunda-feira).
+const ALL_DAYS_HOURS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY']
+  .map(dayOfWeek => ({ dayOfWeek, startTime: '00:00:00.000Z', endTime: '23:59:00.000Z' }));
+
 export default function MenuPage() {
   const [categories, setCategories] = useState([]);
   const [items, setItems] = useState([]);
@@ -44,7 +48,7 @@ export default function MenuPage() {
   // --- Expansão de grupos na aba ---
   const [expandedOGs, setExpandedOGs] = useState({});
   // --- Availability rápido ---
-  const [availForm, setAvailForm] = useState({ name: '', startDate: '', endDate: '', hours: [{ dayOfWeek: 'MONDAY', startTime: '00:00:00.000Z', endTime: '23:59:00.000Z' }] });
+  const [availForm, setAvailForm] = useState({ name: '', startDate: '', endDate: '', hours: ALL_DAYS_HOURS });
   const [availSaving, setAvailSaving] = useState(false);
 
   const [deletingId, setDeletingId] = useState(null);
@@ -117,7 +121,7 @@ export default function MenuPage() {
     if (!confirm(`Remover "${cat.name}"?`)) return;
     setDeletingId(cat.id);
     try { await categoryService.delete(cat.id); if (selectedCategoryId === cat.id) setSelectedCategoryId(null); fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao remover.' }); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover.')); }
     finally { setDeletingId(null); }
   };
 
@@ -134,7 +138,9 @@ export default function MenuPage() {
     setShowItemModal(true);
   };
   const handleSaveItem = async (e) => {
-    e.preventDefault(); const name = itemForm.name.trim(); const price = parseFloat(String(itemForm.price).replace(',', '.')); const originalPrice = itemForm.originalPrice === '' ? price : parseFloat(String(itemForm.originalPrice).replace(',', '.'));
+    e.preventDefault(); const name = itemForm.name.trim(); const price = parseFloat(String(itemForm.price).replace(',', '.')); let originalPrice = itemForm.originalPrice === '' ? price : parseFloat(String(itemForm.originalPrice).replace(',', '.'));
+    // Aumentou o preço sem mexer no preço original: não há mais desconto, então o original acompanha.
+    if (editingItem && originalPrice === Number(editingItem.originalPrice ?? editingItem.price) && price > originalPrice) originalPrice = price;
     if (!name || isNaN(price) || price < 0 || isNaN(originalPrice) || originalPrice < price) { showMessage('error', 'Informe nome, preço válido e preço original maior ou igual ao preço atual.'); return; }
     setItemSaving(true);
     const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim() || `item-${Date.now()}`, price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim() };
@@ -150,7 +156,7 @@ export default function MenuPage() {
     if (!confirm(`Remover "${item.name}"?`)) return;
     setDeletingId(item.id);
     try { await menuService.delete(item.id); fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao remover.' }); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover.')); }
     finally { setDeletingId(null); }
   };
 
@@ -262,7 +268,7 @@ export default function MenuPage() {
     try {
       const res = await availabilityService.create(availForm);
       await menuService.linkAvailability(editingItem.id, res.data.id);
-      setAvailForm({ name: '', startDate: '', endDate: '', hours: [{ dayOfWeek: 'MONDAY', startTime: '00:00:00.000Z', endTime: '23:59:00.000Z' }] }); fetchData();
+      setAvailForm({ name: '', startDate: '', endDate: '', hours: ALL_DAYS_HOURS }); fetchData();
       setMessage({ type: 'success', text: 'Disponibilidade criada e vinculada!' });
     } catch { setMessage({ type: 'error', text: 'Erro ao criar disponibilidade.' }); }
     finally { setAvailSaving(false); setTimeout(() => setMessage(null), 3000); }

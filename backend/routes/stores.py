@@ -17,6 +17,9 @@
 #    DELETE /api/stores/me/menu/<id>        → deletar item
 # =============================================================================
 
+import re
+import uuid
+from datetime import datetime
 from flask import Blueprint, request, jsonify, g
 from database import db
 from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
@@ -29,6 +32,129 @@ stores_bp = Blueprint("stores", __name__)
 
 VALID_STATUSES = {"AVAILABLE", "UNAVAILABLE"}
 VALID_PRICE_METHODS = {"SUM", "HIGHEST", "LOWEST"}
+VALID_DAYS = {"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"}
+TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d{3})?Z?$")
+NAME_MAX_LENGTH = 150
+DESCRIPTION_MAX_LENGTH = 500
+EXTERNAL_CODE_MAX_LENGTH = 100
+
+
+def _parse_name(value, label="Nome"):
+    name = str(value or "").strip()
+    if not name:
+        raise ValueError(f"{label} é obrigatório.")
+    if len(name) > NAME_MAX_LENGTH:
+        raise ValueError(f"{label} deve ter no máximo {NAME_MAX_LENGTH} caracteres.")
+    return name
+
+
+def _parse_description(value):
+    description = str(value or "").strip()
+    if len(description) > DESCRIPTION_MAX_LENGTH:
+        raise ValueError(f"A descrição deve ter no máximo {DESCRIPTION_MAX_LENGTH} caracteres.")
+    return description
+
+
+def _parse_index(value):
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("A posição (index) deve ser um número inteiro.")
+    if index < 0:
+        raise ValueError("A posição (index) não pode ser negativa.")
+    return index
+
+
+def _parse_optional_limit(value):
+    """maxPermitted de uma opção: vazio (sem limite) ou inteiro ≥ 1."""
+    if value in (None, ""):
+        return None
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("O máximo da opção deve ser um número inteiro.")
+    if limit < 1:
+        raise ValueError("O máximo da opção deve ser pelo menos 1.")
+    return limit
+
+
+def _resolve_external_code(model, store, raw_code, prefix, exclude_id=None):
+    """
+    Devolve um código externo único dentro da loja. Em branco, gera um novo;
+    preenchido, recusa se outro registro da mesma loja já usa o código
+    (a Keeta exige códigos únicos).
+    """
+    code = str(raw_code or "").strip()
+    if not code:
+        return f"{prefix}-{uuid.uuid4().hex[:10]}"
+    if len(code) > EXTERNAL_CODE_MAX_LENGTH:
+        raise ValueError(f"O código externo deve ter no máximo {EXTERNAL_CODE_MAX_LENGTH} caracteres.")
+
+    if model is MenuOption:
+        query = MenuOption.query.join(MenuOption.option_group).filter(MenuOptionGroup.store_id == store.id)
+    else:
+        query = model.query.filter(model.store_id == store.id)
+    query = query.filter(model.external_code == code)
+    if exclude_id is not None:
+        query = query.filter(model.id != exclude_id)
+    if query.first():
+        raise ValueError(f"O código externo \"{code}\" já está em uso nesta loja.")
+    return code
+
+
+def _parse_time(value):
+    """Aceita HH:MM, HH:MM:SS ou HH:MM:SS.000Z e normaliza para HH:MM:SS.000Z (UTC)."""
+    match = TIME_PATTERN.match(str(value or "").strip())
+    if not match:
+        raise ValueError(f"Horário inválido: \"{value}\". Use HH:MM.")
+    hours, minutes, seconds = match.group(1), match.group(2), match.group(3) or "00"
+    return f"{hours}:{minutes}:{seconds}.000Z"
+
+
+def _parse_date(value, label):
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{label} inválida. Use o formato AAAA-MM-DD.")
+
+
+def _parse_availability_hours(raw_hours):
+    if not isinstance(raw_hours, list) or not raw_hours:
+        raise ValueError("Informe pelo menos um horário.")
+    hours = []
+    for raw in raw_hours:
+        if not isinstance(raw, dict):
+            raise ValueError("Horário inválido.")
+        day = str(raw.get("dayOfWeek") or "").strip().upper()
+        if day not in VALID_DAYS:
+            raise ValueError(f"Dia da semana inválido: \"{raw.get('dayOfWeek')}\".")
+        start = _parse_time(raw.get("startTime"))
+        end = _parse_time(raw.get("endTime"))
+        if start >= end:
+            raise ValueError("O horário de início deve ser antes do horário de fim.")
+        hours.append(AvailabilityHour(day_of_week=day, start_time=start, end_time=end))
+    return hours
+
+
+def _validate_date_range(start_date, end_date):
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("A data de início deve ser anterior à data de fim.")
+
+
+def _option_usage(item_ids):
+    """Grupos de opções que usam algum dos itens como subitem."""
+    if not item_ids:
+        return []
+    rows = (
+        db.session.query(MenuOptionGroup.name)
+        .join(MenuOption, MenuOption.option_group_id == MenuOptionGroup.id)
+        .filter(MenuOption.item_id.in_(item_ids))
+        .distinct()
+        .all()
+    )
+    return sorted(name for (name,) in rows)
 
 def _parse_price(value, field_name="Preço", required=True):
     if value is None or value == "":
@@ -229,14 +355,14 @@ def create_my_category():
     data = request.get_json(silent=True) or {}
     print(f"[Stores][create_my_category] Body recebido: {data}")
 
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Nome da categoria é obrigatório."}), 400
-
-    description = (data.get("description") or "").strip()
-    external_code = (data.get("externalCode") or data.get("external_code") or "").strip()
-    if not external_code:
-        external_code = f"cat-{len(name)}"  # fallback
+    try:
+        name = _parse_name(data.get("name"), "Nome da categoria")
+        description = _parse_description(data.get("description"))
+        external_code = _resolve_external_code(
+            MenuCategory, store, data.get("externalCode") or data.get("external_code"), "cat"
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     # Calcula o próximo index
     max_index = db.session.query(db.func.max(MenuCategory.index)).filter_by(store_id=store.id).scalar() or -1
@@ -282,16 +408,22 @@ def update_my_category(category_id):
     data = request.get_json(silent=True) or {}
     print(f"[Stores][update_my_category] Body: {data}")
 
-    if "name" in data:
-        category.name = (data["name"] or "").strip()
-    if "description" in data:
-        category.description = (data["description"] or "").strip()
-    if "externalCode" in data:
-        category.external_code = str(data["externalCode"]).strip()
-    if "index" in data:
-        category.index = int(data["index"])
-    if "status" in data:
-        category.status = data["status"]
+    try:
+        if "name" in data:
+            category.name = _parse_name(data["name"], "Nome da categoria")
+        if "description" in data:
+            category.description = _parse_description(data["description"])
+        if "externalCode" in data:
+            category.external_code = _resolve_external_code(
+                MenuCategory, store, data["externalCode"], "cat", exclude_id=category.id
+            )
+        if "index" in data:
+            category.index = _parse_index(data["index"])
+        if "status" in data:
+            category.status = _validate_status(data["status"])
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
 
     try:
         db.session.commit()
@@ -318,6 +450,13 @@ def delete_my_category(category_id):
     category = MenuCategory.query.filter_by(id=category_id, store_id=store.id).first()
     if not category:
         return jsonify({"error": "Categoria não encontrada."}), 404
+
+    used_in = _option_usage([item.id for item in category.items])
+    if used_in:
+        return jsonify({
+            "error": "Itens desta categoria são usados como opção nos grupos: "
+                     f"{', '.join(used_in)}. Remova essas opções antes de excluir a categoria."
+        }), 409
 
     cat_name = category.name
     try:
@@ -376,25 +515,21 @@ def create_my_menu_item():
     data = request.get_json(silent=True) or {}
     print(f"[Stores][create_my_menu_item] Body recebido: {data}")
 
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Nome do item é obrigatório."}), 400
-
     category_id = data.get("categoryId")
     try:
+        name = _parse_name(data.get("name"), "Nome do item")
+        description = _parse_description(data.get("description"))
         _owned_category(store, category_id)
         price = _parse_price(data.get("price"))
         original_price = _parse_price(data.get("originalPrice", price), "Preço original")
         if original_price < price:
             raise ValueError("O preço original não pode ser menor que o preço atual.")
         status = _validate_status(data.get("status"))
+        external_code = _resolve_external_code(
+            MenuItem, store, data.get("externalCode") or data.get("external_code"), "item"
+        )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
-
-    description = (data.get("description") or "").strip()
-    external_code = (data.get("externalCode") or data.get("external_code") or "").strip()
-    if not external_code:
-        external_code = str(int(db.session.query(db.func.max(MenuItem.id)).scalar() or 0) + 1)
 
     image_url = (data.get("imageUrl") or "").strip()
     is_option_item = bool(data.get("isOptionItem", False))
@@ -449,17 +584,21 @@ def update_my_menu_item(item_id):
     data = request.get_json(silent=True) or {}
     print(f"[Stores][update_my_menu_item] Body: {data}")
 
-    if "name" in data:
-        item.name = (data["name"] or "").strip()
-        if not item.name:
-            return jsonify({"error": "Nome do item é obrigatório."}), 400
-    if "description" in data:
-        item.description = (data["description"] or "").strip()
-    if "externalCode" in data:
-        item.external_code = str(data["externalCode"]).strip()
     try:
+        if "name" in data:
+            item.name = _parse_name(data["name"], "Nome do item")
+        if "description" in data:
+            item.description = _parse_description(data["description"])
+        if "externalCode" in data:
+            item.external_code = _resolve_external_code(
+                MenuItem, store, data["externalCode"], "item", exclude_id=item.id
+            )
         if "price" in data:
             item.price = _parse_price(data["price"])
+            # Sem preço original no body, um aumento de preço remove o
+            # "desconto" antigo em vez de ser recusado.
+            if "originalPrice" not in data and (item.original_price is None or item.original_price < item.price):
+                item.original_price = item.price
         if "originalPrice" in data:
             item.original_price = _parse_price(data["originalPrice"], "Preço original")
         if item.original_price is not None and item.original_price < item.price:
@@ -468,14 +607,15 @@ def update_my_menu_item(item_id):
             item.category_id = _owned_category(store, data["categoryId"]).id
         if "status" in data:
             item.status = _validate_status(data["status"])
+        if "index" in data:
+            item.index = _parse_index(data["index"])
     except ValueError as error:
+        db.session.rollback()
         return jsonify({"error": str(error)}), 400
     if "isOptionItem" in data:
         item.is_option_item = bool(data["isOptionItem"])
     if "imageUrl" in data:
-        item.image_url = data["imageUrl"]
-    if "index" in data:
-        item.index = int(data["index"])
+        item.image_url = str(data["imageUrl"] or "").strip()
 
     try:
         db.session.commit()
@@ -502,6 +642,13 @@ def delete_my_menu_item(item_id):
     item = MenuItem.query.filter_by(id=item_id, store_id=store.id).first()
     if not item:
         return jsonify({"error": "Item não encontrado."}), 404
+
+    used_in = _option_usage([item.id])
+    if used_in:
+        return jsonify({
+            "error": f"Este item é usado como opção nos grupos: {', '.join(used_in)}. "
+                     "Remova essas opções antes de excluir o item."
+        }), 409
 
     item_name = item.name
     try:
@@ -538,18 +685,17 @@ def create_my_option_group():
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Nome é obrigatório."}), 400
     try:
+        name = _parse_name(data.get("name"))
         minimum, maximum = _validate_selection_limits(data.get("minPermitted", 0), data.get("maxPermitted", 1))
         price_method = str(data.get("priceMethod", "SUM")).upper()
         if price_method not in VALID_PRICE_METHODS:
             raise ValueError("Método de preço inválido.")
         group = MenuOptionGroup(
             store_id=store.id, name=name,
-            description=(data.get("description") or "").strip(),
-            external_code=(data.get("externalCode") or f"og-{store.id}-{int(__import__('time').time() * 1000)}").strip(),
+            description=_parse_description(data.get("description")),
+            external_code=_resolve_external_code(MenuOptionGroup, store, data.get("externalCode"), "og"),
+            status=_validate_status(data.get("status")),
             min_permitted=minimum,
             max_permitted=maximum,
             price_method=price_method,
@@ -583,12 +729,12 @@ def update_my_option_group(group_id):
         return jsonify({"error": "Grupo não encontrado."}), 404
     data = request.get_json(silent=True) or {}
     try:
-        if "name" in data:
-            group.name = (data["name"] or "").strip()
-            if not group.name:
-                raise ValueError("Nome é obrigatório.")
-        if "description" in data: group.description = (data["description"] or "").strip()
-        if "externalCode" in data: group.external_code = str(data["externalCode"]).strip()
+        if "name" in data: group.name = _parse_name(data["name"])
+        if "description" in data: group.description = _parse_description(data["description"])
+        if "externalCode" in data:
+            group.external_code = _resolve_external_code(
+                MenuOptionGroup, store, data["externalCode"], "og", exclude_id=group.id
+            )
         if "status" in data: group.status = _validate_status(data["status"])
         if "priceMethod" in data:
             group.price_method = str(data["priceMethod"]).upper()
@@ -604,7 +750,8 @@ def update_my_option_group(group_id):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
     _notify_keeta_menu_sync(store)
     result = group.to_dict()
@@ -629,7 +776,8 @@ def delete_my_option_group(group_id):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
     _notify_keeta_menu_sync(store)
     return jsonify({"message": "Removido."}), 200
@@ -647,20 +795,18 @@ def create_option(group_id):
     if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Nome é obrigatório."}), 400
     try:
+        name = _parse_name(data.get("name"))
         item = _owned_option_item(store, data.get("itemId"))
         price = _parse_price(data.get("price", 0), required=False)
         option = MenuOption(
             option_group_id=group.id, item_id=item.id if item else None, name=name,
-            description=(data.get("description") or "").strip(),
-            external_code=(data.get("externalCode") or f"opt-{store.id}-{int(__import__('time').time() * 1000)}").strip(),
+            description=_parse_description(data.get("description")),
+            external_code=_resolve_external_code(MenuOption, store, data.get("externalCode"), "opt"),
             price=price if price is not None else 0.0,
             status=_validate_status(data.get("status")),
             index=(db.session.query(db.func.max(MenuOption.index)).filter_by(option_group_id=group.id).scalar() or -1) + 1,
-            max_permitted=data.get("maxPermitted"),
+            max_permitted=_parse_optional_limit(data.get("maxPermitted")),
         )
         db.session.add(option)
         db.session.commit()
@@ -694,20 +840,21 @@ def update_option(group_id, option_id):
         return jsonify({"error": "Opção não encontrada."}), 404
     data = request.get_json(silent=True) or {}
     try:
-        if "name" in data:
-            option.name = (data["name"] or "").strip()
-            if not option.name:
-                raise ValueError("Nome é obrigatório.")
-        if "description" in data: option.description = (data["description"] or "").strip()
-        if "externalCode" in data: option.external_code = str(data["externalCode"]).strip()
+        if "name" in data: option.name = _parse_name(data["name"])
+        if "description" in data: option.description = _parse_description(data["description"])
+        if "externalCode" in data:
+            option.external_code = _resolve_external_code(
+                MenuOption, store, data["externalCode"], "opt", exclude_id=option.id
+            )
         if "status" in data: option.status = _validate_status(data["status"])
         if "price" in data: option.price = _parse_price(data["price"], required=False) or 0.0
         if "itemId" in data:
             item = _owned_option_item(store, data["itemId"])
             option.item_id = item.id if item else None
-        if "maxPermitted" in data: option.max_permitted = data["maxPermitted"]
-        if "index" in data: option.index = int(data["index"])
+        if "maxPermitted" in data: option.max_permitted = _parse_optional_limit(data["maxPermitted"])
+        if "index" in data: option.index = _parse_index(data["index"])
     except ValueError as error:
+        db.session.rollback()
         return jsonify({"error": str(error)}), 400
 
     try:
@@ -744,7 +891,8 @@ def delete_option(group_id, option_id):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
     _notify_keeta_menu_sync(store)
     result = {"message": "Removida."}
@@ -790,6 +938,8 @@ def unlink_option_group(item_id, group_id):
     group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
     if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
+    if group not in item.option_groups:
+        return jsonify({"error": "Este grupo não está vinculado ao item."}), 404
     item.option_groups.remove(group)
     db.session.commit()
 
@@ -818,26 +968,23 @@ def create_my_availability():
     if not store:
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "Nome é obrigatório."}), 400
     try:
-        a = MenuAvailability(
-            store_id=store.id, name=name,
-            start_date=data.get("startDate"),
-            end_date=data.get("endDate"),
-        )
-        for h in data.get("hours", []):
-            a.hours.append(AvailabilityHour(
-                day_of_week=h.get("dayOfWeek", "MONDAY"),
-                start_time=h.get("startTime", "00:00:00.000Z"),
-                end_time=h.get("endTime", "23:59:00.000Z"),
-            ))
+        name = _parse_name(data.get("name"))
+        start_date = _parse_date(data.get("startDate"), "Data de início")
+        end_date = _parse_date(data.get("endDate"), "Data de fim")
+        _validate_date_range(start_date, end_date)
+        hours = _parse_availability_hours(data.get("hours"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    try:
+        a = MenuAvailability(store_id=store.id, name=name, start_date=start_date, end_date=end_date)
+        a.hours.extend(hours)
         db.session.add(a)
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
     _notify_keeta_menu_sync(store)
     return jsonify(a.to_dict()), 201
@@ -853,23 +1000,26 @@ def update_my_availability(avail_id):
     if not a:
         return jsonify({"error": "Disponibilidade não encontrada."}), 404
     data = request.get_json(silent=True) or {}
-    if "name" in data: a.name = data["name"].strip()
-    if "startDate" in data: a.start_date = data["startDate"]
-    if "endDate" in data: a.end_date = data["endDate"]
-    if "hours" in data:
+    try:
+        name = _parse_name(data["name"]) if "name" in data else a.name
+        start_date = _parse_date(data["startDate"], "Data de início") if "startDate" in data else a.start_date
+        end_date = _parse_date(data["endDate"], "Data de fim") if "endDate" in data else a.end_date
+        _validate_date_range(start_date, end_date)
+        hours = _parse_availability_hours(data["hours"]) if "hours" in data else None
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    a.name, a.start_date, a.end_date = name, start_date, end_date
+    if hours is not None:
         a.hours.clear()
-        for h in data["hours"]:
-            a.hours.append(AvailabilityHour(
-                day_of_week=h.get("dayOfWeek", "MONDAY"),
-                start_time=h.get("startTime", "00:00:00.000Z"),
-                end_time=h.get("endTime", "23:59:00.000Z"),
-            ))
+        a.hours.extend(hours)
 
     try:
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
     _notify_keeta_menu_sync(store)
     return jsonify(a.to_dict())
@@ -889,7 +1039,8 @@ def delete_my_availability(avail_id):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
     _notify_keeta_menu_sync(store)
     return jsonify({"message": "Removida."}), 200
@@ -931,6 +1082,8 @@ def unlink_availability(item_id, avail_id):
     a = MenuAvailability.query.filter_by(id=avail_id, store_id=store.id).first()
     if not a:
         return jsonify({"error": "Disponibilidade não encontrada."}), 404
+    if a not in item.availabilities:
+        return jsonify({"error": "Esta disponibilidade não está vinculada ao item."}), 404
     item.availabilities.remove(a)
     db.session.commit()
 
