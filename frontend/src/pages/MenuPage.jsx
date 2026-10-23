@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { categoryService, menuService, optionGroupService, availabilityService, keetaSyncService } from '../services/api';
 import {
   Plus, Trash2, Utensils, Loader2, AlertCircle, CheckCircle,
   PackageOpen, FolderPlus, Edit3, ChevronRight, Tag, Image, Layers,
-  X, Save, FolderOpen, Clock, ListPlus, CalendarDays, RefreshCw, Send, Link, Unlink
+  X, Save, FolderOpen, Clock, ListPlus, CalendarDays, RefreshCw, Send, Link, Unlink,
+  Search, Copy, ArrowUp, ArrowDown
 } from 'lucide-react';
 import { formatCurrency } from '../utils/formatters';
 
@@ -52,6 +53,10 @@ export default function MenuPage() {
   const [availSaving, setAvailSaving] = useState(false);
 
   const [deletingId, setDeletingId] = useState(null);
+  const [togglingId, setTogglingId] = useState(null);
+  const [reordering, setReordering] = useState(false);
+  const [search, setSearch] = useState('');
+  const [imageFailed, setImageFailed] = useState(false);
 
   // --- Modal gerenciador de OptionGroups (independente) ---
   const [showOGManager, setShowOGManager] = useState(false);
@@ -67,7 +72,13 @@ export default function MenuPage() {
 
   // ===== Carrega dados =====
   const getErrorMessage = (error, fallback) => error.response?.data?.error || fallback;
-  const showMessage = (type, text) => setMessage({ type, text });
+  const messageTimer = useRef(null);
+  // Sucesso some sozinho; erro fica até o usuário fechar.
+  const showMessage = (type, text) => {
+    clearTimeout(messageTimer.current);
+    setMessage({ type, text });
+    if (type === 'success') messageTimer.current = setTimeout(() => setMessage(null), 3000);
+  };
   const fetchData = async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
     try {
@@ -90,6 +101,7 @@ export default function MenuPage() {
   };
 
   useEffect(() => { fetchData(); }, []);
+  useEffect(() => { setImageFailed(false); }, [itemForm.imageUrl]);
   useEffect(() => { if (!loading) fetchData(false); }, [selectedCategoryId]);
 
   // ===== Sync Keeta =====
@@ -97,10 +109,10 @@ export default function MenuPage() {
     setSyncingMenu(true); setMessage(null);
     try {
       const res = await keetaSyncService.syncMenu();
-      setMessage({ type: 'success', text: res.data?.message || 'Menu enviado para sincronização!' });
+      showMessage('success', res.data?.message || 'Menu enviado para sincronização!');
     } catch (error) {
-      setMessage({ type: 'error', text: error.response?.data?.error || 'Erro ao sincronizar com a Keeta.' });
-    } finally { setSyncingMenu(false); setTimeout(() => setMessage(null), 5000); }
+      showMessage('error', error.response?.data?.error || 'Erro ao sincronizar com a Keeta.');
+    } finally { setSyncingMenu(false); }
   };
 
   // ===== Categoria =====
@@ -110,15 +122,21 @@ export default function MenuPage() {
     e.preventDefault(); const name = catForm.name.trim(); if (!name) { showMessage('error', 'Nome da categoria é obrigatório.'); return; }
     setCatSaving(true);
     try {
-      const payload = { name, description: catForm.description.trim(), externalCode: catForm.externalCode.trim() || `cat-${Date.now()}` };
+      // Código em branco: o backend gera um código único.
+      const payload = { name, description: catForm.description.trim(), externalCode: catForm.externalCode.trim() };
       if (editingCategory) await categoryService.update(editingCategory.id, payload);
       else await categoryService.create(payload);
-      setShowCatModal(false); fetchData();
+      setShowCatModal(false); fetchData(false);
+      showMessage('success', editingCategory ? 'Categoria atualizada.' : 'Categoria criada.');
     } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar categoria.')); }
     finally { setCatSaving(false); }
   };
   const handleDeleteCategory = async (cat) => {
-    if (!confirm(`Remover "${cat.name}"?`)) return;
+    const count = cat.itemCount || 0;
+    const warning = count > 0
+      ? `Remover "${cat.name}"?\n\nOs ${count} ${count === 1 ? 'item' : 'itens'} desta categoria também serão excluídos. Essa ação não pode ser desfeita.`
+      : `Remover "${cat.name}"?`;
+    if (!confirm(warning)) return;
     setDeletingId(cat.id);
     try { await categoryService.delete(cat.id); if (selectedCategoryId === cat.id) setSelectedCategoryId(null); fetchData(); }
     catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover.')); }
@@ -127,28 +145,68 @@ export default function MenuPage() {
 
   // ===== Item =====
   const openNewItem = () => {
-    if (!selectedCategoryId) { setMessage({ type: 'error', text: 'Selecione uma categoria primeiro.' }); setTimeout(() => setMessage(null), 3000); return; }
+    if (categories.length === 0) { showMessage('error', 'Crie uma categoria antes de adicionar itens.'); return; }
     setEditingItem(null); setItemTab('info');
-    setItemForm({ name: '', description: '', externalCode: '', price: '', originalPrice: '', status: 'AVAILABLE', imageUrl: '' });
+    setItemForm({ name: '', description: '', externalCode: '', price: '', originalPrice: '', status: 'AVAILABLE', imageUrl: '', categoryId: selectedCategoryId || categories[0].id });
     setShowItemModal(true);
   };
   const openEditItem = (item) => {
     setEditingItem(item); setItemTab('info');
-    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '' });
+    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId });
     setShowItemModal(true);
   };
+  // Abre o formulário de novo item já preenchido com os dados de outro (código fica em branco para gerar um novo).
+  const openDuplicateItem = (item) => {
+    setEditingItem(null); setItemTab('info');
+    setItemForm({ name: `${item.name} (cópia)`, description: item.description || '', externalCode: '', price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId });
+    setShowItemModal(true);
+  };
+
+  // Liga/desliga o item direto na lista (ex.: esgotou durante o serviço), sem recarregar a página.
+  const handleToggleItemStatus = async (item) => {
+    const status = item.status === 'AVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE';
+    setTogglingId(item.id);
+    setItems(prev => prev.map(i => (i.id === item.id ? { ...i, status } : i)));
+    try {
+      await menuService.update(item.id, { status });
+      showMessage('success', status === 'AVAILABLE' ? `"${item.name}" disponível novamente.` : `"${item.name}" marcado como esgotado.`);
+    } catch (error) {
+      setItems(prev => prev.map(i => (i.id === item.id ? { ...i, status: item.status } : i)));
+      showMessage('error', getErrorMessage(error, 'Não foi possível alterar o status.'));
+    } finally { setTogglingId(null); }
+  };
+
+  // Troca a posição de um registro com o vizinho e salva a nova ordem (index = posição na lista).
+  const moveInList = async (list, position, direction, update, setList) => {
+    const target = position + direction;
+    if (target < 0 || target >= list.length) return;
+    const reordered = [...list];
+    [reordered[position], reordered[target]] = [reordered[target], reordered[position]];
+    const changed = reordered.filter((entry, index) => entry.index !== index);
+    setList(reordered.map((entry, index) => ({ ...entry, index })));
+    setReordering(true);
+    try {
+      await Promise.all(changed.map(entry => update(entry.id, { index: reordered.indexOf(entry) })));
+    } catch (error) {
+      showMessage('error', getErrorMessage(error, 'Não foi possível salvar a nova ordem.'));
+      fetchData(false);
+    } finally { setReordering(false); }
+  };
+  const moveCategory = (position, direction) => moveInList(categories, position, direction, categoryService.update, setCategories);
+  const moveItem = (position, direction) => moveInList(items, position, direction, menuService.update, setItems);
   const handleSaveItem = async (e) => {
     e.preventDefault(); const name = itemForm.name.trim(); const price = parseFloat(String(itemForm.price).replace(',', '.')); let originalPrice = itemForm.originalPrice === '' ? price : parseFloat(String(itemForm.originalPrice).replace(',', '.'));
     // Aumentou o preço sem mexer no preço original: não há mais desconto, então o original acompanha.
     if (editingItem && originalPrice === Number(editingItem.originalPrice ?? editingItem.price) && price > originalPrice) originalPrice = price;
     if (!name || isNaN(price) || price < 0 || isNaN(originalPrice) || originalPrice < price) { showMessage('error', 'Informe nome, preço válido e preço original maior ou igual ao preço atual.'); return; }
     setItemSaving(true);
-    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim() || `item-${Date.now()}`, price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim() };
-    if (!editingItem) payload.categoryId = selectedCategoryId;
+    // Código em branco: o backend gera um código único.
+    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim(), price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim(), categoryId: Number(itemForm.categoryId) };
     try {
       if (editingItem) await menuService.update(editingItem.id, payload);
       else await menuService.create(payload);
-      setShowItemModal(false); fetchData();
+      setShowItemModal(false); fetchData(false);
+      showMessage('success', editingItem ? 'Item atualizado.' : 'Item criado.');
     } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar item.')); }
     finally { setItemSaving(false); }
   };
@@ -187,8 +245,8 @@ export default function MenuPage() {
       await fetchData();
       setOgInlineEditing(null);
       setOgInlineForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
-      if (warning) { setMessage({ type: 'error', text: warning }); setTimeout(() => setMessage(null), 6000); }
-    } catch { setMessage({ type: 'error', text: 'Erro ao salvar grupo.' }); setTimeout(() => setMessage(null), 3000); }
+      if (warning) { showMessage('error', warning); }
+    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar grupo.')); }
     finally { setOgInlineSaving(false); }
   };
 
@@ -233,7 +291,7 @@ export default function MenuPage() {
         warning = res.data.warning;
       }
       setOptInlineTarget(null); await fetchData();
-      if (warning) { setMessage({ type: 'error', text: warning }); setTimeout(() => setMessage(null), 6000); }
+      if (warning) { showMessage('error', warning); }
     } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar opção.')); }
     finally { setOptInlineSaving(false); }
   };
@@ -242,9 +300,9 @@ export default function MenuPage() {
     try {
       const res = await optionGroupService.deleteOption(groupId, optionId);
       await fetchData();
-      if (res.data.warning) { setMessage({ type: 'error', text: res.data.warning }); setTimeout(() => setMessage(null), 6000); }
+      if (res.data.warning) { showMessage('error', res.data.warning); }
     }
-    catch { setMessage({ type: 'error', text: 'Erro.' }); setTimeout(() => setMessage(null), 3000); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro.')); }
   };
 
   const toggleExpandOG = (ogId) => setExpandedOGs(prev => ({ ...prev, [ogId]: !prev[ogId] }));
@@ -258,7 +316,7 @@ export default function MenuPage() {
   const handleUnlinkOG = async (groupId) => {
     if (!editingItem) return;
     try { await menuService.unlinkOptionGroup(editingItem.id, groupId); fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao desvincular.' }); setTimeout(() => setMessage(null), 3000); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao desvincular.')); }
   };
 
   // ===== Availability (contextual ao item) =====
@@ -269,26 +327,34 @@ export default function MenuPage() {
       const res = await availabilityService.create(availForm);
       await menuService.linkAvailability(editingItem.id, res.data.id);
       setAvailForm({ name: '', startDate: '', endDate: '', hours: ALL_DAYS_HOURS }); fetchData();
-      setMessage({ type: 'success', text: 'Disponibilidade criada e vinculada!' });
-    } catch { setMessage({ type: 'error', text: 'Erro ao criar disponibilidade.' }); }
-    finally { setAvailSaving(false); setTimeout(() => setMessage(null), 3000); }
+      showMessage('success', 'Disponibilidade criada e vinculada!');
+    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao criar disponibilidade.')); }
+    finally { setAvailSaving(false); }
   };
 
   const handleLinkExistingAvail = async (availId) => {
     if (!editingItem) return;
     try { await menuService.linkAvailability(editingItem.id, availId); fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao vincular.' }); setTimeout(() => setMessage(null), 3000); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao vincular.')); }
   };
 
   const handleUnlinkAvail = async (availId) => {
     if (!editingItem) return;
     try { await menuService.unlinkAvailability(editingItem.id, availId); fetchData(); }
-    catch { setMessage({ type: 'error', text: 'Erro ao desvincular.' }); setTimeout(() => setMessage(null), 3000); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao desvincular.')); }
   };
 
   // ===== Helpers =====
   const avgPrice = items.length > 0 ? items.reduce((s, i) => s + i.price, 0) / items.length : 0;
   const selectedCategory = categories.find(c => c.id === selectedCategoryId);
+  const searchTerm = search.trim().toLowerCase();
+  const visibleItems = searchTerm
+    ? items.filter(item => [item.name, item.description, item.externalCode].some(value => (value || '').toLowerCase().includes(searchTerm)))
+    : items;
+  // A ordem dos itens é por categoria: só dá para reordenar dentro de uma categoria e sem busca.
+  const canReorderItems = Boolean(selectedCategoryId) && !searchTerm;
+  const unavailableCount = items.filter(item => item.status !== 'AVAILABLE').length;
+  const formCategory = categories.find(c => c.id === Number(itemForm.categoryId));
 
   // ===== Gerenciador de OptionGroups (modal independente) =====
   const openOGManager = () => {
@@ -312,7 +378,7 @@ export default function MenuPage() {
   const handleSaveOG = async (e) => {
     e.preventDefault();
     const name = ogManagerForm.name.trim();
-    if (!name) { setMessage({ type: 'error', text: 'Nome do grupo é obrigatório.' }); setTimeout(() => setMessage(null), 3000); return; }
+    if (!name) { showMessage('error', 'Nome do grupo é obrigatório.'); return; }
     setOgManagerSaving(true);
     try {
       const payload = {
@@ -329,22 +395,19 @@ export default function MenuPage() {
       setOgManagerForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
       await fetchData();
       if (res.data.warning) {
-        setMessage({ type: 'error', text: res.data.warning });
+        showMessage('error', res.data.warning);
       } else {
-        setMessage({ type: 'success', text: ogEditingId ? 'Grupo atualizado!' : 'Grupo criado!' });
+        showMessage('success', ogEditingId ? 'Grupo atualizado!' : 'Grupo criado!');
       }
-      setTimeout(() => setMessage(null), 6000);
-    } catch {
-      setMessage({ type: 'error', text: 'Erro ao salvar grupo de opções.' });
-      setTimeout(() => setMessage(null), 3000);
+    } catch (error) {
+      showMessage('error', getErrorMessage(error, 'Erro ao salvar grupo de opções.'));
     } finally { setOgManagerSaving(false); }
   };
 
   const handleDeleteOG = async (og) => {
     if (!confirm(`Remover grupo "${og.name}" e todas as suas ${og.optionCount || 0} opções?`)) return;
-    try { await optionGroupService.delete(og.id); await fetchData(); setMessage({ type: 'success', text: 'Grupo removido.' }); }
-    catch { setMessage({ type: 'error', text: 'Erro ao remover grupo.' }); }
-    setTimeout(() => setMessage(null), 3000);
+    try { await optionGroupService.delete(og.id); await fetchData(); showMessage('success', 'Grupo removido.'); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover grupo.')); }
   };
 
   // --- Options no gerenciador ---
@@ -364,7 +427,7 @@ export default function MenuPage() {
   const handleSaveOption = async (e) => {
     e.preventDefault();
     if (!optionEditTarget || !optionManagerForm.name.trim()) {
-      setMessage({ type: 'error', text: 'Nome da opção é obrigatório.' }); setTimeout(() => setMessage(null), 3000); return;
+      showMessage('error', 'Nome da opção é obrigatório.'); return;
     }
     setOptionManagerSaving(true);
     try {
@@ -384,14 +447,12 @@ export default function MenuPage() {
       setOptionEditTarget(null);
       await fetchData();
       if (res.data.warning) {
-        setMessage({ type: 'error', text: res.data.warning });
+        showMessage('error', res.data.warning);
       } else {
-        setMessage({ type: 'success', text: optionEditTarget.optionId ? 'Opção atualizada!' : 'Opção adicionada!' });
+        showMessage('success', optionEditTarget.optionId ? 'Opção atualizada!' : 'Opção adicionada!');
       }
-      setTimeout(() => setMessage(null), 6000);
-    } catch {
-      setMessage({ type: 'error', text: 'Erro ao salvar opção.' });
-      setTimeout(() => setMessage(null), 3000);
+    } catch (error) {
+      showMessage('error', getErrorMessage(error, 'Erro ao salvar opção.'));
     } finally { setOptionManagerSaving(false); }
   };
 
@@ -400,9 +461,9 @@ export default function MenuPage() {
     try {
       const res = await optionGroupService.deleteOption(groupId, optionId);
       await fetchData();
-      if (res.data.warning) { setMessage({ type: 'error', text: res.data.warning }); setTimeout(() => setMessage(null), 6000); }
+      if (res.data.warning) { showMessage('error', res.data.warning); }
     }
-    catch { setMessage({ type: 'error', text: 'Erro ao remover opção.' }); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover opção.')); }
   };
 
   // eslint-disable-next-line no-unused-vars
@@ -438,9 +499,12 @@ export default function MenuPage() {
         </div>
       </div>
 
+      {/* Aviso flutuante: fica por cima dos modais, então erros ao salvar continuam visíveis */}
       {message && (
-        <div className={`p-4 rounded-xl flex items-center gap-2 font-bold ${message.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-          {message.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}{message.text}
+        <div role="status" className={`fixed top-4 right-4 z-[60] max-w-md p-4 rounded-xl flex items-start gap-2 font-bold shadow-lg border ${message.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+          {message.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
+          <span className="flex-1 whitespace-pre-line">{message.text}</span>
+          <button onClick={() => setMessage(null)} className="p-0.5 rounded hover:bg-black/5" aria-label="Fechar aviso"><X className="w-4 h-4" /></button>
         </div>
       )}
 
@@ -458,16 +522,18 @@ export default function MenuPage() {
           <div className="space-y-1 max-h-[50vh] overflow-y-auto pr-1">
             {loading ? <div className="flex items-center justify-center py-8 text-slate-400"><Loader2 className="w-5 h-5 animate-spin" /></div>
               : categories.length === 0 ? <p className="text-xs text-slate-400 py-4 text-center">Nenhuma categoria.<br/>Clique em + para criar.</p>
-              : categories.map(cat => (
+              : categories.map((cat, position) => (
                 <div key={cat.id} className="group relative">
                   <button onClick={() => setSelectedCategoryId(cat.id)} className={`w-full text-left px-3 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 ${selectedCategoryId === cat.id ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'text-slate-600 hover:bg-slate-100 border border-transparent'}`}>
                     <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition-transform ${selectedCategoryId === cat.id ? 'rotate-90' : ''}`} />
                     <span className="truncate flex-1">{cat.name}</span>
                     <span className="text-xs text-slate-400 shrink-0">{cat.itemCount || 0}</span>
                   </button>
-                  <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-0.5 bg-white rounded-lg shadow-sm border border-slate-200 px-1 py-0.5">
-                    <button onClick={(e) => { e.stopPropagation(); openEditCategory(cat); }} className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"><Edit3 className="w-3.5 h-3.5" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); handleDeleteCategory(cat); }} disabled={deletingId === cat.id} className="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50">
+                  <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex group-focus-within:flex items-center gap-0.5 bg-white rounded-lg shadow-sm border border-slate-200 px-1 py-0.5">
+                    <button onClick={(e) => { e.stopPropagation(); moveCategory(position, -1); }} disabled={position === 0 || reordering} title="Mover para cima" aria-label="Mover categoria para cima" className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-30"><ArrowUp className="w-3.5 h-3.5" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); moveCategory(position, 1); }} disabled={position === categories.length - 1 || reordering} title="Mover para baixo" aria-label="Mover categoria para baixo" className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-30"><ArrowDown className="w-3.5 h-3.5" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); openEditCategory(cat); }} title="Editar categoria" aria-label="Editar categoria" className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"><Edit3 className="w-3.5 h-3.5" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); handleDeleteCategory(cat); }} disabled={deletingId === cat.id} title="Remover categoria" aria-label="Remover categoria" className="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50">
                       {deletingId === cat.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}</button>
                   </div>
                 </div>
@@ -491,25 +557,53 @@ export default function MenuPage() {
               </button>
             </div>
 
+            {/* Busca + resumo */}
+            <div className="px-6 py-3 border-b border-slate-100 flex flex-wrap items-center gap-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por nome, descrição ou código"
+                  aria-label="Buscar itens" className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-400 focus:outline-none" />
+              </div>
+              {unavailableCount > 0 && (
+                <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-red-50 text-red-600 border border-red-100">{unavailableCount} esgotado{unavailableCount > 1 ? 's' : ''}</span>
+              )}
+              {!canReorderItems && items.length > 1 && (
+                <span className="text-xs text-slate-400">{searchTerm ? 'Limpe a busca para reordenar.' : 'Selecione uma categoria para reordenar os itens.'}</span>
+              )}
+            </div>
+
             {loading ? <div className="flex items-center justify-center py-20 text-slate-400"><Loader2 className="w-8 h-8 animate-spin mr-3" /><span>Carregando...</span></div>
               : items.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 text-slate-400">
                   <PackageOpen className="w-16 h-16 mb-4 text-slate-300" />
                   <p className="font-bold text-lg text-slate-500 mb-1">{selectedCategory ? 'Categoria vazia' : 'Cardápio vazio'}</p>
-                  <p className="text-sm mb-6">{selectedCategory ? 'Clique em "Novo Item" para adicionar.' : 'Selecione uma categoria e adicione itens.'}</p>
+                  <p className="text-sm mb-6">{categories.length === 0 ? 'Crie uma categoria na lista ao lado para começar.' : 'Clique em "Novo Item" para adicionar.'}</p>
+                </div>
+              ) : visibleItems.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+                  <Search className="w-10 h-10 mb-3 text-slate-300" />
+                  <p className="font-bold text-slate-500">Nenhum item encontrado para “{search.trim()}”.</p>
+                  <button onClick={() => setSearch('')} className="mt-3 text-sm font-bold text-indigo-600 hover:underline">Limpar busca</button>
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100">
-                  {items.map(item => (
-                    <div key={item.id} className="flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors group">
+                  {visibleItems.map((item, position) => (
+                    <div key={item.id} className={`flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors group ${item.status !== 'AVAILABLE' ? 'bg-slate-50/60' : ''}`}>
                       <div className="flex items-center gap-4 min-w-0 flex-1">
-                        <div className="w-12 h-12 rounded-xl bg-indigo-50 flex items-center justify-center shrink-0 overflow-hidden">
-                          {item.imageUrl ? <img src={item.imageUrl} alt="" className="w-full h-full object-cover" /> : <Utensils className="w-6 h-6 text-indigo-400" />}
+                        {canReorderItems && (
+                          <div className="flex flex-col -my-2">
+                            <button onClick={() => moveItem(position, -1)} disabled={position === 0 || reordering} title="Mover para cima" aria-label="Mover item para cima" className="p-0.5 rounded text-slate-300 hover:text-indigo-600 disabled:opacity-30"><ArrowUp className="w-4 h-4" /></button>
+                            <button onClick={() => moveItem(position, 1)} disabled={position === visibleItems.length - 1 || reordering} title="Mover para baixo" aria-label="Mover item para baixo" className="p-0.5 rounded text-slate-300 hover:text-indigo-600 disabled:opacity-30"><ArrowDown className="w-4 h-4" /></button>
+                          </div>
+                        )}
+                        <div className={`w-12 h-12 rounded-xl bg-indigo-50 flex items-center justify-center shrink-0 overflow-hidden ${item.status !== 'AVAILABLE' ? 'grayscale opacity-60' : ''}`}>
+                          {item.imageUrl
+                            ? <img src={item.imageUrl} alt="" className="w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none'; }} />
+                            : <Utensils className="w-6 h-6 text-indigo-400" />}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <p className="font-bold text-slate-800 truncate">{item.name}</p>
-                            {item.status !== 'AVAILABLE' && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 font-bold shrink-0">{item.status}</span>}
+                            <p className={`font-bold truncate ${item.status !== 'AVAILABLE' ? 'text-slate-400' : 'text-slate-800'}`}>{item.name}</p>
                           </div>
                           <div className="flex items-center gap-3 text-xs text-slate-400 mt-0.5">
                             {item.description && <span className="truncate max-w-[200px]">{item.description}</span>}
@@ -519,13 +613,21 @@ export default function MenuPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-4 shrink-0 ml-4">
+                        <button onClick={() => handleToggleItemStatus(item)} disabled={togglingId === item.id}
+                          title={item.status === 'AVAILABLE' ? 'Marcar como esgotado' : 'Marcar como disponível'}
+                          aria-pressed={item.status !== 'AVAILABLE'}
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border transition-colors disabled:opacity-60 ${item.status === 'AVAILABLE' ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'}`}>
+                          {togglingId === item.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <span className={`w-2 h-2 rounded-full ${item.status === 'AVAILABLE' ? 'bg-green-500' : 'bg-red-500'}`} />}
+                          {item.status === 'AVAILABLE' ? 'Disponível' : 'Esgotado'}
+                        </button>
                         <div className="text-right">
                           <span className="text-lg font-extrabold text-indigo-600 tabular-nums">{formatCurrency(item.price)}</span>
                           {item.originalPrice && item.originalPrice !== item.price && <span className="block text-xs text-slate-400 line-through">{formatCurrency(item.originalPrice)}</span>}
                         </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                          <button onClick={() => openEditItem(item)} className="p-2 rounded-xl text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Editar item"><Edit3 className="w-4 h-4" /></button>
-                          <button onClick={() => handleDeleteItem(item)} disabled={deletingId === item.id} className="p-2 rounded-xl text-slate-300 hover:text-red-600 hover:bg-red-50 disabled:opacity-50" title="Remover item">
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all">
+                          <button onClick={() => openEditItem(item)} className="p-2 rounded-xl text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Editar item" aria-label="Editar item"><Edit3 className="w-4 h-4" /></button>
+                          <button onClick={() => openDuplicateItem(item)} className="p-2 rounded-xl text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Duplicar item" aria-label="Duplicar item"><Copy className="w-4 h-4" /></button>
+                          <button onClick={() => handleDeleteItem(item)} disabled={deletingId === item.id} className="p-2 rounded-xl text-slate-300 hover:text-red-600 hover:bg-red-50 disabled:opacity-50" title="Remover item" aria-label="Remover item">
                             {deletingId === item.id ? <Loader2 className="w-4 h-4 animate-spin text-red-400" /> : <Trash2 className="w-4 h-4" />}</button>
                         </div>
                       </div>
@@ -545,7 +647,7 @@ export default function MenuPage() {
             <form onSubmit={handleSaveCategory} className="space-y-4">
               <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Nome *</label><input type="text" value={catForm.name} onChange={e => setCatForm({ ...catForm, name: e.target.value })} placeholder="Ex: Pizzas" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700" autoFocus /></div>
               <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Descrição</label><input type="text" value={catForm.description} onChange={e => setCatForm({ ...catForm, description: e.target.value })} placeholder="Breve descrição" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700" /></div>
-              <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Tag className="w-3.5 h-3.5 inline mr-1" />Código Externo</label><input type="text" value={catForm.externalCode} onChange={e => setCatForm({ ...catForm, externalCode: e.target.value })} placeholder="PDV Code" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-mono text-sm text-slate-700" /></div>
+              <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Tag className="w-3.5 h-3.5 inline mr-1" />Código Externo</label><input type="text" value={catForm.externalCode} onChange={e => setCatForm({ ...catForm, externalCode: e.target.value })} placeholder="Gerado automaticamente" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-mono text-sm text-slate-700" /></div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setShowCatModal(false)} className="flex-1 py-2.5 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
                 <button type="submit" disabled={catSaving} className={`flex-1 py-2.5 font-bold rounded-xl flex items-center justify-center gap-2 ${catSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'}`}>
@@ -566,7 +668,7 @@ export default function MenuPage() {
               <div className="flex items-center justify-between px-6 pt-5 pb-2">
                 <h3 className="font-bold text-lg text-slate-800">
                   {editingItem ? `Editar: ${editingItem.name}` : 'Novo Item'}
-                  <span className="text-sm font-normal text-slate-400 ml-2">· {selectedCategory?.name || 'Sem categoria'}</span>
+                  <span className="text-sm font-normal text-slate-400 ml-2">· {formCategory?.name || 'Sem categoria'}</span>
                 </h3>
                 <button onClick={() => setShowItemModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400"><X className="w-5 h-5" /></button>
               </div>
@@ -589,15 +691,30 @@ export default function MenuPage() {
                 <form onSubmit={handleSaveItem} className="space-y-4">
                   <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Nome *</label><input type="text" value={itemForm.name} onChange={e => setItemForm({ ...itemForm, name: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium" placeholder="Nome do produto" autoFocus /></div>
                   <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Descrição</label><textarea value={itemForm.description} onChange={e => setItemForm({ ...itemForm, description: e.target.value })} rows={2} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none resize-none" /></div>
+                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Layers className="w-3.5 h-3.5 inline mr-1" />Categoria *</label>
+                    <select value={itemForm.categoryId ?? ''} onChange={e => setItemForm({ ...itemForm, categoryId: Number(e.target.value) })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                      {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+                    </select>
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Tag className="w-3.5 h-3.5 inline mr-1" />Código Externo</label><input type="text" value={itemForm.externalCode} onChange={e => setItemForm({ ...itemForm, externalCode: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm" /></div>
+                    <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Tag className="w-3.5 h-3.5 inline mr-1" />Código Externo</label><input type="text" value={itemForm.externalCode} onChange={e => setItemForm({ ...itemForm, externalCode: e.target.value })} placeholder="Gerado automaticamente" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm" /></div>
                     <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Status</label><select value={itemForm.status} onChange={e => setItemForm({ ...itemForm, status: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"><option value="AVAILABLE">Disponível</option><option value="UNAVAILABLE">Indisponível</option></select></div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Preço (R$) *</label><input type="number" step="0.01" min="0" value={itemForm.price} onChange={e => setItemForm({ ...itemForm, price: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold" /></div>
                     <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Preço Original</label><input type="number" step="0.01" min="0" value={itemForm.originalPrice} onChange={e => setItemForm({ ...itemForm, originalPrice: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold" /></div>
                   </div>
-                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Image className="w-3.5 h-3.5 inline mr-1" />URL da Imagem</label><input type="url" value={itemForm.imageUrl} onChange={e => setItemForm({ ...itemForm, imageUrl: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm" /></div>
+                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Image className="w-3.5 h-3.5 inline mr-1" />URL da Imagem</label>
+                    <div className="flex items-start gap-3">
+                      <input type="url" value={itemForm.imageUrl} onChange={e => setItemForm({ ...itemForm, imageUrl: e.target.value })} placeholder="https://..." className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm" />
+                      <div className="w-16 h-16 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
+                        {itemForm.imageUrl.trim() && !imageFailed
+                          ? <img src={itemForm.imageUrl.trim()} alt="Prévia" className="w-full h-full object-cover" onError={() => setImageFailed(true)} />
+                          : <Image className="w-6 h-6 text-slate-300" />}
+                      </div>
+                    </div>
+                    {imageFailed && itemForm.imageUrl.trim() && <p className="text-xs text-red-500 mt-1">Não foi possível carregar esta imagem. Confira se o link abre a foto diretamente.</p>}
+                  </div>
                   <div className="flex gap-3 pt-2">
                     <button type="button" onClick={() => setShowItemModal(false)} className="flex-1 py-2.5 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
                     <button type="submit" disabled={itemSaving} className={`flex-1 py-2.5 font-bold rounded-xl flex items-center justify-center gap-2 ${itemSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'}`}>
