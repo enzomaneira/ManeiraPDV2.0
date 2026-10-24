@@ -905,12 +905,40 @@ def notify_merchant_update(
     )
 
 
+def _missing_menu_references(merchant: dict) -> str | None:
+    """Confere se todo id referenciado no cardápio existe na lista correspondente."""
+    def ids(name):
+        return {entry.get("id") for entry in merchant.get(name) or [] if isinstance(entry, dict)}
+
+    known = {name: ids(name) for name in ("categories", "itemOffers", "items", "optionGroups", "availabilities")}
+    checks = [
+        ("menus", "categoryId", "categories"),
+        ("categories", "itemOfferId", "itemOffers"),
+        ("categories", "availabilityId", "availabilities"),
+        ("itemOffers", "itemId", "items"),
+        ("itemOffers", "optionGroupsId", "optionGroups"),
+        ("itemOffers", "availabilityId", "availabilities"),
+    ]
+    for source, field, target in checks:
+        for entry in merchant.get(source) or []:
+            values = entry.get(field) if isinstance(entry, dict) else None
+            values = values if isinstance(values, list) else ([values] if values else [])
+            missing = [value for value in values if value not in known[target]]
+            if missing:
+                return f"{source}.{field} referencia {target} inexistente: {missing[0]}"
+    for group in merchant.get("optionGroups") or []:
+        for option in group.get("options") or []:
+            if option.get("itemId") not in known["items"]:
+                return f"optionGroups.options.itemId referencia item inexistente: {option.get('itemId')}"
+    return None
+
+
 def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | None]:
     """Envia o cardápio completo pelo fluxo de menu push da Keeta.
 
-    O Merchant recebido é normalizado para o schema estrito do push. O
-    primeiro Menu é extraído e enviado como `entityType=MENU`, com todas as
-    entidades do cardápio no nível raiz do objeto Menu.
+    O Merchant recebido é normalizado para o schema estrito do push e enviado
+    como `entityType=MERCHANT` (único entityType documentado), com o
+    cardápio completo em listas irmãs.
     """
     if not isinstance(merchant, dict):
         return False, "merchant precisa ser um objeto JSON"
@@ -1053,25 +1081,22 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     full_merchant["itemOffers"] = item_offers
     full_merchant["optionGroups"] = option_groups or []
 
-    # O fluxo de menu push exige um objeto MENU, não o Merchant completo.
-    # Mantemos o Merchant normalizado acima para preservar a mesma construção
-    # usada pelo fluxo de GET /merchant, mas enviamos somente o primeiro menu
-    # com as entidades relacionadas achatadas no próprio objeto Menu.
-    first_menu = menus[0]
-    if not isinstance(first_menu, dict):
-        return False, "menus[0] precisa ser um objeto"
+    full_merchant["availabilities"] = merchant.get("availabilities") or []
 
-    menu_payload = dict(first_menu)
-    menu_payload.setdefault("status", "AVAILABLE")
-    menu_payload["categories"] = categories
-    menu_payload["items"] = items
-    menu_payload["itemOffers"] = item_offers
-    menu_payload["optionGroups"] = option_groups or []
+    # A documentação do merchantUpdate só define entityType=MERCHANT, com
+    # menus, categories, items, itemOffers, optionGroups e availabilities
+    # como listas irmãs. Enviar entityType=MENU com essas listas dentro do
+    # Menu faz a Keeta responder "MENU_UPDATE failed: [400] Parameter Error"
+    # (o Menu também perdia as availabilities que categorias e ofertas
+    # referenciam).
+    reference_error = _missing_menu_references(full_merchant)
+    if reference_error:
+        return False, reference_error
 
     success, error = notify_merchant_update(
         merchant_id,
-        entity_type="MENU",
-        updated_objects=[menu_payload],
+        entity_type="MERCHANT",
+        updated_objects=[full_merchant],
     )
     if not success:
         return False, f"MENU_PUSH: {error}"
