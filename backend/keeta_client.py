@@ -905,6 +905,23 @@ def notify_merchant_update(
     )
 
 
+def normalize_availability(availability: dict) -> dict:
+    """
+    A Keeta aceita uma availability por intervalo de datas (startDate/endDate)
+    OU por horários semanais (hours), nunca as duas juntas ("Combination of
+    1 and 2 are not supported"). Com horários, as datas são descartadas.
+    """
+    if not isinstance(availability, dict):
+        return availability
+    if availability.get("hours"):
+        return {"id": availability.get("id"), "hours": availability["hours"]}
+    return {
+        key: availability[key]
+        for key in ("id", "startDate", "endDate")
+        if availability.get(key) is not None
+    }
+
+
 def _missing_menu_references(merchant: dict) -> str | None:
     """Confere se todo id referenciado no cardápio existe na lista correspondente."""
     def ids(name):
@@ -1081,7 +1098,9 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     full_merchant["itemOffers"] = item_offers
     full_merchant["optionGroups"] = option_groups or []
 
-    full_merchant["availabilities"] = merchant.get("availabilities") or []
+    full_merchant["availabilities"] = [
+        normalize_availability(availability) for availability in merchant.get("availabilities") or []
+    ]
 
     # A documentação do merchantUpdate só define entityType=MERCHANT, com
     # menus, categories, items, itemOffers, optionGroups e availabilities

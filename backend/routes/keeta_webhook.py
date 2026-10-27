@@ -636,12 +636,12 @@ def _build_menu_response(store_id: int):
                     "endTime":   h.end_time,
                 },
             })
-        availabilities.append({
+        availabilities.append(keeta_client.normalize_availability({
             "id":        av_id,
             "startDate": av.start_date,
             "endDate":   av.end_date,
             "hours":     hours_list,
-        })
+        }))
 
     # --- 7. Preenche relacionamentos nos itemOffers ---
     for offer in item_offers:
