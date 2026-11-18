@@ -20,7 +20,7 @@ export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
         <nav className="p-4 space-y-2">
           <SidebarItem icon={<ShoppingBag />} label="Pedidos" id="orders" activeTab={activeTab} onClick={setActiveTab} />
           <SidebarItem icon={<History />} label="Histórico" id="history" activeTab={activeTab} onClick={setActiveTab} />
-          <SidebarItem icon={<Utensils />} label="Menu" id="menu" activeTab={activeTab} onClick={setActiveTab} />
+          <SidebarItem icon={<Utensils />} label="Cardápio" id="menu" activeTab={activeTab} onClick={setActiveTab} />
           <SidebarItem icon={<Settings />} label="Configurações" id="settings" activeTab={activeTab} onClick={setActiveTab} />
         </nav>
       </div>

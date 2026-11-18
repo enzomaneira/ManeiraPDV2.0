@@ -1,1254 +1,250 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { CheckCircle, AlertCircle, X, Send, RefreshCw, Utensils, ListPlus, Save, Loader2, Info } from 'lucide-react';
 import { categoryService, menuService, optionGroupService, availabilityService, keetaSyncService } from '../services/api';
-import {
-  Plus, Trash2, Utensils, Loader2, AlertCircle, CheckCircle,
-  PackageOpen, FolderPlus, Edit3, ChevronRight, Tag, Image, Layers,
-  X, Save, FolderOpen, Clock, ListPlus, CalendarDays, RefreshCw, Send, Link, Unlink,
-  Search, Copy, ArrowUp, ArrowDown
-} from 'lucide-react';
-import { formatCurrency } from '../utils/formatters';
+import ProductsTab from '../components/menu/ProductsTab';
+import ComplementsTab from '../components/menu/ComplementsTab';
+import ProductEditor from '../components/menu/ProductEditor';
+import GroupEditor from '../components/menu/GroupEditor';
+import { inputClass, labelClass, getErrorMessage, isProduct } from '../components/menu/menuUtils';
 
-// ===== Disponibilidade: horários de Brasília ↔ UTC =====
-// A Keeta só usa os horários semanais (datas são ignoradas) e eles ficam em
-// UTC+0. O lojista digita no horário de Brasília (UTC−3, sem horário de verão
-// desde 2019) e a conversão é feita aqui.
-const WEEK_DAYS = [
-  ['MONDAY', 'Seg'], ['TUESDAY', 'Ter'], ['WEDNESDAY', 'Qua'], ['THURSDAY', 'Qui'],
-  ['FRIDAY', 'Sex'], ['SATURDAY', 'Sáb'], ['SUNDAY', 'Dom'],
-];
-const DAY_CODES = WEEK_DAYS.map(([code]) => code);
-const DAY_LABELS = Object.fromEntries(WEEK_DAYS);
-const BRASILIA_OFFSET_MINUTES = 180;
-const MINUTES_PER_DAY = 1440;
-const EMPTY_AVAIL_FORM = { name: '', days: [...DAY_CODES], start: '11:00', end: '23:00' };
-
-const toMinutes = (time) => { const [h, m] = String(time).split(':').map(Number); return h * 60 + m; };
-const formatMinutes = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-
-// Converte "dias + início/fim em Brasília" para as linhas em UTC que o backend
-// guarda. Um intervalo que passa da meia-noite (em Brasília ou em UTC) vira duas
-// linhas, uma em cada dia, porque cada linha precisa ter início antes do fim.
-function brasiliaRangeToUtcHours(days, start, end) {
-  const hours = [];
-  let startMin = toMinutes(start) + BRASILIA_OFFSET_MINUTES;
-  let endMin = toMinutes(end) + BRASILIA_OFFSET_MINUTES;
-  if (endMin <= startMin) endMin += MINUTES_PER_DAY;
-  days.forEach(day => {
-    const dayIndex = DAY_CODES.indexOf(day);
-    for (let offset = 0; offset < 3; offset++) {
-      const dayStart = offset * MINUTES_PER_DAY;
-      const segStart = Math.max(startMin, dayStart) - dayStart;
-      const segEnd = Math.min(endMin, dayStart + MINUTES_PER_DAY) - dayStart;
-      if (segEnd <= segStart) continue;
-      const startTime = formatMinutes(segStart);
-      const endTime = segEnd >= MINUTES_PER_DAY ? '23:59' : formatMinutes(segEnd);
-      if (endTime <= startTime) continue;
-      hours.push({ dayOfWeek: DAY_CODES[(dayIndex + offset) % 7], startTime: `${startTime}:00.000Z`, endTime: `${endTime}:00.000Z` });
-    }
-  });
-  return hours;
-}
-
-// Converte uma linha guardada em UTC para Brasília: { dayIndex, start, end } em minutos.
-function utcHourToBrasilia(hour) {
-  let dayIndex = DAY_CODES.indexOf(hour.dayOfWeek);
-  const endUtc = hour.endTime.slice(0, 5) === '23:59' ? MINUTES_PER_DAY : toMinutes(hour.endTime.slice(0, 5));
-  let start = toMinutes(hour.startTime.slice(0, 5)) - BRASILIA_OFFSET_MINUTES;
-  let end = endUtc - BRASILIA_OFFSET_MINUTES;
-  if (start < 0) { dayIndex = (dayIndex + 6) % 7; start += MINUTES_PER_DAY; end += MINUTES_PER_DAY; }
-  return { dayIndex, start, end };
-}
-
-// Rótulos em Brasília (ex.: "Sex 18:00–23:00"), juntando os pedaços que a
-// conversão para UTC separou na meia-noite.
-function brasiliaLabels(hours) {
-  const ranges = (hours || []).map(utcHourToBrasilia).sort((a, b) => a.dayIndex - b.dayIndex || a.start - b.start);
-  const merged = [];
-  ranges.forEach(range => {
-    const last = merged[merged.length - 1];
-    if (last && last.dayIndex === range.dayIndex && last.end === range.start) last.end = range.end;
-    else merged.push({ ...range });
-  });
-  return merged.map(({ dayIndex, start, end }) => {
-    const endLabel = end === MINUTES_PER_DAY ? '24:00' : formatMinutes(end % MINUTES_PER_DAY);
-    return `${DAY_LABELS[DAY_CODES[dayIndex]]} ${formatMinutes(start)}–${endLabel}`;
-  });
-}
-
-// Escolhe o item que a opção representa. A Keeta exige um item real para toda
-// opção; deixando em "criar automaticamente", o backend cria um complemento com
-// o nome e o preço da opção (ele não aparece como produto no cardápio).
-function OptionItemSelect({ value, choices, onChange }) {
-  return (
-    <div>
-      <select value={value} onChange={e => onChange(e.target.value)} aria-label="Item da opção"
-        className="w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg">
-        <option value="">Criar complemento automaticamente (nome e preço desta opção)</option>
-        {choices.map(item => (
-          <option key={item.id} value={item.id}>
-            {item.isOptionItem ? 'Complemento' : 'Produto'}: {item.name} · {formatCurrency(item.price)}{item.status !== 'AVAILABLE' ? ' (esgotado)' : ''}
-          </option>
-        ))}
-      </select>
-      <p className="text-[10px] text-slate-400 mt-1">Esgotar o item escolhido também esgota esta opção na Keeta.</p>
-    </div>
-  );
-}
-
+// Tela de Cardápio organizada como nos gestores de cardápio de delivery
+// (iFood, Saipos, Omie…): aba Produtos (categorias com seus produtos) e aba
+// Complementos (grupos de opções reutilizáveis).
 export default function MenuPage() {
+  const [tab, setTab] = useState('products');
   const [categories, setCategories] = useState([]);
-  // Todos os itens da loja (produtos e complementos). A lista da tela é filtrada
-  // pela categoria escolhida; os seletores de opção precisam da loja inteira.
-  const [allItems, setAllItems] = useState([]);
+  const [items, setItems] = useState([]);
   const [optionGroups, setOptionGroups] = useState([]);
   const [availabilities, setAvailabilities] = useState([]);
-  const [selectedCategoryId, setSelectedCategoryId] = useState(null);
-  const items = selectedCategoryId
-    ? allItems.filter(item => item.categoryId === selectedCategoryId).sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
-    : allItems;
-  // Atualiza itens da lista visível sem perder os demais.
-  const setItems = (update) => setAllItems(prev => {
-    const next = typeof update === 'function' ? update(items) : update;
-    const byId = new Map(next.map(item => [item.id, item]));
-    return prev.map(item => byId.get(item.id) || item);
-  });
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState(null);
-  const [syncingMenu, setSyncingMenu] = useState(false);
-
-  // --- Modal de categoria ---
-  const [showCatModal, setShowCatModal] = useState(false);
-  const [catForm, setCatForm] = useState({ name: '', description: '', externalCode: '' });
-  const [catSaving, setCatSaving] = useState(false);
-  const [editingCategory, setEditingCategory] = useState(null);
-
-  // --- Modal de item (com abas) ---
-  const [showItemModal, setShowItemModal] = useState(false);
-  const [itemTab, setItemTab] = useState('info'); // 'info' | 'options' | 'availability'
-  const [itemForm, setItemForm] = useState({
-    name: '', description: '', externalCode: '', price: '', originalPrice: '',
-    status: 'AVAILABLE', imageUrl: ''
-  });
-  const [itemSaving, setItemSaving] = useState(false);
-  const [editingItem, setEditingItem] = useState(null);
-
-  // --- OptionGroup inline (dentro do modal de item) ---
-  const [ogInlineForm, setOgInlineForm] = useState({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
-  const [ogInlineSaving, setOgInlineSaving] = useState(false);
-  const [ogInlineEditing, setOgInlineEditing] = useState(null); // null=criando, number=editando grupo
-  // --- Option inline na aba ---
-  const [optInlineTarget, setOptInlineTarget] = useState(null); // {groupId, optionId} ou null
-  const [optInlineForm, setOptInlineForm] = useState({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
-  const [optInlineSaving, setOptInlineSaving] = useState(false);
-  // --- Expansão de grupos na aba ---
-  const [expandedOGs, setExpandedOGs] = useState({});
-  // --- Availability rápido ---
-  const [availForm, setAvailForm] = useState(EMPTY_AVAIL_FORM);
-  const [availSaving, setAvailSaving] = useState(false);
-
-  const [deletingId, setDeletingId] = useState(null);
-  const [togglingId, setTogglingId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
   const [reordering, setReordering] = useState(false);
-  const [search, setSearch] = useState('');
-  const [imageFailed, setImageFailed] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [message, setMessage] = useState(null);
+  // Modais
+  const [productEditor, setProductEditor] = useState(null); // { id } | { draft }
+  const [groupEditor, setGroupEditor] = useState(null);     // { group, presetProductIds }
+  const [categoryEditor, setCategoryEditor] = useState(null); // { category } | {}
+  const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
+  const [categorySaving, setCategorySaving] = useState(false);
 
-  // --- Modal gerenciador de OptionGroups (independente) ---
-  const [showOGManager, setShowOGManager] = useState(false);
-  const [ogEditingId, setOgEditingId] = useState(null);  // null = novo, number = editando
-  const [ogManagerForm, setOgManagerForm] = useState({
-    name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE'
-  });
-  const [ogManagerSaving, setOgManagerSaving] = useState(false);
-  // Options dentro do gerenciador
-  const [optionEditTarget, setOptionEditTarget] = useState(null);  // {groupId, optionId} ou null=novo
-  const [optionManagerForm, setOptionManagerForm] = useState({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
-  const [optionManagerSaving, setOptionManagerSaving] = useState(false);
-
-  // ===== Carrega dados =====
-  const getErrorMessage = (error, fallback) => error.response?.data?.error || fallback;
-  const messageTimer = useRef(null);
-  // Sucesso some sozinho; erro fica até o usuário fechar.
+  const timer = useRef(null);
   const showMessage = (type, text) => {
-    clearTimeout(messageTimer.current);
+    clearTimeout(timer.current);
     setMessage({ type, text });
-    if (type === 'success') messageTimer.current = setTimeout(() => setMessage(null), 3000);
+    if (type === 'success') timer.current = setTimeout(() => setMessage(null), 3500);
   };
-  const fetchData = async (showSpinner = true) => {
-    if (showSpinner) setLoading(true);
+
+  const refresh = async () => {
     try {
-      const [catRes, itemRes, ogRes, avRes] = await Promise.all([
-        categoryService.getAll(),
-        menuService.getAll(),
-        optionGroupService.getAll(),
-        availabilityService.getAll(),
+      const [cats, menu, groups, avails] = await Promise.all([
+        categoryService.getAll(), menuService.getAll(), optionGroupService.getAll(), availabilityService.getAll(),
       ]);
-      setCategories(catRes.data || []);
-      setAllItems(itemRes.data || []);
-      setOptionGroups(ogRes.data || []);
-      setAvailabilities(avRes.data || []);
+      setCategories((cats.data || []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)));
+      setItems(menu.data || []);
+      setOptionGroups(groups.data || []);
+      setAvailabilities(avails.data || []);
     } catch (error) {
-      console.error('Erro ao carregar cardápio:', error);
-      showMessage('error', getErrorMessage(error, 'Erro ao carregar dados.'));
+      showMessage('error', getErrorMessage(error, 'Não foi possível carregar o cardápio.'));
     } finally {
       setLoading(false);
     }
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { refresh(); }, []);
 
-  useEffect(() => { fetchData(); }, []);
-  useEffect(() => { setImageFailed(false); }, [itemForm.imageUrl]);
-
-  // ===== Sync Keeta =====
-  const handleSyncMenu = async () => {
-    setSyncingMenu(true); setMessage(null);
+  // ===== Keeta =====
+  const handleSync = async () => {
+    setSyncing(true);
     try {
-      const res = await keetaSyncService.syncMenu();
-      showMessage('success', res.data?.message || 'Menu enviado para sincronização!');
+      const { data } = await keetaSyncService.syncMenu();
+      showMessage('success', data?.message || 'Cardápio enviado para a Keeta.');
     } catch (error) {
-      showMessage('error', error.response?.data?.error || 'Erro ao sincronizar com a Keeta.');
-    } finally { setSyncingMenu(false); }
+      showMessage('error', getErrorMessage(error, 'Não foi possível enviar para a Keeta.'));
+    } finally { setSyncing(false); }
   };
 
-  // ===== Categoria =====
-  const openNewCategory = () => { setEditingCategory(null); setCatForm({ name: '', description: '', externalCode: '' }); setShowCatModal(true); };
-  const openEditCategory = (cat) => { setEditingCategory(cat); setCatForm({ name: cat.name, description: cat.description || '', externalCode: cat.externalCode }); setShowCatModal(true); };
-  const handleSaveCategory = async (e) => {
-    e.preventDefault(); const name = catForm.name.trim(); if (!name) { showMessage('error', 'Nome da categoria é obrigatório.'); return; }
-    setCatSaving(true);
+  // ===== Categorias =====
+  const openCategory = (category) => {
+    setCategoryForm({ name: category?.name || '', description: category?.description || '' });
+    setCategoryEditor({ category });
+  };
+  const saveCategory = async (e) => {
+    e.preventDefault();
+    if (!categoryForm.name.trim()) { showMessage('error', 'Dê um nome à categoria.'); return; }
+    setCategorySaving(true);
     try {
-      // Código em branco: o backend gera um código único.
-      const payload = { name, description: catForm.description.trim(), externalCode: catForm.externalCode.trim() };
-      if (editingCategory) await categoryService.update(editingCategory.id, payload);
+      const payload = { name: categoryForm.name.trim(), description: categoryForm.description.trim() };
+      if (categoryEditor.category) await categoryService.update(categoryEditor.category.id, payload);
       else await categoryService.create(payload);
-      setShowCatModal(false); fetchData(false);
-      showMessage('success', editingCategory ? 'Categoria atualizada.' : 'Categoria criada.');
-    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar categoria.')); }
-    finally { setCatSaving(false); }
-  };
-  const handleDeleteCategory = async (cat) => {
-    const count = cat.itemCount || 0;
-    const warning = count > 0
-      ? `Remover "${cat.name}"?\n\nOs ${count} ${count === 1 ? 'item' : 'itens'} desta categoria também serão excluídos. Essa ação não pode ser desfeita.`
-      : `Remover "${cat.name}"?`;
-    if (!confirm(warning)) return;
-    setDeletingId(cat.id);
-    try { await categoryService.delete(cat.id); if (selectedCategoryId === cat.id) setSelectedCategoryId(null); fetchData(); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover.')); }
-    finally { setDeletingId(null); }
-  };
-
-  // ===== Item =====
-  const openNewItem = () => {
-    if (categories.length === 0) { showMessage('error', 'Crie uma categoria antes de adicionar itens.'); return; }
-    setEditingItem(null); setItemTab('info');
-    setItemForm({ name: '', description: '', externalCode: '', price: '', originalPrice: '', status: 'AVAILABLE', imageUrl: '', categoryId: selectedCategoryId || categories[0].id, isOptionItem: false });
-    setShowItemModal(true);
-  };
-  const openEditItem = (item) => {
-    setEditingItem(item); setItemTab('info');
-    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId, isOptionItem: Boolean(item.isOptionItem) });
-    setShowItemModal(true);
-  };
-  // Abre o formulário de novo item já preenchido com os dados de outro (código fica em branco para gerar um novo).
-  const openDuplicateItem = (item) => {
-    setEditingItem(null); setItemTab('info');
-    setItemForm({ name: `${item.name} (cópia)`, description: item.description || '', externalCode: '', price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId, isOptionItem: Boolean(item.isOptionItem) });
-    setShowItemModal(true);
-  };
-
-  // Liga/desliga o item direto na lista (ex.: esgotou durante o serviço), sem recarregar a página.
-  const handleToggleItemStatus = async (item) => {
-    const status = item.status === 'AVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE';
-    setTogglingId(item.id);
-    setItems(prev => prev.map(i => (i.id === item.id ? { ...i, status } : i)));
-    try {
-      await menuService.update(item.id, { status });
-      showMessage('success', status === 'AVAILABLE' ? `"${item.name}" disponível novamente.` : `"${item.name}" marcado como esgotado.`);
+      await refresh();
+      setCategoryEditor(null);
+      showMessage('success', categoryEditor.category ? 'Categoria atualizada.' : 'Categoria criada. Agora adicione os produtos dela.');
     } catch (error) {
-      setItems(prev => prev.map(i => (i.id === item.id ? { ...i, status: item.status } : i)));
-      showMessage('error', getErrorMessage(error, 'Não foi possível alterar o status.'));
-    } finally { setTogglingId(null); }
+      showMessage('error', getErrorMessage(error, 'Não foi possível salvar a categoria.'));
+    } finally { setCategorySaving(false); }
+  };
+  const deleteCategory = async (category, count) => {
+    const text = count > 0
+      ? `Excluir a categoria "${category.name}"?\n\nOs ${count} ${count === 1 ? 'produto' : 'produtos'} dela também serão excluídos. Não dá para desfazer.`
+      : `Excluir a categoria "${category.name}"?`;
+    if (!confirm(text)) return;
+    try { await categoryService.delete(category.id); await refresh(); showMessage('success', 'Categoria excluída.'); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Não foi possível excluir a categoria.')); }
+  };
+  const toggleCategory = async (category) => {
+    const status = category.status === 'AVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE';
+    setBusyId(`cat-${category.id}`);
+    try {
+      await categoryService.update(category.id, { status });
+      await refresh();
+      showMessage('success', status === 'AVAILABLE' ? `"${category.name}" voltou para o cardápio.` : `"${category.name}" pausada: os produtos dela saem da Keeta.`);
+    } catch (error) { showMessage('error', getErrorMessage(error, 'Não foi possível alterar a categoria.')); }
+    finally { setBusyId(null); }
   };
 
-  // Troca a posição de um registro com o vizinho e salva a nova ordem (index = posição na lista).
-  const moveInList = async (list, position, direction, update, setList) => {
+  // Troca a posição com o vizinho e salva a nova ordem (index = posição na lista).
+  const move = async (list, position, direction, update) => {
     const target = position + direction;
     if (target < 0 || target >= list.length) return;
     const reordered = [...list];
     [reordered[position], reordered[target]] = [reordered[target], reordered[position]];
-    const changed = reordered.filter((entry, index) => entry.index !== index);
-    setList(reordered.map((entry, index) => ({ ...entry, index })));
     setReordering(true);
     try {
-      await Promise.all(changed.map(entry => update(entry.id, { index: reordered.indexOf(entry) })));
+      await Promise.all(reordered.map((entry, index) => (entry.index !== index ? update(entry.id, { index }) : null)));
+      await refresh();
     } catch (error) {
       showMessage('error', getErrorMessage(error, 'Não foi possível salvar a nova ordem.'));
-      fetchData(false);
     } finally { setReordering(false); }
   };
-  const moveCategory = (position, direction) => moveInList(categories, position, direction, categoryService.update, setCategories);
-  const moveItem = (position, direction) => moveInList(items, position, direction, menuService.update, setItems);
-  const handleSaveItem = async (e) => {
-    e.preventDefault(); const name = itemForm.name.trim(); const price = parseFloat(String(itemForm.price).replace(',', '.')); let originalPrice = itemForm.originalPrice === '' ? price : parseFloat(String(itemForm.originalPrice).replace(',', '.'));
-    // Aumentou o preço sem mexer no preço original: não há mais desconto, então o original acompanha.
-    if (editingItem && originalPrice === Number(editingItem.originalPrice ?? editingItem.price) && price > originalPrice) originalPrice = price;
-    if (!name || isNaN(price) || price < 0 || isNaN(originalPrice) || originalPrice < price) { showMessage('error', 'Informe nome, preço válido e preço original maior ou igual ao preço atual.'); return; }
-    setItemSaving(true);
-    // Código em branco: o backend gera um código único.
-    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim(), price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim(), isOptionItem: Boolean(itemForm.isOptionItem), categoryId: itemForm.categoryId ? Number(itemForm.categoryId) : null };
+
+  // ===== Produtos =====
+  const toggleItem = async (item) => {
+    const status = item.status === 'AVAILABLE' ? 'UNAVAILABLE' : 'AVAILABLE';
+    setBusyId(item.id);
+    setItems(prev => prev.map(entry => (entry.id === item.id ? { ...entry, status } : entry)));
     try {
-      if (editingItem) await menuService.update(editingItem.id, payload);
-      else await menuService.create(payload);
-      setShowItemModal(false); fetchData(false);
-      showMessage('success', editingItem ? 'Item atualizado.' : 'Item criado.');
-    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar item.')); }
-    finally { setItemSaving(false); }
-  };
-  const handleDeleteItem = async (item) => {
-    if (!confirm(`Remover "${item.name}"?`)) return;
-    setDeletingId(item.id);
-    try { await menuService.delete(item.id); fetchData(); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover.')); }
-    finally { setDeletingId(null); }
-  };
-
-  // ===== OptionGroup (inline no modal de item) =====
-  const handleCreateOrUpdateOGInline = async (e) => {
-    e.preventDefault(); if (!ogInlineForm.name.trim()) return;
-    setOgInlineSaving(true);
-    try {
-      const payload = {
-        name: ogInlineForm.name.trim(),
-        description: ogInlineForm.description.trim(),
-        externalCode: ogInlineForm.externalCode.trim() || `og-${Date.now()}`,
-        minPermitted: Number(ogInlineForm.minPermitted),
-        maxPermitted: Number(ogInlineForm.maxPermitted),
-        priceMethod: ogInlineForm.priceMethod, status: ogInlineForm.status,
-      };
-      let groupId, warning;
-      if (ogInlineEditing) {
-        const res = await optionGroupService.update(ogInlineEditing, payload);
-        groupId = ogInlineEditing;
-        warning = res.data.warning;
-      } else {
-        const res = await optionGroupService.create(payload);
-        groupId = res.data.id;
-        warning = res.data.warning;
-        if (editingItem) await menuService.linkOptionGroup(editingItem.id, groupId);
-      }
-      await fetchData();
-      setOgInlineEditing(null);
-      setOgInlineForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
-      if (warning) { showMessage('error', warning); }
-    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar grupo.')); }
-    finally { setOgInlineSaving(false); }
-  };
-
-  const startEditOGInline = (og) => {
-    setOgInlineEditing(og.id);
-    setOgInlineForm({
-      name: og.name, description: og.description || '', externalCode: og.externalCode || '',
-      minPermitted: og.minPermitted ?? 0, maxPermitted: og.maxPermitted ?? 1,
-      priceMethod: og.priceMethod || 'SUM', status: og.status || 'AVAILABLE'
-    });
-  };
-
-  // --- Options inline ---
-  const startNewOptionInline = (groupId) => {
-    setOptInlineTarget({ groupId, optionId: null });
-    setOptInlineForm({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
-  };
-  const startEditOptionInline = (groupId, opt) => {
-    setOptInlineTarget({ groupId, optionId: opt.id });
-    setOptInlineForm({
-      name: opt.name, description: opt.description || '', externalCode: opt.externalCode || '',
-      itemId: String(opt.itemId || ''), price: String(opt.price ?? 0), status: opt.status || 'AVAILABLE'
-    });
-  };
-  const handleSaveOptionInline = async (e) => {
-    e.preventDefault();
-    if (!optInlineTarget || !optInlineForm.name.trim()) { showMessage('error', 'Nome da opção é obrigatório.'); return; }
-    setOptInlineSaving(true);
-    try {
-      const payload = {
-        name: optInlineForm.name.trim(), description: optInlineForm.description.trim(),
-        externalCode: optInlineForm.externalCode.trim() || `opt-${Date.now()}`,
-        itemId: optInlineForm.itemId || null,
-        price: parseFloat(String(optInlineForm.price).replace(',', '.')) || 0, status: optInlineForm.status,
-      };
-      let warning;
-      if (optInlineTarget.optionId) {
-        const res = await optionGroupService.updateOption(optInlineTarget.groupId, optInlineTarget.optionId, payload);
-        warning = res.data.warning;
-      } else {
-        const res = await optionGroupService.createOption(optInlineTarget.groupId, payload);
-        warning = res.data.warning;
-      }
-      setOptInlineTarget(null); await fetchData();
-      if (warning) { showMessage('error', warning); }
-    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao salvar opção.')); }
-    finally { setOptInlineSaving(false); }
-  };
-  const handleDeleteOptionInline = async (groupId, optionId, name) => {
-    if (!confirm(`Remover "${name}"?`)) return;
-    try {
-      const res = await optionGroupService.deleteOption(groupId, optionId);
-      await fetchData();
-      if (res.data.warning) { showMessage('error', res.data.warning); }
-    }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro.')); }
-  };
-
-  const toggleExpandOG = (ogId) => setExpandedOGs(prev => ({ ...prev, [ogId]: !prev[ogId] }));
-
-  const handleLinkExistingOG = async (groupId) => {
-    if (!editingItem) return;
-    try { await menuService.linkOptionGroup(editingItem.id, groupId); await fetchData(); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao vincular.')); }
-  };
-
-  const handleUnlinkOG = async (groupId) => {
-    if (!editingItem) return;
-    try { await menuService.unlinkOptionGroup(editingItem.id, groupId); fetchData(); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao desvincular.')); }
-  };
-
-  // ===== Availability (contextual ao item) =====
-  const handleCreateAvailabilityInline = async (e) => {
-    e.preventDefault(); if (!editingItem) return;
-    if (!availForm.name.trim()) { showMessage('error', 'Dê um nome à regra (ex.: "Almoço").'); return; }
-    if (availForm.days.length === 0) { showMessage('error', 'Escolha pelo menos um dia da semana.'); return; }
-    if (availForm.start === availForm.end) { showMessage('error', 'O horário de início e de fim não podem ser iguais.'); return; }
-    setAvailSaving(true);
-    try {
-      const hours = brasiliaRangeToUtcHours(availForm.days, availForm.start, availForm.end);
-      const res = await availabilityService.create({ name: availForm.name.trim(), hours });
-      await menuService.linkAvailability(editingItem.id, res.data.id);
-      setAvailForm(EMPTY_AVAIL_FORM); fetchData();
-      showMessage('success', 'Disponibilidade criada e vinculada!');
-    } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao criar disponibilidade.')); }
-    finally { setAvailSaving(false); }
-  };
-
-  const handleLinkExistingAvail = async (availId) => {
-    if (!editingItem) return;
-    try { await menuService.linkAvailability(editingItem.id, availId); fetchData(); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao vincular.')); }
-  };
-
-  const handleUnlinkAvail = async (availId) => {
-    if (!editingItem) return;
-    try { await menuService.unlinkAvailability(editingItem.id, availId); fetchData(); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao desvincular.')); }
-  };
-
-  // ===== Helpers =====
-  // Contadores do topo: só produtos (complementos não são vendidos sozinhos).
-  const products = allItems.filter(item => !item.isOptionItem);
-  const complementCount = allItems.length - products.length;
-  const avgPrice = products.length > 0 ? products.reduce((s, i) => s + i.price, 0) / products.length : 0;
-  const selectedCategory = categories.find(c => c.id === selectedCategoryId);
-  const searchTerm = search.trim().toLowerCase();
-  const visibleItems = searchTerm
-    ? items.filter(item => [item.name, item.description, item.externalCode].some(value => (value || '').toLowerCase().includes(searchTerm)))
-    : items;
-  // A ordem dos itens é por categoria: só dá para reordenar dentro de uma categoria e sem busca.
-  const canReorderItems = Boolean(selectedCategoryId) && !searchTerm;
-  const unavailableCount = items.filter(item => item.status !== 'AVAILABLE').length;
-  const formCategory = categories.find(c => c.id === Number(itemForm.categoryId));
-
-  // ===== Gerenciador de OptionGroups (modal independente) =====
-  const openOGManager = () => {
-    setOgEditingId(null);
-    setOgManagerForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
-    setOptionEditTarget(null);
-    setShowOGManager(true);
-  };
-
-  const openEditOG = (og) => {
-    setOgEditingId(og.id);
-    setOgManagerForm({
-      name: og.name, description: og.description || '', externalCode: og.externalCode || '',
-      minPermitted: og.minPermitted ?? 0, maxPermitted: og.maxPermitted ?? 1,
-      priceMethod: og.priceMethod || 'SUM', status: og.status || 'AVAILABLE'
-    });
-    setOptionEditTarget(null);
-    setShowOGManager(true);
-  };
-
-  const handleSaveOG = async (e) => {
-    e.preventDefault();
-    const name = ogManagerForm.name.trim();
-    if (!name) { showMessage('error', 'Nome do grupo é obrigatório.'); return; }
-    setOgManagerSaving(true);
-    try {
-      const payload = {
-        name, description: ogManagerForm.description.trim(),
-        externalCode: ogManagerForm.externalCode.trim() || `og-${Date.now()}`,
-        minPermitted: Number(ogManagerForm.minPermitted),
-        maxPermitted: Number(ogManagerForm.maxPermitted),
-        priceMethod: ogManagerForm.priceMethod, status: ogManagerForm.status,
-      };
-      let res;
-      if (ogEditingId) res = await optionGroupService.update(ogEditingId, payload);
-      else res = await optionGroupService.create(payload);
-      setOgEditingId(null);
-      setOgManagerForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' });
-      await fetchData();
-      if (res.data.warning) {
-        showMessage('error', res.data.warning);
-      } else {
-        showMessage('success', ogEditingId ? 'Grupo atualizado!' : 'Grupo criado!');
-      }
+      await menuService.update(item.id, { status });
+      showMessage('success', status === 'AVAILABLE' ? `"${item.name}" disponível novamente.` : `"${item.name}" marcado como esgotado.`);
     } catch (error) {
-      showMessage('error', getErrorMessage(error, 'Erro ao salvar grupo de opções.'));
-    } finally { setOgManagerSaving(false); }
+      setItems(prev => prev.map(entry => (entry.id === item.id ? { ...entry, status: item.status } : entry)));
+      showMessage('error', getErrorMessage(error, 'Não foi possível alterar o status.'));
+    } finally { setBusyId(null); }
+  };
+  const deleteItem = async (item) => {
+    if (!confirm(`Excluir "${item.name}"? Não dá para desfazer.`)) return;
+    try { await menuService.delete(item.id); await refresh(); showMessage('success', 'Produto excluído.'); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Não foi possível excluir o produto.')); }
+  };
+  const duplicateItem = (item) => setProductEditor({
+    draft: { ...item, name: `${item.name} (cópia)`, externalCode: '' },
+  });
+
+  // ===== Grupos =====
+  const deleteGroup = async (group, used) => {
+    const text = used > 0 ? `Excluir o grupo "${group.name}"? Ele sai de ${used} ${used === 1 ? 'produto' : 'produtos'}.` : `Excluir o grupo "${group.name}"?`;
+    if (!confirm(text)) return;
+    try { await optionGroupService.delete(group.id); await refresh(); showMessage('success', 'Grupo excluído.'); }
+    catch (error) { showMessage('error', getErrorMessage(error, 'Não foi possível excluir o grupo.')); }
   };
 
-  const handleDeleteOG = async (og) => {
-    if (!confirm(`Remover grupo "${og.name}" e todas as suas ${og.optionCount || 0} opções?`)) return;
-    try { await optionGroupService.delete(og.id); await fetchData(); showMessage('success', 'Grupo removido.'); }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover grupo.')); }
-  };
-
-  // --- Options no gerenciador ---
-  const openNewOption = (groupId) => {
-    setOptionEditTarget({ groupId, optionId: null });
-    setOptionManagerForm({ name: '', description: '', externalCode: '', itemId: '', price: '0', status: 'AVAILABLE' });
-  };
-
-  const openEditOption = (groupId, opt) => {
-    setOptionEditTarget({ groupId, optionId: opt.id });
-    setOptionManagerForm({
-      name: opt.name, description: opt.description || '', externalCode: opt.externalCode || '',
-      itemId: String(opt.itemId || ''), price: String(opt.price ?? 0), status: opt.status || 'AVAILABLE'
-    });
-  };
-
-  const handleSaveOption = async (e) => {
-    e.preventDefault();
-    if (!optionEditTarget || !optionManagerForm.name.trim()) {
-      showMessage('error', 'Nome da opção é obrigatório.'); return;
-    }
-    setOptionManagerSaving(true);
-    try {
-      const payload = {
-        name: optionManagerForm.name.trim(), description: optionManagerForm.description.trim(),
-        externalCode: optionManagerForm.externalCode.trim() || `opt-${Date.now()}`,
-        itemId: optionManagerForm.itemId || null,
-        price: parseFloat(String(optionManagerForm.price).replace(',', '.')) || 0,
-        status: optionManagerForm.status,
-      };
-      let res;
-      if (optionEditTarget.optionId) {
-        res = await optionGroupService.updateOption(optionEditTarget.groupId, optionEditTarget.optionId, payload);
-      } else {
-        res = await optionGroupService.createOption(optionEditTarget.groupId, payload);
-      }
-      setOptionEditTarget(null);
-      await fetchData();
-      if (res.data.warning) {
-        showMessage('error', res.data.warning);
-      } else {
-        showMessage('success', optionEditTarget.optionId ? 'Opção atualizada!' : 'Opção adicionada!');
-      }
-    } catch (error) {
-      showMessage('error', getErrorMessage(error, 'Erro ao salvar opção.'));
-    } finally { setOptionManagerSaving(false); }
-  };
-
-  const handleDeleteOption = async (groupId, optionId, optionName) => {
-    if (!confirm(`Remover opção "${optionName}"?`)) return;
-    try {
-      const res = await optionGroupService.deleteOption(groupId, optionId);
-      await fetchData();
-      if (res.data.warning) { showMessage('error', res.data.warning); }
-    }
-    catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover opção.')); }
-  };
-
-  // O item aberto no modal, sempre na versão recarregada do backend: depois de
-  // vincular/desvincular, a cópia em editingItem fica desatualizada.
-  const currentItem = (editingItem && allItems.find(item => item.id === editingItem.id)) || editingItem;
-  const linkedGroupIds = currentItem?.optionGroupsId || [];
-  const linkedAvailabilityIds = currentItem?.availabilityId || [];
-  // Itens que podem virar opção: complementos primeiro, depois os produtos.
-  const optionItemChoices = [...allItems].sort((a, b) => Number(b.isOptionItem) - Number(a.isOptionItem) || a.name.localeCompare(b.name));
+  const products = items.filter(isProduct);
+  const soldOut = products.filter(item => item.status !== 'AVAILABLE').length;
+  const editingProduct = productEditor?.id ? items.find(item => item.id === productEditor.id) || null : null;
 
   return (
-    <div className="max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 space-y-6 pb-10">
-
-      {/* ===== CABEÇALHO ===== */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800">Cardápio da Loja</h2>
-          <p className="text-slate-500">Categorias → Itens → Grupos de Opções/Disponibilidade</p>
-        </div>
-        <div className="flex items-center gap-4 text-sm font-bold text-slate-500">
-          <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm">{categories.length} categorias</span>
-          <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm">{products.length} produtos{complementCount > 0 ? ` · ${complementCount} complementos` : ""}</span>
-          {products.length > 0 && <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm text-indigo-600">Média {formatCurrency(avgPrice)}</span>}
-          <button onClick={openOGManager} className="px-3 py-1.5 bg-purple-50 rounded-lg border border-purple-200 shadow-sm text-purple-700 flex items-center gap-1.5 hover:bg-purple-100 transition-colors">
-            <ListPlus className="w-4 h-4" />Grupos ({optionGroups.length})
-          </button>
-          <button onClick={handleSyncMenu} disabled={syncingMenu}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm transition-all shadow-sm border ${syncingMenu ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-yellow-400 hover:bg-yellow-500 text-yellow-900 border-yellow-300 shadow-yellow-100 active:scale-[0.98]'}`}>
-            {syncingMenu ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            {syncingMenu ? 'Sincronizando...' : 'Enviar para Keeta'}
-          </button>
-        </div>
-      </div>
-
-      {/* Aviso flutuante: fica por cima dos modais, então erros ao salvar continuam visíveis */}
+    <div className="max-w-5xl mx-auto space-y-5 pb-10">
       {message && (
-        <div role="status" className={`fixed top-4 right-4 z-[60] max-w-md p-4 rounded-xl flex items-start gap-2 font-bold shadow-lg border ${message.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+        <div role="status" className={`fixed top-4 right-4 z-[70] max-w-md p-4 rounded-xl flex items-start gap-2 font-bold shadow-lg border ${message.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
           {message.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
           <span className="flex-1 whitespace-pre-line">{message.text}</span>
           <button onClick={() => setMessage(null)} className="p-0.5 rounded hover:bg-black/5" aria-label="Fechar aviso"><X className="w-4 h-4" /></button>
         </div>
       )}
 
-      {/* ===== LAYOUT: Sidebar + Área de Itens ===== */}
-      <div className="flex gap-6">
-        {/* ---- Sidebar: Categorias ---- */}
-        <div className="w-64 shrink-0 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-sm text-slate-500 uppercase tracking-wider"><Layers className="w-4 h-4 inline mr-1" />Categorias</h3>
-            <button onClick={openNewCategory} className="p-1.5 rounded-lg text-indigo-500 hover:bg-indigo-50"><FolderPlus className="w-4 h-4" /></button>
-          </div>
-          <button onClick={() => setSelectedCategoryId(null)} className={`w-full text-left px-3 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 ${selectedCategoryId === null ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'text-slate-600 hover:bg-slate-100 border border-transparent'}`}>
-            <FolderOpen className="w-4 h-4 shrink-0" /><span className="truncate">Todas ({items.length})</span>
-          </button>
-          <div className="space-y-1 max-h-[50vh] overflow-y-auto pr-1">
-            {loading ? <div className="flex items-center justify-center py-8 text-slate-400"><Loader2 className="w-5 h-5 animate-spin" /></div>
-              : categories.length === 0 ? <p className="text-xs text-slate-400 py-4 text-center">Nenhuma categoria.<br/>Clique em + para criar.</p>
-              : categories.map((cat, position) => (
-                <div key={cat.id} className="group relative">
-                  <button onClick={() => setSelectedCategoryId(cat.id)} className={`w-full text-left px-3 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 ${selectedCategoryId === cat.id ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'text-slate-600 hover:bg-slate-100 border border-transparent'}`}>
-                    <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition-transform ${selectedCategoryId === cat.id ? 'rotate-90' : ''}`} />
-                    <span className="truncate flex-1">{cat.name}</span>
-                    <span className="text-xs text-slate-400 shrink-0">{cat.itemCount || 0}</span>
-                  </button>
-                  <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex group-focus-within:flex items-center gap-0.5 bg-white rounded-lg shadow-sm border border-slate-200 px-1 py-0.5">
-                    <button onClick={(e) => { e.stopPropagation(); moveCategory(position, -1); }} disabled={position === 0 || reordering} title="Mover para cima" aria-label="Mover categoria para cima" className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-30"><ArrowUp className="w-3.5 h-3.5" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); moveCategory(position, 1); }} disabled={position === categories.length - 1 || reordering} title="Mover para baixo" aria-label="Mover categoria para baixo" className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-30"><ArrowDown className="w-3.5 h-3.5" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); openEditCategory(cat); }} title="Editar categoria" aria-label="Editar categoria" className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"><Edit3 className="w-3.5 h-3.5" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); handleDeleteCategory(cat); }} disabled={deletingId === cat.id} title="Remover categoria" aria-label="Remover categoria" className="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50">
-                      {deletingId === cat.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}</button>
-                  </div>
-                </div>
-              ))}
-          </div>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Cardápio</h2>
+          <p className="text-slate-500 text-sm">
+            {products.length} produtos em {categories.length} categorias · {optionGroups.length} grupos de complementos
+            {soldOut > 0 && <span className="ml-2 font-bold text-red-600">· {soldOut} esgotado{soldOut > 1 ? 's' : ''}</span>}
+          </p>
         </div>
-
-        {/* ---- Área Principal: Itens ---- */}
-        <div className="flex-1 min-w-0">
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${selectedCategory ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>{selectedCategory ? <Layers className="w-5 h-5" /> : <Utensils className="w-5 h-5" />}</div>
-                <div>
-                  <h3 className="font-bold text-lg text-slate-800">{selectedCategory ? selectedCategory.name : 'Todos os Itens'}</h3>
-                  <p className="text-xs text-slate-400">{selectedCategory ? `Código: ${selectedCategory.externalCode} · ${selectedCategory.description || 'Sem descrição'}` : 'Itens de todas as categorias'}</p>
-                </div>
-              </div>
-              <button onClick={openNewItem} className="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm bg-indigo-600 hover:bg-indigo-700 text-white shadow-md transition-all">
-                <Plus className="w-4 h-4" />Novo Item
-              </button>
-            </div>
-
-            {/* Busca + resumo */}
-            <div className="px-6 py-3 border-b border-slate-100 flex flex-wrap items-center gap-3">
-              <div className="relative flex-1 min-w-[200px]">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por nome, descrição ou código"
-                  aria-label="Buscar itens" className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-400 focus:outline-none" />
-              </div>
-              {unavailableCount > 0 && (
-                <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-red-50 text-red-600 border border-red-100">{unavailableCount} esgotado{unavailableCount > 1 ? 's' : ''}</span>
-              )}
-              {!canReorderItems && items.length > 1 && (
-                <span className="text-xs text-slate-400">{searchTerm ? 'Limpe a busca para reordenar.' : 'Selecione uma categoria para reordenar os itens.'}</span>
-              )}
-            </div>
-
-            {loading ? <div className="flex items-center justify-center py-20 text-slate-400"><Loader2 className="w-8 h-8 animate-spin mr-3" /><span>Carregando...</span></div>
-              : items.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                  <PackageOpen className="w-16 h-16 mb-4 text-slate-300" />
-                  <p className="font-bold text-lg text-slate-500 mb-1">{selectedCategory ? 'Categoria vazia' : 'Cardápio vazio'}</p>
-                  <p className="text-sm mb-6">{categories.length === 0 ? 'Crie uma categoria na lista ao lado para começar.' : 'Clique em "Novo Item" para adicionar.'}</p>
-                </div>
-              ) : visibleItems.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-slate-400">
-                  <Search className="w-10 h-10 mb-3 text-slate-300" />
-                  <p className="font-bold text-slate-500">Nenhum item encontrado para “{search.trim()}”.</p>
-                  <button onClick={() => setSearch('')} className="mt-3 text-sm font-bold text-indigo-600 hover:underline">Limpar busca</button>
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {visibleItems.map((item, position) => (
-                    <div key={item.id} className={`flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors group ${item.status !== 'AVAILABLE' ? 'bg-slate-50/60' : ''}`}>
-                      <div className="flex items-center gap-4 min-w-0 flex-1">
-                        {canReorderItems && (
-                          <div className="flex flex-col -my-2">
-                            <button onClick={() => moveItem(position, -1)} disabled={position === 0 || reordering} title="Mover para cima" aria-label="Mover item para cima" className="p-0.5 rounded text-slate-300 hover:text-indigo-600 disabled:opacity-30"><ArrowUp className="w-4 h-4" /></button>
-                            <button onClick={() => moveItem(position, 1)} disabled={position === visibleItems.length - 1 || reordering} title="Mover para baixo" aria-label="Mover item para baixo" className="p-0.5 rounded text-slate-300 hover:text-indigo-600 disabled:opacity-30"><ArrowDown className="w-4 h-4" /></button>
-                          </div>
-                        )}
-                        <div className={`w-12 h-12 rounded-xl bg-indigo-50 flex items-center justify-center shrink-0 overflow-hidden ${item.status !== 'AVAILABLE' ? 'grayscale opacity-60' : ''}`}>
-                          {item.imageUrl
-                            ? <img src={item.imageUrl} alt="" className="w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none'; }} />
-                            : <Utensils className="w-6 h-6 text-indigo-400" />}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <p className={`font-bold truncate ${item.status !== 'AVAILABLE' ? 'text-slate-400' : 'text-slate-800'}`}>{item.name}</p>
-                            {item.isOptionItem && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold shrink-0" title="Não aparece como produto; usado como opção de outros itens">Complemento</span>}
-                          </div>
-                          <div className="flex items-center gap-3 text-xs text-slate-400 mt-0.5">
-                            {item.description && <span className="truncate max-w-[200px]">{item.description}</span>}
-                            <span className="flex items-center gap-1"><Tag className="w-3 h-3" />{item.externalCode}</span>
-                            {item.categoryName && <span className="flex items-center gap-1 text-indigo-500"><Layers className="w-3 h-3" />{item.categoryName}</span>}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-4 shrink-0 ml-4">
-                        <button onClick={() => handleToggleItemStatus(item)} disabled={togglingId === item.id}
-                          title={item.status === 'AVAILABLE' ? 'Marcar como esgotado' : 'Marcar como disponível'}
-                          aria-pressed={item.status !== 'AVAILABLE'}
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border transition-colors disabled:opacity-60 ${item.status === 'AVAILABLE' ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'}`}>
-                          {togglingId === item.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <span className={`w-2 h-2 rounded-full ${item.status === 'AVAILABLE' ? 'bg-green-500' : 'bg-red-500'}`} />}
-                          {item.status === 'AVAILABLE' ? 'Disponível' : 'Esgotado'}
-                        </button>
-                        <div className="text-right">
-                          <span className="text-lg font-extrabold text-indigo-600 tabular-nums">{formatCurrency(item.price)}</span>
-                          {item.originalPrice && item.originalPrice !== item.price && <span className="block text-xs text-slate-400 line-through">{formatCurrency(item.originalPrice)}</span>}
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all">
-                          <button onClick={() => openEditItem(item)} className="p-2 rounded-xl text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Editar item" aria-label="Editar item"><Edit3 className="w-4 h-4" /></button>
-                          <button onClick={() => openDuplicateItem(item)} className="p-2 rounded-xl text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Duplicar item" aria-label="Duplicar item"><Copy className="w-4 h-4" /></button>
-                          <button onClick={() => handleDeleteItem(item)} disabled={deletingId === item.id} className="p-2 rounded-xl text-slate-300 hover:text-red-600 hover:bg-red-50 disabled:opacity-50" title="Remover item" aria-label="Remover item">
-                            {deletingId === item.id ? <Loader2 className="w-4 h-4 animate-spin text-red-400" /> : <Trash2 className="w-4 h-4" />}</button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-          </div>
-        </div>
+        <button onClick={handleSync} disabled={syncing}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm shadow-sm border ${syncing ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-yellow-400 hover:bg-yellow-500 text-yellow-900 border-yellow-300'}`}>
+          {syncing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}{syncing ? 'Enviando…' : 'Enviar para Keeta'}
+        </button>
       </div>
 
-      {/* ===== MODAL: Categoria ===== */}
-      {showCatModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
-            <div className="flex items-center justify-between mb-5"><h3 className="font-bold text-lg text-slate-800">{editingCategory ? 'Editar Categoria' : 'Nova Categoria'}</h3><button onClick={() => setShowCatModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400"><X className="w-5 h-5" /></button></div>
-            <form onSubmit={handleSaveCategory} className="space-y-4">
-              <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Nome *</label><input type="text" value={catForm.name} onChange={e => setCatForm({ ...catForm, name: e.target.value })} placeholder="Ex: Pizzas" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700" autoFocus /></div>
-              <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Descrição</label><input type="text" value={catForm.description} onChange={e => setCatForm({ ...catForm, description: e.target.value })} placeholder="Breve descrição" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium text-slate-700" /></div>
-              <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Tag className="w-3.5 h-3.5 inline mr-1" />Código Externo</label><input type="text" value={catForm.externalCode} onChange={e => setCatForm({ ...catForm, externalCode: e.target.value })} placeholder="Gerado automaticamente" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-mono text-sm text-slate-700" /></div>
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowCatModal(false)} className="flex-1 py-2.5 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
-                <button type="submit" disabled={catSaving} className={`flex-1 py-2.5 font-bold rounded-xl flex items-center justify-center gap-2 ${catSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'}`}>
-                  {catSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}{catSaving ? 'Salvando...' : editingCategory ? 'Atualizar' : 'Criar'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      <div className="flex items-start gap-2 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-sm text-indigo-900">
+        <Info className="w-4 h-4 mt-0.5 shrink-0" />
+        <p>Cada alteração salva aqui já é enviada para a Keeta. Use <b>Enviar para Keeta</b> só se quiser forçar uma atualização completa.</p>
+      </div>
+
+      <div className="flex gap-1 p-1 bg-slate-200/70 rounded-xl w-fit" role="tablist">
+        {[
+          ['products', 'Produtos', <Utensils key="i" className="w-4 h-4" />, products.length],
+          ['complements', 'Complementos', <ListPlus key="i" className="w-4 h-4" />, optionGroups.length],
+        ].map(([key, label, icon, count]) => (
+          <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${tab === key ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+            {icon}{label}<span className="text-xs text-slate-400">{count}</span>
+          </button>
+        ))}
+      </div>
+
+      {tab === 'products' ? (
+        <ProductsTab
+          categories={categories} items={items} optionGroups={optionGroups} loading={loading} busyId={busyId} reordering={reordering}
+          onNewCategory={() => openCategory(null)} onEditCategory={openCategory} onDeleteCategory={deleteCategory}
+          onToggleCategory={toggleCategory} onMoveCategory={(position, direction) => move(categories, position, direction, categoryService.update)}
+          onNewProduct={(categoryId) => setProductEditor({ draft: { categoryId } })} onEditProduct={(item) => setProductEditor({ id: item.id })}
+          onDuplicateProduct={duplicateItem} onDeleteProduct={deleteItem} onToggleProduct={toggleItem}
+          onMoveProduct={(list, position, direction) => move(list, position, direction, menuService.update)}
+        />
+      ) : (
+        <ComplementsTab
+          optionGroups={optionGroups} items={items} loading={loading} busyId={busyId}
+          onNewGroup={() => setGroupEditor({ group: null })} onEditGroup={(group) => setGroupEditor({ group })}
+          onDeleteGroup={deleteGroup} onToggleItem={toggleItem}
+        />
       )}
 
-      {/* ===== MODAL: Item com Abas ===== */}
-      {showItemModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-0 max-h-[90vh] overflow-y-auto">
-            {/* Cabeçalho + Abas */}
-            <div className="sticky top-0 bg-white z-10 border-b border-slate-200 rounded-t-2xl">
-              <div className="flex items-center justify-between px-6 pt-5 pb-2">
-                <h3 className="font-bold text-lg text-slate-800">
-                  {editingItem ? `Editar: ${editingItem.name}` : 'Novo Item'}
-                  <span className="text-sm font-normal text-slate-400 ml-2">· {formCategory?.name || 'Sem categoria'}</span>
-                </h3>
-                <button onClick={() => setShowItemModal(false)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400"><X className="w-5 h-5" /></button>
-              </div>
-              {/* Abas */}
-              <div className="flex gap-1 px-6 pb-2">
-                {['info', 'options', 'availability'].map(tab => (
-                  <button key={tab} onClick={() => setItemTab(tab)}
-                    className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${itemTab === tab ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>
-                    {tab === 'info' && <><Utensils className="w-4 h-4 inline mr-1" />Informações</>}
-                    {tab === 'options' && <><ListPlus className="w-4 h-4 inline mr-1" />Grupos de Opções</>}
-                    {tab === 'availability' && <><CalendarDays className="w-4 h-4 inline mr-1" />Disponibilidade</>}
-                  </button>
-                ))}
-              </div>
+      {productEditor && (
+        <ProductEditor
+          key={productEditor.id || 'novo'}
+          product={editingProduct} draft={productEditor.draft} categories={categories} optionGroups={optionGroups} availabilities={availabilities}
+          onClose={() => setProductEditor(null)} onChanged={refresh} onCreated={(id) => setProductEditor({ id })}
+          onCreateGroup={(product) => setGroupEditor({ group: null, presetProductIds: product ? [product.id] : [] })}
+          showMessage={showMessage}
+        />
+      )}
+      {groupEditor && (
+        <GroupEditor
+          group={groupEditor.group} items={items} categories={categories} presetProductIds={groupEditor.presetProductIds}
+          onClose={() => setGroupEditor(null)} onChanged={refresh} showMessage={showMessage}
+        />
+      )}
+      {categoryEditor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-label="Categoria">
+          <form onSubmit={saveCategory} className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg text-slate-800">{categoryEditor.category ? 'Editar categoria' : 'Nova categoria'}</h3>
+              <button type="button" onClick={() => setCategoryEditor(null)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-400" aria-label="Fechar"><X className="w-5 h-5" /></button>
             </div>
-
-            <div className="p-6">
-              {/* ===== Aba: Informações ===== */}
-              {itemTab === 'info' && (
-                <form onSubmit={handleSaveItem} className="space-y-4">
-                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Nome *</label><input type="text" value={itemForm.name} onChange={e => setItemForm({ ...itemForm, name: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium" placeholder="Nome do produto" autoFocus /></div>
-                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Descrição</label><textarea value={itemForm.description} onChange={e => setItemForm({ ...itemForm, description: e.target.value })} rows={2} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none resize-none" /></div>
-                  <div><label className="flex items-start gap-2 mb-3 p-3 rounded-xl border border-amber-200 bg-amber-50 cursor-pointer">
-                      <input type="checkbox" checked={Boolean(itemForm.isOptionItem)} onChange={e => setItemForm({ ...itemForm, isOptionItem: e.target.checked })} className="mt-0.5" />
-                      <span className="text-sm text-amber-900"><span className="font-bold">Só complemento</span> — não aparece como produto no cardápio; usado como opção de outros itens (ex.: "Bacon extra").</span>
-                    </label>
-                    <label className="block text-sm font-bold text-slate-600 mb-1.5"><Layers className="w-3.5 h-3.5 inline mr-1" />Categoria {itemForm.isOptionItem ? '(opcional)' : '*'}</label>
-                    <select value={itemForm.categoryId ?? ''} onChange={e => setItemForm({ ...itemForm, categoryId: e.target.value ? Number(e.target.value) : null })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium">
-                      {(itemForm.isOptionItem || !itemForm.categoryId) && <option value="">Sem categoria</option>}
-                      {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
-                    </select>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Tag className="w-3.5 h-3.5 inline mr-1" />Código Externo</label><input type="text" value={itemForm.externalCode} onChange={e => setItemForm({ ...itemForm, externalCode: e.target.value })} placeholder="Gerado automaticamente" className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm" /></div>
-                    <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Status</label><select value={itemForm.status} onChange={e => setItemForm({ ...itemForm, status: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"><option value="AVAILABLE">Disponível</option><option value="UNAVAILABLE">Indisponível</option></select></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Preço (R$) *</label><input type="number" step="0.01" min="0" value={itemForm.price} onChange={e => setItemForm({ ...itemForm, price: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold" /></div>
-                    <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Preço Original</label><input type="number" step="0.01" min="0" value={itemForm.originalPrice} onChange={e => setItemForm({ ...itemForm, originalPrice: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold" /></div>
-                  </div>
-                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Image className="w-3.5 h-3.5 inline mr-1" />URL da Imagem</label>
-                    <div className="flex items-start gap-3">
-                      <input type="url" value={itemForm.imageUrl} onChange={e => setItemForm({ ...itemForm, imageUrl: e.target.value })} placeholder="https://..." className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm" />
-                      <div className="w-16 h-16 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
-                        {itemForm.imageUrl.trim() && !imageFailed
-                          ? <img src={itemForm.imageUrl.trim()} alt="Prévia" className="w-full h-full object-cover" onError={() => setImageFailed(true)} />
-                          : <Image className="w-6 h-6 text-slate-300" />}
-                      </div>
-                    </div>
-                    {imageFailed && itemForm.imageUrl.trim() && <p className="text-xs text-red-500 mt-1">Não foi possível carregar esta imagem. Confira se o link abre a foto diretamente.</p>}
-                  </div>
-                  <div className="flex gap-3 pt-2">
-                    <button type="button" onClick={() => setShowItemModal(false)} className="flex-1 py-2.5 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
-                    <button type="submit" disabled={itemSaving} className={`flex-1 py-2.5 font-bold rounded-xl flex items-center justify-center gap-2 ${itemSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'}`}>
-                      {itemSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}{itemSaving ? 'Salvando...' : editingItem ? 'Atualizar' : 'Criar Item'}
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {/* ===== Aba: Grupos de Opções ===== */}
-              {itemTab === 'options' && editingItem && (
-                <div className="space-y-4">
-                  {/* Formulário de criação/edição de OptionGroup */}
-                  <form onSubmit={handleCreateOrUpdateOGInline} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-bold text-slate-700">
-                        {ogInlineEditing ? 'Editar Grupo' : 'Criar Novo Grupo'}
-                        {!ogInlineEditing && <span className="text-xs font-normal text-slate-400 ml-2">(será vinculado automaticamente)</span>}
-                      </p>
-                      {ogInlineEditing && (
-                        <button type="button" onClick={() => { setOgInlineEditing(null); setOgInlineForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' }); }}
-                          className="text-xs text-purple-600 hover:text-purple-800 font-medium">+ Novo</button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 mb-1">Nome *</label>
-                        <input type="text" value={ogInlineForm.name} onChange={e => setOgInlineForm({ ...ogInlineForm, name: e.target.value })}
-                          placeholder="Ex: Escolha o Molho" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 mb-1">Código Externo</label>
-                        <input type="text" value={ogInlineForm.externalCode} onChange={e => setOgInlineForm({ ...ogInlineForm, externalCode: e.target.value })}
-                          placeholder="og-molhos-001" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm font-mono" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 mb-1">Mín</label>
-                        <input type="number" min="0" value={ogInlineForm.minPermitted} onChange={e => setOgInlineForm({ ...ogInlineForm, minPermitted: parseInt(e.target.value) || 0 })}
-                          className="w-full px-2 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 mb-1">Máx</label>
-                        <input type="number" min="1" value={ogInlineForm.maxPermitted} onChange={e => setOgInlineForm({ ...ogInlineForm, maxPermitted: parseInt(e.target.value) || 1 })}
-                          className="w-full px-2 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                      </div>
-                    </div>
-                    <p className="text-[10px] text-slate-400">Na Keeta o preço das opções escolhidas sempre soma ao preço do item.</p>
-                    <button type="submit" disabled={ogInlineSaving}
-                      className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 ${ogInlineSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700 text-white'}`}>
-                      {ogInlineSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : ogInlineEditing ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-                      {ogInlineSaving ? 'Salvando...' : ogInlineEditing ? 'Atualizar Grupo' : 'Criar e Vincular'}
-                    </button>
-                  </form>
-
-                  {/* Lista de grupos (todas, vinculadas ou não) */}
-                  <div>
-                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                      Todos os Grupos ({optionGroups.length})
-                      <span className="text-slate-300 font-normal normal-case ml-1">— expanda para gerenciar opções</span>
-                    </p>
-                    {optionGroups.length === 0 ? (
-                      <p className="text-sm text-slate-400 py-4 text-center">Nenhum grupo criado ainda.</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {optionGroups.map(og => {
-                          const isLinked = linkedGroupIds.includes(og.id);
-                          const isExpanded = expandedOGs[og.id];
-                          return (
-                            <div key={og.id} className={`rounded-xl border overflow-hidden transition-all ${isLinked ? 'border-purple-300 shadow-sm' : 'border-slate-200'}`}>
-                              {/* Linha principal do grupo */}
-                              <div className={`flex items-center justify-between px-4 py-3 ${isLinked ? 'bg-purple-50' : 'bg-white'}`}>
-                                <button onClick={() => toggleExpandOG(og.id)} className="flex-1 min-w-0 text-left flex items-center gap-2">
-                                  <ChevronRight className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-bold text-slate-800 text-sm truncate">{og.name}</span>
-                                      {isLinked && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-200 text-purple-700 font-bold shrink-0">Vinculado</span>}
-                                    </div>
-                                    <span className="text-xs text-slate-400">
-                                      {og.optionCount || 0} opções · min={og.minPermitted} máx={og.maxPermitted}
-                                    </span>
-                                  </div>
-                                </button>
-                                <div className="flex items-center gap-1 ml-2 shrink-0">
-                                  <button onClick={() => startEditOGInline(og)} className="p-1.5 rounded-lg text-slate-300 hover:text-purple-600 hover:bg-purple-50" title="Editar"><Edit3 className="w-3.5 h-3.5" /></button>
-                                  <button onClick={() => isLinked ? handleUnlinkOG(og.id) : handleLinkExistingOG(og.id)}
-                                    className={`text-[10px] font-bold px-2 py-1 rounded-lg ${isLinked ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                                    {isLinked ? 'Desvincular' : 'Vincular'}
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Conteúdo expandido: opções */}
-                              {isExpanded && (
-                                <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/50 space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <p className="text-xs font-bold text-slate-500">Opções ({og.optionCount || 0})</p>
-                                    <button onClick={() => startNewOptionInline(og.id)}
-                                      className="text-xs font-bold px-2.5 py-1 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 flex items-center gap-1">
-                                      <Plus className="w-3 h-3" />Adicionar
-                                    </button>
-                                  </div>
-
-                                  {(!og.options || og.options.length === 0) ? (
-                                    <p className="text-xs text-slate-400 py-1">Nenhuma opção.</p>
-                                  ) : (
-                                    <div className="space-y-1">
-                                      {og.options.map(opt => (
-                                        <div key={opt.id} className="flex items-center justify-between px-3 py-2 bg-white border border-slate-100 rounded-lg text-sm group">
-                                          <div className="flex-1 min-w-0 flex items-center gap-2">
-                                            <span className="w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0"></span>
-                                            <span className="text-slate-700 font-medium truncate">{opt.name}</span>
-                                            {opt.price > 0 && <span className="text-xs text-indigo-600 font-bold shrink-0">+{formatCurrency(opt.price)}</span>}
-                                          </div>
-                                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all ml-2">
-                                            <button onClick={() => startEditOptionInline(og.id, opt)} className="p-1 rounded text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Editar"><Edit3 className="w-3.5 h-3.5" /></button>
-                                            <button onClick={() => handleDeleteOptionInline(og.id, opt.id, opt.name)} className="p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50" title="Remover"><Trash2 className="w-3.5 h-3.5" /></button>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-
-                                  {/* Form inline option */}
-                                  {optInlineTarget && optInlineTarget.groupId === og.id && (
-                                    <form onSubmit={handleSaveOptionInline} className="p-3 bg-purple-50 rounded-lg border border-purple-200 space-y-2">
-                                      <p className="text-xs font-bold text-purple-700">{optInlineTarget.optionId ? 'Editar Opção' : 'Nova Opção'}</p>
-                                      <div className="flex gap-2">
-                                        <input type="text" placeholder="Nome *" value={optInlineForm.name}
-                                          onChange={e => setOptInlineForm({ ...optInlineForm, name: e.target.value })}
-                                          className="flex-1 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" autoFocus />
-                                        <input type="number" step="0.01" min="0" placeholder="R$" value={optInlineForm.price}
-                                          onChange={e => setOptInlineForm({ ...optInlineForm, price: e.target.value })}
-                                          className="w-24 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" />
-                                      </div>
-                                      <OptionItemSelect value={optInlineForm.itemId} choices={optionItemChoices}
-                                        onChange={itemId => setOptInlineForm({ ...optInlineForm, itemId })} />
-                                      <div className="flex gap-2">
-                                        <button type="submit" disabled={optInlineSaving}
-                                          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${optInlineSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                                          {optInlineSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                                          {optInlineSaving ? '...' : optInlineTarget.optionId ? 'Atualizar' : 'Adicionar'}
-                                        </button>
-                                        <button type="button" onClick={() => setOptInlineTarget(null)}
-                                          className="px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-100">Cancelar</button>
-                                      </div>
-                                    </form>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <p className="text-xs text-slate-400 text-center pt-2">
-                    Precisa de mais opções? Use o{" "}
-                    <button onClick={() => { setShowItemModal(false); openOGManager(); }}
-                      className="text-purple-600 underline font-medium hover:text-purple-800">Gerenciador Completo</button>
-                  </p>
-                </div>
-              )}
-              {itemTab === 'options' && !editingItem && (
-                <div className="text-center py-8 text-slate-400"><p className="font-medium">Salve o item primeiro para gerenciar grupos de opções.</p><button type="button" onClick={() => setItemTab('info')} className="mt-3 text-indigo-600 font-bold text-sm">Voltar para informações</button></div>
-              )}
-
-              {/* ===== Aba: Disponibilidade ===== */}
-              {itemTab === 'availability' && editingItem && (
-                <div className="space-y-4">
-                  <p className="text-sm text-slate-500">Regras de disponibilidade vinculadas a este item.</p>
-
-                  {/* Criar nova disponibilidade inline */}
-                  <form onSubmit={handleCreateAvailabilityInline} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-                    <p className="text-sm font-bold text-slate-600">Criar e Vincular Nova Regra</p>
-                    <p className="text-xs text-slate-400">Fora destes dias e horários o item fica indisponível na Keeta. Horário de Brasília.</p>
-                    <input type="text" placeholder="Nome * (ex.: Almoço)" value={availForm.name} onChange={e => setAvailForm({ ...availForm, name: e.target.value })} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Dias da semana">
-                      {WEEK_DAYS.map(([code, label]) => {
-                        const checked = availForm.days.includes(code);
-                        return (
-                          <button key={code} type="button" aria-pressed={checked}
-                            onClick={() => setAvailForm({ ...availForm, days: checked ? availForm.days.filter(d => d !== code) : DAY_CODES.filter(d => d === code || availForm.days.includes(d)) })}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${checked ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-500 border-slate-200 hover:border-teal-300'}`}>
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-slate-600">
-                      <label className="flex items-center gap-1.5">Das <input type="time" value={availForm.start} onChange={e => setAvailForm({ ...availForm, start: e.target.value })} className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" /></label>
-                      <label className="flex items-center gap-1.5">às <input type="time" value={availForm.end} onChange={e => setAvailForm({ ...availForm, end: e.target.value })} className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" /></label>
-                      {availForm.end && availForm.start && availForm.end < availForm.start && <span className="text-xs text-slate-400">(termina no dia seguinte)</span>}
-                    </div>
-                    <button type="submit" disabled={availSaving} className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-bold hover:bg-teal-700 disabled:opacity-50">{availSaving ? '...' : 'Criar e Vincular'}</button>
-                  </form>
-
-                  {/* Vincular disponibilidades existentes */}
-                  <div>
-                    <p className="text-xs font-bold text-slate-500 mb-2">Vincular Regra Existente</p>
-                    <div className="flex flex-wrap gap-2">
-                      {availabilities.map(av => {
-                        const isLinked = linkedAvailabilityIds.includes(av.id);
-                        return (
-                          <button key={av.id} onClick={() => isLinked ? handleUnlinkAvail(av.id) : handleLinkExistingAvail(av.id)}
-                            className={`text-xs px-3 py-1.5 rounded-full font-medium transition-all ${isLinked ? 'bg-teal-100 text-teal-700 hover:bg-red-100 hover:text-red-700' : 'bg-slate-100 text-slate-500 hover:bg-teal-50 hover:text-teal-600'}`}>
-                            {isLinked ? <><Unlink className="w-3 h-3 inline mr-1" />{av.name}</> : <><Link className="w-3 h-3 inline mr-1" />{av.name}</>}
-                          </button>
-                        );
-                      })}
-                      {availabilities.length === 0 && <span className="text-xs text-slate-400">Nenhuma regra disponível.</span>}
-                    </div>
-                  </div>
-
-                  {/* Exibir disponibilidades vinculadas */}
-                  {availabilities.filter(av => linkedAvailabilityIds.includes(av.id)).map(av => (
-                    <div key={av.id} className="border border-teal-200 rounded-xl p-4 bg-teal-50/30">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-700">{av.name}</span>
-                            <button onClick={async () => { if (!confirm(`Remover a regra “${av.name}”?`)) return; try { await availabilityService.delete(av.id); await fetchData(); } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover disponibilidade.')); } }} className="text-xs text-red-400 hover:text-red-600">Remover</button>
-                      </div>
-                      <div className="text-xs text-slate-400 mt-1">Horário de Brasília</div>
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {brasiliaLabels(av.hours).map(label => <span key={label} className="text-[10px] px-2 py-0.5 bg-slate-100 rounded-full text-slate-600">{label}</span>)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {itemTab === 'availability' && !editingItem && (
-                <div className="text-center py-8 text-slate-400"><p className="font-medium">Salve o item primeiro para gerenciar disponibilidade.</p><button type="button" onClick={() => setItemTab('info')} className="mt-3 text-indigo-600 font-bold text-sm">Voltar para informações</button></div>
-              )}
+            <div><label className={labelClass} htmlFor="category-name">Nome *</label>
+              <input id="category-name" className={inputClass} maxLength={150} value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} placeholder="Ex.: Hambúrgueres" autoFocus /></div>
+            <div><label className={labelClass} htmlFor="category-description">Descrição</label>
+              <input id="category-description" className={inputClass} maxLength={500} value={categoryForm.description} onChange={e => setCategoryForm({ ...categoryForm, description: e.target.value })} placeholder="Ex.: Hambúrgueres artesanais da casa" /></div>
+            <div className="flex gap-3 pt-1">
+              <button type="button" onClick={() => setCategoryEditor(null)} className="flex-1 py-2.5 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
+              <button type="submit" disabled={categorySaving} className={`flex-1 py-2.5 font-bold rounded-xl flex items-center justify-center gap-2 ${categorySaving ? 'bg-slate-300' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
+                {categorySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}{categoryEditor.category ? 'Salvar' : 'Criar categoria'}
+              </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
-
-      {/* ===== Categoria (já definido acima) ===== */}
-      {/* O modal de categoria é renderizado condicionalmente acima */}
-
-      {/* ===== MODAL: Gerenciador de Grupos de Opções ===== */}
-      {showOGManager && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl p-0 max-h-[90vh] overflow-y-auto">
-            {/* Cabeçalho */}
-            <div className="sticky top-0 bg-white z-10 border-b border-slate-200 rounded-t-2xl px-6 pt-5 pb-3 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
-                  <ListPlus className="w-5 h-5 text-purple-600" />
-                  Gerenciar Grupos de Opções
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Crie, edite e gerencie grupos de opções e seus subitens</p>
-              </div>
-              <button onClick={() => { setShowOGManager(false); setOptionEditTarget(null); setOgEditingId(null); }}
-                className="p-2 rounded-lg hover:bg-slate-100 text-slate-400"><X className="w-5 h-5" /></button>
-            </div>
-
-            <div className="p-6">
-              {/* Formulário de criação/edição de OptionGroup */}
-              <form onSubmit={handleSaveOG} className="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-                <p className="text-sm font-bold text-slate-700">{ogEditingId ? 'Editar Grupo' : 'Criar Novo Grupo'}</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Nome *</label>
-                    <input type="text" value={ogManagerForm.name} onChange={e => setOgManagerForm({ ...ogManagerForm, name: e.target.value })}
-                      placeholder="Ex: Escolha o Molho" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" autoFocus={!ogEditingId} />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Código Externo</label>
-                    <input type="text" value={ogManagerForm.externalCode} onChange={e => setOgManagerForm({ ...ogManagerForm, externalCode: e.target.value })}
-                      placeholder="og-molhos-001" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm font-mono" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 mb-1">Descrição</label>
-                  <input type="text" value={ogManagerForm.description} onChange={e => setOgManagerForm({ ...ogManagerForm, description: e.target.value })}
-                    placeholder="Breve descrição do grupo" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Mínimo</label>
-                    <input type="number" min="0" value={ogManagerForm.minPermitted} onChange={e => setOgManagerForm({ ...ogManagerForm, minPermitted: parseInt(e.target.value) || 0 })}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Máximo</label>
-                    <input type="number" min="1" value={ogManagerForm.maxPermitted} onChange={e => setOgManagerForm({ ...ogManagerForm, maxPermitted: parseInt(e.target.value) || 1 })}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Status</label>
-                    <select value={ogManagerForm.status} onChange={e => setOgManagerForm({ ...ogManagerForm, status: e.target.value })}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm">
-                      <option value="AVAILABLE">Disponível</option>
-                      <option value="UNAVAILABLE">Indisponível</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="flex gap-3 pt-1">
-                  <button type="submit" disabled={ogManagerSaving}
-                    className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 ${ogManagerSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700 text-white'}`}>
-                    {ogManagerSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                    {ogManagerSaving ? 'Salvando...' : ogEditingId ? 'Atualizar Grupo' : 'Criar Grupo'}
-                  </button>
-                  {ogEditingId && (
-                    <button type="button" onClick={() => { setOgEditingId(null); setOgManagerForm({ name: '', description: '', externalCode: '', minPermitted: 0, maxPermitted: 1, priceMethod: 'SUM', status: 'AVAILABLE' }); }}
-                      className="px-4 py-2 rounded-lg text-sm font-bold border border-slate-200 text-slate-600 hover:bg-slate-100">
-                      Novo Grupo
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              {/* Lista de todos os OptionGroups com seus Options */}
-              <div>
-                <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-3">Todos os Grupos ({optionGroups.length})</p>
-                {optionGroups.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400">
-                    <ListPlus className="w-10 h-10 mx-auto mb-2 text-slate-300" />
-                    <p className="font-medium">Nenhum grupo de opções criado.</p>
-                    <p className="text-xs mt-1">Use o formulário acima para criar o primeiro.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {optionGroups.map(og => (
-                      <div key={og.id} className="border border-slate-200 rounded-xl overflow-hidden">
-                        {/* Cabeçalho do grupo */}
-                        <div className="flex items-center justify-between px-4 py-3 bg-slate-50">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-800">{og.name}</span>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${og.status === 'AVAILABLE' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{og.status}</span>
-                            </div>
-                            <div className="text-xs text-slate-400 mt-0.5">
-                              {og.description || 'Sem descrição'} · {og.externalCode} · min={og.minPermitted} max={og.maxPermitted}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 ml-3">
-                            <button onClick={() => openEditOG(og)} className="p-1.5 rounded-lg text-slate-400 hover:text-purple-600 hover:bg-purple-50" title="Editar grupo"><Edit3 className="w-4 h-4" /></button>
-                            <button onClick={() => handleDeleteOG(og)} className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50" title="Remover grupo"><Trash2 className="w-4 h-4" /></button>
-                          </div>
-                        </div>
-
-                        {/* Opções do grupo */}
-                        <div className="px-4 py-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-bold text-slate-500">Opções ({og.optionCount || 0})</p>
-                            <button onClick={() => openNewOption(og.id)}
-                              className="text-xs font-bold px-2.5 py-1 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 flex items-center gap-1">
-                              <Plus className="w-3 h-3" />Adicionar
-                            </button>
-                          </div>
-
-                          {/* Lista de options */}
-                          {(!og.options || og.options.length === 0) ? (
-                            <p className="text-xs text-slate-400 py-1">Nenhuma opção neste grupo.</p>
-                          ) : (
-                            <div className="space-y-1">
-                              {og.options.map(opt => (
-                                <div key={opt.id} className="flex items-center justify-between px-3 py-2 bg-white border border-slate-100 rounded-lg text-sm group">
-                                  <div className="flex-1 min-w-0 flex items-center gap-2">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 shrink-0"></span>
-                                    <span className="text-slate-700 font-medium truncate">{opt.name}</span>
-                                    {opt.price > 0 && <span className="text-xs text-indigo-600 font-bold shrink-0">+{formatCurrency(opt.price)}</span>}
-                                    {opt.description && <span className="text-xs text-slate-300 truncate hidden sm:inline">{opt.description}</span>}
-                                  </div>
-                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all ml-2">
-                                    <button onClick={() => openEditOption(og.id, opt)} className="p-1 rounded text-slate-300 hover:text-indigo-600 hover:bg-indigo-50" title="Editar"><Edit3 className="w-3.5 h-3.5" /></button>
-                                    <button onClick={() => handleDeleteOption(og.id, opt.id, opt.name)} className="p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50" title="Remover"><Trash2 className="w-3.5 h-3.5" /></button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Formulário inline para criar/editar option */}
-                          {optionEditTarget && optionEditTarget.groupId === og.id && (
-                            <form onSubmit={handleSaveOption} className="mt-2 p-3 bg-purple-50 rounded-lg border border-purple-200 space-y-2">
-                              <p className="text-xs font-bold text-purple-700">{optionEditTarget.optionId ? 'Editar Opção' : 'Nova Opção'}</p>
-                              <div className="flex gap-2">
-                                <input type="text" placeholder="Nome da opção *" value={optionManagerForm.name}
-                                  onChange={e => setOptionManagerForm({ ...optionManagerForm, name: e.target.value })}
-                                  className="flex-1 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" autoFocus />
-                                <input type="number" step="0.01" min="0" placeholder="R$" value={optionManagerForm.price}
-                                  onChange={e => setOptionManagerForm({ ...optionManagerForm, price: e.target.value })}
-                                  className="w-24 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" />
-                              </div>
-                              <div className="flex gap-2">
-                                <input type="text" placeholder="Descrição" value={optionManagerForm.description}
-                                  onChange={e => setOptionManagerForm({ ...optionManagerForm, description: e.target.value })}
-                                  className="flex-1 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" />
-                                <input type="text" placeholder="Código externo" value={optionManagerForm.externalCode}
-                                  onChange={e => setOptionManagerForm({ ...optionManagerForm, externalCode: e.target.value })}
-                                  className="w-36 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg font-mono" />
-                                <select value={optionManagerForm.status} onChange={e => setOptionManagerForm({ ...optionManagerForm, status: e.target.value })}
-                                  className="w-28 px-2 py-1.5 text-sm border border-slate-200 rounded-lg">
-                                  <option value="AVAILABLE">Disponível</option>
-                                  <option value="UNAVAILABLE">Indisponível</option>
-                                </select>
-                              </div>
-                              <div>
-                                <OptionItemSelect value={optionManagerForm.itemId} choices={optionItemChoices}
-                                  onChange={itemId => setOptionManagerForm({ ...optionManagerForm, itemId })} />
-                              </div>
-                              <div className="flex gap-2">
-                                <button type="submit" disabled={optionManagerSaving}
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${optionManagerSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
-                                  {optionManagerSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                                  {optionManagerSaving ? 'Salvando...' : optionEditTarget.optionId ? 'Atualizar' : 'Adicionar'}
-                                </button>
-                                <button type="button" onClick={() => setOptionEditTarget(null)}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-100">Cancelar</button>
-                              </div>
-                            </form>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }

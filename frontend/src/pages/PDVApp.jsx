@@ -95,6 +95,8 @@ function PDVApp() {
           paymentType: order.paymentType,
           address: order.deliveryAddress,
           createdAt: order.createdAt,
+          // Cartão de pedido e Histórico mostram/ordenam por "time".
+          time: order.createdAt,
           items: processedItems,
           fees: order.fees || [],
           discounts: order.discounts || []

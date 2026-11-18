@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime
 from flask import Blueprint, request, jsonify, g
 from database import db
-from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour
+from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour, menu_item_option_groups
 from auth_utils import login_required
 import keeta_client
 from keeta_client import force_menu_sync
@@ -239,6 +239,10 @@ def _notify_keeta_menu_sync(store):
     Falhas aqui são apenas logadas (não interrompem a resposta ao
     frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
     """
+    # A tela salva um grupo de complementos em várias chamadas (grupo, opções,
+    # produtos); as intermediárias vêm com ?sync=0 e só a última avisa a Keeta.
+    if request.args.get("sync") == "0":
+        return
     try:
         # Alterações normais disparam o pull do GET /merchant.
         from models import StoreConfig
@@ -948,6 +952,48 @@ def delete_option(group_id, option_id):
 
 
 # --- Vincula/desvincula OptionGroups a MenuItems ---
+
+@stores_bp.put("/me/option-groups/<int:group_id>/items")
+@login_required
+def set_option_group_items(group_id):
+    """
+    Define de uma vez quais produtos usam o grupo. Body: { "itemIds": [1, 2, ...] }
+    Substitui todos os vínculos numa única gravação e avisa a Keeta uma vez só
+    (vincular produto por produto enviaria o cardápio inteiro a cada clique).
+    """
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    group = MenuOptionGroup.query.filter_by(id=group_id, store_id=store.id).first()
+    if not group:
+        return jsonify({"error": "Grupo não encontrado."}), 404
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("itemIds")
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "Envie a lista de produtos (itemIds)."}), 400
+    try:
+        item_ids = sorted({int(item_id) for item_id in raw_ids})
+    except (TypeError, ValueError):
+        return jsonify({"error": "Lista de produtos inválida."}), 400
+    items = MenuItem.query.filter(MenuItem.store_id == store.id, MenuItem.id.in_(item_ids)).all() if item_ids else []
+    if len(items) != len(item_ids):
+        return jsonify({"error": "Algum produto não foi encontrado nesta loja."}), 404
+    if any(item.is_option_item for item in items):
+        return jsonify({"error": "Complementos não podem ter grupos de complementos."}), 400
+
+    try:
+        db.session.execute(menu_item_option_groups.delete().where(menu_item_option_groups.c.option_group_id == group.id))
+        for item in items:
+            db.session.execute(menu_item_option_groups.insert().values(menu_item_id=item.id, option_group_id=group.id))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
+
+    _notify_keeta_menu_sync(store)
+    return jsonify({"message": "Produtos atualizados.", "itemIds": item_ids}), 200
+
 
 @stores_bp.post("/me/menu/<int:item_id>/option-groups")
 @login_required

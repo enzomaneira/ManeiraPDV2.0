@@ -89,13 +89,16 @@ export const menuService = {
 
 export const optionGroupService = {
     getAll: () => api.get('/stores/me/option-groups'),
-    create: (data) => api.post('/stores/me/option-groups', data),
-    update: (groupId, data) => api.put(`/stores/me/option-groups/${groupId}`, data),
+    // { sync: false } não avisa a Keeta nesta chamada (a tela faz um envio só no fim)
+    create: (data, { sync = true } = {}) => api.post('/stores/me/option-groups', data, { params: sync ? {} : { sync: 0 } }),
+    update: (groupId, data, { sync = true } = {}) => api.put(`/stores/me/option-groups/${groupId}`, data, { params: sync ? {} : { sync: 0 } }),
     delete: (groupId) => api.delete(`/stores/me/option-groups/${groupId}`),
     // Options
-    createOption: (groupId, data) => api.post(`/stores/me/option-groups/${groupId}/options`, data),
-    updateOption: (groupId, optionId, data) => api.put(`/stores/me/option-groups/${groupId}/options/${optionId}`, data),
-    deleteOption: (groupId, optionId) => api.delete(`/stores/me/option-groups/${groupId}/options/${optionId}`),
+    createOption: (groupId, data, { sync = true } = {}) => api.post(`/stores/me/option-groups/${groupId}/options`, data, { params: sync ? {} : { sync: 0 } }),
+    updateOption: (groupId, optionId, data, { sync = true } = {}) => api.put(`/stores/me/option-groups/${groupId}/options/${optionId}`, data, { params: sync ? {} : { sync: 0 } }),
+    deleteOption: (groupId, optionId, { sync = true } = {}) => api.delete(`/stores/me/option-groups/${groupId}/options/${optionId}`, { params: sync ? {} : { sync: 0 } }),
+    // Define de uma vez quais produtos usam o grupo (um único envio para a Keeta)
+    setItems: (groupId, itemIds) => api.put(`/stores/me/option-groups/${groupId}/items`, { itemIds }),
 };
 
 export const availabilityService = {

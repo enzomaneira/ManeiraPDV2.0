@@ -46,10 +46,12 @@ export default function StoreContactSettings() {
   }, []);
 
   const updatePeriod = (index, changes) => setPeriods(prev => prev.map((period, i) => (i === index ? { ...period, ...changes } : period)));
-  const toggleDay = (index, code) => {
-    const days = periods[index].days;
-    updatePeriod(index, { days: days.includes(code) ? days.filter(day => day !== code) : DAY_CODES.filter(day => day === code || days.includes(day)) });
-  };
+  // Atualização funcional: cliques rápidos em vários dias não se perdem.
+  const toggleDay = (index, code) => setPeriods(prev => prev.map((period, i) => {
+    if (i !== index) return period;
+    const days = period.days;
+    return { ...period, days: days.includes(code) ? days.filter(day => day !== code) : DAY_CODES.filter(day => day === code || days.includes(day)) };
+  }));
 
   const handleSave = async (e) => {
     e.preventDefault();
