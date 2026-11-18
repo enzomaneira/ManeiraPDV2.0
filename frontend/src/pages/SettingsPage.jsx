@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import api from '../services/api';
 import AccountSettings from '../components/AccountSettings';
+import StoreContactSettings from '../components/StoreContactSettings';
 import { Save, Store, Globe, Wifi, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function SettingsPage({ config, setConfig }) {
@@ -188,6 +189,8 @@ export default function SettingsPage({ config, setConfig }) {
               </div>
           </div>
       </div>
+
+      <StoreContactSettings />
 
       <AccountSettings />
     </div>
