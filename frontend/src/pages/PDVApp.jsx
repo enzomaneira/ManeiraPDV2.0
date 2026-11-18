@@ -200,7 +200,10 @@ function PDVApp() {
           </div>
         </header>
 
-        <div className={`flex-1 p-8 ${activeTab === 'history' ? 'overflow-y-auto' : 'overflow-x-auto overflow-y-hidden'}`}>
+        {/* Só o quadro de pedidos rola na horizontal (colunas); as demais abas
+            (Histórico, Cardápio, Configurações) rolam na vertical. min-h-0
+            deixa a área encolher dentro do flex para a rolagem funcionar. */}
+        <div className={`flex-1 min-h-0 p-8 ${activeTab === 'orders' ? 'overflow-x-auto overflow-y-hidden' : 'overflow-y-auto'}`}>
           {activeTab === 'orders' && <OrdersPage orders={orders} config={config} onSelectOrder={setSelectedOrder} />}
           {activeTab === 'history' && <HistoryPage orders={orders} />}
           {activeTab === 'settings' && <SettingsPage config={config} setConfig={setConfig} />}
