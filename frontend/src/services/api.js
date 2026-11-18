@@ -56,6 +56,17 @@ export const storeService = {
     rename: (name) => api.put('/stores/me', { name }),
 };
 
+export const imageService = {
+    status: () => api.get('/stores/me/images/status'),
+    // Envia a foto; o backend ajusta (4:3, até 1200×900, JPG) e manda ao Cloudflare R2.
+    upload: (file, name) => {
+        const form = new FormData();
+        form.append('image', file);
+        if (name) form.append('name', name);
+        return api.post('/stores/me/images', form);
+    },
+};
+
 export const orderService = {
     getAll: () => api.get('/orders/'),
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { X, Save, Loader2, Image, ChevronDown, ChevronRight, Plus, Clock, Trash2 } from 'lucide-react';
+import { X, Save, Loader2, ChevronDown, ChevronRight, Plus, Clock, Trash2 } from 'lucide-react';
+import PhotoField from './PhotoField';
 import { menuService, availabilityService } from '../../services/api';
 import { formatCurrency } from '../../utils/formatters';
 import {
@@ -45,12 +46,10 @@ export default function ProductEditor({
   const [pendingGroups, setPendingGroups] = useState(() => (draft?.optionGroupsId || []));
   const [saving, setSaving] = useState(false);
   const [linkingId, setLinkingId] = useState(null);
-  const [imageFailed, setImageFailed] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [rule, setRule] = useState(EMPTY_RULE);
   const [ruleSaving, setRuleSaving] = useState(false);
 
-  useEffect(() => { setImageFailed(false); }, [form.imageUrl]);
   // O produto pode ter mudado no backend (vínculos); pega a versão nova.
   useEffect(() => { if (product) setCurrent(product); }, [product]);
 
@@ -168,16 +167,8 @@ export default function ProductEditor({
               </select></div>
           </Section>
 
-          <Section number="2" title="Foto" hint="Cole o link direto da imagem (ex.: Cloudflare R2). JPG ou PNG, mínimo 600×450 px, até 5 MB.">
-            <div className="flex items-start gap-3">
-              <input type="url" className={inputClass + ' font-mono'} value={form.imageUrl} onChange={e => set({ imageUrl: e.target.value })} placeholder="https://pub-....r2.dev/produtos/foto.jpg" aria-label="Link da foto" />
-              <div className="w-24 h-[72px] rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
-                {form.imageUrl.trim() && !imageFailed
-                  ? <img src={form.imageUrl.trim()} alt="Prévia da foto" className="w-full h-full object-cover" onError={() => setImageFailed(true)} />
-                  : <Image className="w-6 h-6 text-slate-300" />}
-              </div>
-            </div>
-            {imageFailed && form.imageUrl.trim() && <p className="text-xs text-red-600">Não foi possível abrir esta imagem. Confira se o link abre a foto diretamente no navegador.</p>}
+          <Section number="2" title="Foto" hint="Envie a foto do computador (o PDV ajusta e guarda no Cloudflare) ou cole um link.">
+            <PhotoField value={form.imageUrl} onChange={imageUrl => set({ imageUrl })} productName={form.name} />
           </Section>
 
           <Section number="3" title="Preço">

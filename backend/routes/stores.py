@@ -23,7 +23,8 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify, g
 from database import db
 from models import MenuItem, MenuCategory, MenuOptionGroup, MenuOption, MenuAvailability, AvailabilityHour, menu_item_option_groups
-from auth_utils import login_required
+from auth_utils import login_required, rate_limited
+import image_service
 import keeta_client
 from keeta_client import force_menu_sync
 
@@ -952,6 +953,46 @@ def delete_option(group_id, option_id):
 
 
 # --- Vincula/desvincula OptionGroups a MenuItems ---
+
+@stores_bp.get("/me/images/status")
+@login_required
+def image_upload_status():
+    """A tela usa para saber se mostra o botão de enviar foto."""
+    return jsonify({"uploadEnabled": image_service.r2_configured()})
+
+
+@stores_bp.post("/me/images")
+@login_required
+def upload_image():
+    """
+    Recebe uma foto (multipart, campo "image"; "name" opcional), ajusta para o
+    padrão da Keeta e envia ao Cloudflare R2. Devolve a URL pública e o que
+    foi alterado. Não grava nada no produto: a tela coloca a URL no campo Foto
+    e o lojista salva o produto.
+    """
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    if not image_service.r2_configured():
+        return jsonify({"error": "O envio de fotos ainda não foi configurado (Cloudflare R2). Por enquanto, cole o link da foto."}), 503
+    if rate_limited(f"image-upload:{store.id}", limit=60, window_seconds=3600):
+        return jsonify({"error": "Muitos envios em pouco tempo. Aguarde alguns minutos."}), 429
+
+    file = request.files.get("image")
+    if not file or not file.filename:
+        return jsonify({"error": "Escolha uma foto para enviar."}), 400
+    try:
+        result = image_service.process_image(file.read())
+        url = image_service.upload_to_r2(result.pop("bytes"), store.id, request.form.get("name") or file.filename.rsplit(".", 1)[0])
+    except image_service.ImageRejected as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as e:
+        print(f"[Stores][upload_image] ERRO no envio ao R2: {type(e).__name__}: {e}")
+        return jsonify({"error": "Não foi possível enviar a foto para o Cloudflare. Tente de novo."}), 502
+
+    print(f"[Stores][upload_image] Foto enviada | store_id={store.id} | {result['width']}x{result['height']} | {result['sizeKb']} KB")
+    return jsonify({"url": url, **result}), 201
+
 
 @stores_bp.put("/me/option-groups/<int:group_id>/items")
 @login_required

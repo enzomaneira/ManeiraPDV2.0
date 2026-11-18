@@ -81,6 +81,8 @@ def create_app():
     def _handle_http_exception(e):
         """Exceções HTTP 'normais' (404, 405, 403...) — retorna o código correto."""
         print(f"[HTTP][HTTP_EXCEPTION] {request.method} {request.path} → {e.code} {e.name}: {e.description}")
+        if e.code == 413:
+            return jsonify({"error": "Arquivo grande demais. O limite de envio é 15 MB."}), 413
         return jsonify({"error": e.description or e.name}), e.code
 
     @application.errorhandler(Exception)
@@ -95,6 +97,8 @@ def create_app():
     database_url = get_database_url()
     application.config["SQLALCHEMY_DATABASE_URI"]        = database_url
     application.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    # Limite do corpo das requisições (fotos do cardápio): acima disso, 413.
+    application.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
     print("[Main][create_app] Configuração SQLALCHEMY_DATABASE_URI definida.")
 
     db.init_app(application)
