@@ -461,6 +461,10 @@ def _build_menu_response(store_id: int):
     cat_offer_map = {}
     uncategorized_id = f"cat-uncat-{store_id}"
 
+    # A Keeta não processa o status da categoria: uma categoria pausada no PDV
+    # pausa as ofertas dela.
+    unavailable_category_ids = {cat.id for cat in categories_db if (cat.status or "AVAILABLE") != "AVAILABLE"}
+
     for idx, item in enumerate(items):
         item_id_str = str(item.id)
         offer_id = f"offer-{item.id}"
@@ -474,14 +478,21 @@ def _build_menu_response(store_id: int):
             "images":       _build_item_images(item.image_url),
         })
 
+        # Complementos (ex.: "Bacon extra") existem só como opção de outro
+        # item: entram em items[] para as opções apontarem para eles, mas não
+        # viram produto (sem itemOffer e sem categoria).
+        if item.is_option_item:
+            continue
+
+        offer_status = item.status or "AVAILABLE"
+        if item.category_id in unavailable_category_ids:
+            offer_status = "UNAVAILABLE"
+
         item_offers.append({
             "id":     offer_id,
             "itemId": item_id_str,
             "index":  item.index if item.index is not None else idx,
-            # `status` é required pelo schema — nunca pode ir None. O modelo
-            # já tem default="AVAILABLE", mas aplicamos o mesmo fallback aqui
-            # por segurança (defesa em profundidade).
-            "status": item.status or "AVAILABLE",
+            "status": offer_status,
             # O preço explícito de delivery evita que a Keeta interprete a
             # oferta como tendo apenas preço indoor.
             # No contrato Open Delivery, `price` é o preço de delivery da
@@ -504,6 +515,10 @@ def _build_menu_response(store_id: int):
 
     for cat in categories_db:
         cat_id = str(cat.id)
+        # Categoria sem nenhuma oferta (vazia ou só com complementos) não vai
+        # para a Keeta.
+        if not cat_offer_map.get(cat.id):
+            continue
         category_menu_ids.append(cat_id)
         categories.append({
             "id":             cat_id,
@@ -573,21 +588,30 @@ def _build_menu_response(store_id: int):
     option_group_ids_map = {}
     option_group_ids_with_options = set()
 
+    store_item_ids = {item.id for item in items}
+    item_status_by_id = {item.id: (item.status or "AVAILABLE") for item in items}
+
     for og in option_groups_db:
         og_id = str(og.id)
         option_group_ids_map[og.id] = og_id
         options_list = []
         available_options_count = 0
-        for opt_idx, opt in enumerate(og.options):
+        for opt in og.options:
+            # Toda opção precisa apontar para um Item enviado em items[].
+            if opt.item_id not in store_item_ids:
+                print(f"[_build_menu_response] AVISO: opção id={opt.id} do grupo '{og.name}' sem item válido "
+                      f"(item_id={opt.item_id}); omitida do cardápio enviado à Keeta.")
+                continue
+            # Item esgotado esgota também a opção que o oferece.
             opt_status = opt.status or "AVAILABLE"
+            if item_status_by_id.get(opt.item_id) != "AVAILABLE":
+                opt_status = "UNAVAILABLE"
             if opt_status == "AVAILABLE":
                 available_options_count += 1
             options_list.append({
                 "id":           str(opt.id),
-                # Opções novas apontam para o item real; registros legados
-                # continuam usando o identificador sintético até a migração.
-                "itemId":       str(opt.item_id) if opt.item_id is not None else f"sub-item-{opt.id}",
-                "index":        opt_idx,
+                "itemId":       str(opt.item_id),
+                "index":        len(options_list),
                 "status":       opt_status,
                 "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},
                 "maxPermitted": opt.max_permitted,
@@ -724,7 +748,9 @@ def _build_menu_response(store_id: int):
                     "latitude":             -23.5505,
                     "longitude":            -46.6333,
                 },
-                "contactEmails":           ["contato@maneiraburguer.com.br"],
+                # O push MERCHANT grava este e-mail no perfil da loja na Keeta:
+                # usamos o do dono, nunca um e-mail fixo de outra loja.
+                "contactEmails":           [store.owner.email] if store and store.owner else [],
                 "contactPhones": {
                     "commercialNumber":      "5511999999999",
                 },

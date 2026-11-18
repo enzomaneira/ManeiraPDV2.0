@@ -199,6 +199,25 @@ def _owned_category(store, category_id, required=True):
     return category
 
 
+def _create_complement_item(store, name, description, price, status):
+    """Cria o Item de uma opção que não usa um produto existente (ex.: "Bacon extra")."""
+    item = MenuItem(
+        store_id=store.id,
+        category_id=None,
+        name=name,
+        description=description or "",
+        external_code=_resolve_external_code(MenuItem, store, None, "item"),
+        price=price or 0.0,
+        original_price=price or 0.0,
+        status=status or "AVAILABLE",
+        is_option_item=True,
+        index=0,
+    )
+    db.session.add(item)
+    db.session.flush()
+    return item
+
+
 def _owned_option_item(store, item_id):
     if item_id in (None, ""):
         return None
@@ -515,11 +534,13 @@ def create_my_menu_item():
     data = request.get_json(silent=True) or {}
     print(f"[Stores][create_my_menu_item] Body recebido: {data}")
 
-    category_id = data.get("categoryId")
+    category_id = data.get("categoryId") or None
+    is_option_item = bool(data.get("isOptionItem", False))
     try:
         name = _parse_name(data.get("name"), "Nome do item")
         description = _parse_description(data.get("description"))
-        _owned_category(store, category_id)
+        # Complemento (só aparece como opção de outro item) pode não ter categoria.
+        _owned_category(store, category_id, required=not is_option_item)
         price = _parse_price(data.get("price"))
         original_price = _parse_price(data.get("originalPrice", price), "Preço original")
         if original_price < price:
@@ -532,7 +553,6 @@ def create_my_menu_item():
         return jsonify({"error": str(error)}), 400
 
     image_url = (data.get("imageUrl") or "").strip()
-    is_option_item = bool(data.get("isOptionItem", False))
 
     # Calcula o próximo index dentro da categoria
     max_index = db.session.query(db.func.max(MenuItem.index)).filter_by(
@@ -603,8 +623,13 @@ def update_my_menu_item(item_id):
             item.original_price = _parse_price(data["originalPrice"], "Preço original")
         if item.original_price is not None and item.original_price < item.price:
             raise ValueError("O preço original não pode ser menor que o preço atual.")
+        if "isOptionItem" in data:
+            item.is_option_item = bool(data["isOptionItem"])
         if "categoryId" in data:
-            item.category_id = _owned_category(store, data["categoryId"]).id
+            category = _owned_category(store, data["categoryId"] or None, required=not item.is_option_item)
+            item.category_id = category.id if category else None
+        if item.category_id is None and not item.is_option_item:
+            raise ValueError("O item precisa pertencer a uma categoria (categoryId).")
         if "status" in data:
             item.status = _validate_status(data["status"])
         if "index" in data:
@@ -612,8 +637,6 @@ def update_my_menu_item(item_id):
     except ValueError as error:
         db.session.rollback()
         return jsonify({"error": str(error)}), 400
-    if "isOptionItem" in data:
-        item.is_option_item = bool(data["isOptionItem"])
     if "imageUrl" in data:
         item.image_url = str(data["imageUrl"] or "").strip()
 
@@ -796,15 +819,21 @@ def create_option(group_id):
         return jsonify({"error": "Grupo não encontrado."}), 404
     data = request.get_json(silent=True) or {}
     try:
-        name = _parse_name(data.get("name"))
         item = _owned_option_item(store, data.get("itemId"))
+        name = _parse_name(data.get("name") or (item.name if item else None))
+        description = _parse_description(data.get("description"))
         price = _parse_price(data.get("price", 0), required=False)
+        status = _validate_status(data.get("status"))
+        # A Keeta exige que toda opção aponte para um Item real. Sem item
+        # escolhido, criamos um complemento (não aparece como produto).
+        if item is None:
+            item = _create_complement_item(store, name, description, price, status)
         option = MenuOption(
-            option_group_id=group.id, item_id=item.id if item else None, name=name,
-            description=_parse_description(data.get("description")),
+            option_group_id=group.id, item_id=item.id, name=name,
+            description=description,
             external_code=_resolve_external_code(MenuOption, store, data.get("externalCode"), "opt"),
             price=price if price is not None else 0.0,
-            status=_validate_status(data.get("status")),
+            status=status,
             index=(db.session.query(db.func.max(MenuOption.index)).filter_by(option_group_id=group.id).scalar() or -1) + 1,
             max_permitted=_parse_optional_limit(data.get("maxPermitted")),
         )
@@ -850,7 +879,18 @@ def update_option(group_id, option_id):
         if "price" in data: option.price = _parse_price(data["price"], required=False) or 0.0
         if "itemId" in data:
             item = _owned_option_item(store, data["itemId"])
-            option.item_id = item.id if item else None
+            if item is None and not (option.item and option.item.is_option_item):
+                # "Criar automaticamente": a opção ganha um complemento próprio.
+                item = _create_complement_item(store, option.name, option.description, option.price, option.status)
+            if item is not None:
+                option.item_id = item.id
+                option.item = item
+        # Complemento criado para esta opção acompanha nome, descrição e status dela.
+        if option.item is not None and option.item.is_option_item:
+            option.item.name = option.name
+            option.item.description = option.description
+            if "status" in data:
+                option.item.status = option.status
         if "maxPermitted" in data: option.max_permitted = _parse_optional_limit(data["maxPermitted"])
         if "index" in data: option.index = _parse_index(data["index"])
     except ValueError as error:

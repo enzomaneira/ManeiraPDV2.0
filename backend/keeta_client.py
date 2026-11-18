@@ -932,7 +932,8 @@ def sanitize_merchant_for_keeta(merchant: dict) -> dict:
     - availability: datas OU horários semanais, nunca os dois;
     - categories[].externalCode é obrigatório e único;
     - items[].nutritionalInfo, quando enviado, exige description e calories
-      (sem esses dados o bloco é omitido; não inventamos calorias).
+      (sem esses dados o bloco é omitido; não inventamos calorias);
+    - campos null e optionGroups[].priceMethod não são enviados.
     """
     if not isinstance(merchant, dict):
         return merchant
@@ -966,7 +967,23 @@ def sanitize_merchant_for_keeta(merchant: dict) -> dict:
                 item = {key: value for key, value in item.items() if key != "nutritionalInfo"}
         items.append(item)
     sanitized["items"] = items
-    return sanitized
+
+    # priceMethod é ignorado pela Keeta e o PDV usa valores fora do enum
+    # documentado (SUM/MAX/AVG); não o enviamos.
+    sanitized["optionGroups"] = [
+        {key: value for key, value in group.items() if key != "priceMethod"} if isinstance(group, dict) else group
+        for group in merchant.get("optionGroups") or []
+    ]
+    return _without_nulls(sanitized)
+
+
+def _without_nulls(value):
+    """Remove campos null (ex.: description/maxPermitted vazios): o schema espera string/integer."""
+    if isinstance(value, dict):
+        return {key: _without_nulls(entry) for key, entry in value.items() if entry is not None}
+    if isinstance(value, list):
+        return [_without_nulls(entry) for entry in value]
+    return value
 
 
 def _missing_menu_references(merchant: dict) -> str | None:
