@@ -885,12 +885,17 @@ def update_option(group_id, option_id):
             if item is not None:
                 option.item_id = item.id
                 option.item = item
-        # Complemento criado para esta opção acompanha nome, descrição e status dela.
-        if option.item is not None and option.item.is_option_item:
-            option.item.name = option.name
-            option.item.description = option.description
-            if "status" in data:
-                option.item.status = option.status
+        # Complemento usado só por esta opção acompanha nome, descrição e preço
+        # dela. O status NÃO é copiado: o "Esgotado" do complemento (botão da
+        # lista) é o que esgota a opção, e editar a opção não pode desfazê-lo.
+        complement = option.item
+        if complement is not None and complement.is_option_item and \
+                MenuOption.query.filter(MenuOption.item_id == complement.id, MenuOption.id != option.id).count() == 0:
+            complement.name = option.name
+            complement.description = option.description or ""
+            if "price" in data:
+                complement.price = option.price or 0.0
+                complement.original_price = complement.price
         if "maxPermitted" in data: option.max_permitted = _parse_optional_limit(data["maxPermitted"])
         if "index" in data: option.index = _parse_index(data["index"])
     except ValueError as error:
