@@ -3,19 +3,28 @@
 # =============================================================================
 #
 #  Gerencia as configurações da loja do usuário logado: modo de aceite
-#  automático e o ID do restaurante na Keeta.
+#  automático, ID do restaurante na Keeta, contatos e horário de funcionamento.
 #
 #  Cada usuário só enxerga/edita a configuração da SUA PRÓPRIA loja
 #  (StoreConfig.store_id == g.current_user.store.id).
 # =============================================================================
 
+import json
 from flask import Blueprint, request, jsonify, g
 from database import db
 from models import StoreConfig
 from auth_utils import login_required
+from routes.auth import validate_email
 import keeta_client
 
 config_bp = Blueprint("config", __name__)
+
+
+def _config_response(config):
+    """Config + o e-mail do dono, que é o contato usado quando a loja não cadastra outro."""
+    data = config.to_dict()
+    data["ownerEmail"] = g.current_user.email
+    return jsonify(data)
 
 
 @config_bp.get("/")
@@ -48,7 +57,7 @@ def get_config():
         print(f"[Config][get_config] Config encontrada: {config.to_dict()}")
 
     print(f"[Config][get_config] FIM (sucesso) | store_id={store.id}")
-    return jsonify(config.to_dict())
+    return _config_response(config)
 
 
 @config_bp.post("/")
@@ -90,6 +99,24 @@ def update_config():
     if requested_merchant_id and requested_merchant_id != (config.keeta_merchant_id or ""):
         return jsonify({"error": "Para alterar o merchant ID, use \"Ativar Integração\"."}), 400
 
+    # Contatos e horário que a Keeta mostra para a loja. Vazio = volta ao padrão.
+    try:
+        if "contactEmail" in data:
+            email = str(data.get("contactEmail") or "").strip().lower()
+            error = validate_email(email) if email else None
+            if error:
+                raise ValueError("Informe um e-mail de contato válido.")
+            config.contact_email = email or None
+        if "contactPhone" in data:
+            phone = str(data.get("contactPhone") or "").strip()
+            config.contact_phone = keeta_client.normalize_phone(phone) if phone else None
+        if "serviceHours" in data:
+            periods = keeta_client.parse_service_hours(data.get("serviceHours") or [])
+            config.service_hours_json = json.dumps(periods) if periods else None
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
+
     print(f"[Config][update_config] Config DEPOIS da atualização: autoAccept={config.auto_accept} | keetaMerchantId={config.keeta_merchant_id}")
 
     db.session.add(config)
@@ -97,4 +124,4 @@ def update_config():
     print(f"[Config][update_config] Commit realizado com sucesso | store_id={store.id}")
 
     print(f"[Config][update_config] FIM (sucesso) | store_id={store.id}")
-    return jsonify(config.to_dict())
+    return _config_response(config)

@@ -92,9 +92,27 @@ class StoreConfig(db.Model):
     is_store_open     = db.Column(db.Boolean, default=True)
     keeta_authorized  = db.Column(db.Boolean, default=False)
     keeta_auth_id     = db.Column(db.String(100), nullable=True)
+    # Dados que a Keeta exibe/usa (basicInfo.contactEmails, contactPhones e
+    # services[].serviceHours). Horários guardados como o lojista digitou, em
+    # Brasília: [{"days": ["MONDAY", ...], "start": "18:00", "end": "23:00"}].
+    contact_email      = db.Column(db.String(254), nullable=True)
+    contact_phone      = db.Column(db.String(20), nullable=True)
+    service_hours_json = db.Column(db.Text, nullable=True)
+
+    @property
+    def service_hours(self) -> list:
+        import json as _json
+        try:
+            value = _json.loads(self.service_hours_json) if self.service_hours_json else []
+        except (TypeError, ValueError):
+            return []
+        return value if isinstance(value, list) else []
 
     def to_dict(self):
         return {
+            "contactEmail":     self.contact_email,
+            "contactPhone":     self.contact_phone,
+            "serviceHours":     self.service_hours,
             "storeId":          self.store_id,
             "autoAccept":       self.auto_accept,
             "merchantId":       self.keeta_merchant_id,

@@ -906,6 +906,102 @@ def notify_merchant_update(
     )
 
 
+# -----------------------------------------------------------------------------
+#  Contatos e horário de funcionamento (basicInfo / services.serviceHours)
+# -----------------------------------------------------------------------------
+
+WEEK_DAYS = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY")
+BRASILIA_OFFSET_MINUTES = 180  # UTC−3 fixo: o Brasil não tem horário de verão desde 2019
+_MINUTES_PER_DAY = 1440
+
+# Usados enquanto a loja não cadastrou os próprios dados.
+PLACEHOLDER_PHONE = "55-11999999999"
+PLACEHOLDER_WEEK_HOURS = [{
+    "dayOfWeek": list(WEEK_DAYS),
+    "timePeriods": {"startTime": "11:00:00.000Z", "endTime": "23:00:00.000Z"},
+}]
+
+
+def normalize_phone(raw: str) -> str:
+    """
+    Telefone no formato do exemplo da documentação: "55-11999999999"
+    (país-DDD+número). Aceita o que o lojista digitar com ou sem 55,
+    parênteses, espaços e traços.
+    """
+    digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
+    if digits.startswith("55") and len(digits) in (12, 13):
+        digits = digits[2:]
+    if len(digits) not in (10, 11):
+        raise ValueError("Informe o telefone com DDD, por exemplo (11) 98765-4321.")
+    return f"55-{digits}"
+
+
+def _parse_hhmm(value) -> int:
+    text = str(value or "").strip()
+    try:
+        hours, minutes = text.split(":")[:2]
+        hours, minutes = int(hours), int(minutes)
+    except (ValueError, TypeError):
+        raise ValueError(f"Horário inválido: \"{value}\". Use HH:MM.")
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        raise ValueError(f"Horário inválido: \"{value}\". Use HH:MM.")
+    return hours * 60 + minutes
+
+
+def parse_service_hours(raw) -> list:
+    """Valida os períodos de funcionamento digitados em Brasília: [{days, start, end}]."""
+    if not isinstance(raw, list):
+        raise ValueError("Horário de funcionamento inválido.")
+    periods = []
+    for period in raw:
+        if not isinstance(period, dict):
+            raise ValueError("Horário de funcionamento inválido.")
+        days = [str(day).upper() for day in period.get("days") or []]
+        if not days or any(day not in WEEK_DAYS for day in days):
+            raise ValueError("Escolha pelo menos um dia da semana em cada período.")
+        start, end = _parse_hhmm(period.get("start")), _parse_hhmm(period.get("end"))
+        if start == end:
+            raise ValueError("O horário de abertura e de fechamento não podem ser iguais.")
+        periods.append({
+            "days": [day for day in WEEK_DAYS if day in days],
+            "start": f"{start // 60:02d}:{start % 60:02d}",
+            "end": f"{end // 60:02d}:{end % 60:02d}",
+        })
+    return periods
+
+
+def brasilia_periods_to_week_hours(periods: list) -> list:
+    """
+    Converte os períodos em Brasília para services[].serviceHours.weekHours em
+    UTC+0. Um período que passa da meia-noite (em Brasília ou em UTC) vira
+    pedaços em dias diferentes, como no exemplo da documentação
+    (sexta 14:00–23:59 + sábado 00:00–02:00).
+    """
+    week_hours = []
+    for period in periods or []:
+        start = _parse_hhmm(period["start"]) + BRASILIA_OFFSET_MINUTES
+        end = _parse_hhmm(period["end"]) + BRASILIA_OFFSET_MINUTES
+        if end <= start:
+            end += _MINUTES_PER_DAY
+        for day in period["days"]:
+            day_index = WEEK_DAYS.index(day)
+            for offset in range(3):
+                day_start = offset * _MINUTES_PER_DAY
+                seg_start = max(start, day_start) - day_start
+                seg_end = min(end, day_start + _MINUTES_PER_DAY) - day_start
+                if seg_end <= seg_start:
+                    continue
+                start_text = f"{seg_start // 60:02d}:{seg_start % 60:02d}"
+                end_text = "23:59" if seg_end >= _MINUTES_PER_DAY else f"{seg_end // 60:02d}:{seg_end % 60:02d}"
+                if end_text <= start_text:
+                    continue
+                week_hours.append({
+                    "dayOfWeek": [WEEK_DAYS[(day_index + offset) % 7]],
+                    "timePeriods": {"startTime": f"{start_text}:00.000Z", "endTime": f"{end_text}:00.000Z"},
+                })
+    return week_hours
+
+
 def normalize_availability(availability: dict) -> dict:
     """
     A Keeta aceita uma availability por intervalo de datas (startDate/endDate)
@@ -1103,7 +1199,7 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     basic_info.setdefault("document", "12345678000199")
     basic_info.setdefault("merchantType", "RESTAURANT")
     basic_info.setdefault("contactEmails", ["contato@minhaloja.com.br"])
-    basic_info.setdefault("contactPhones", {"commercialNumber": "5511999999999"})
+    basic_info.setdefault("contactPhones", {"commercialNumber": PLACEHOLDER_PHONE})
     basic_info.setdefault("minOrderValue", {"value": 0.0, "currency": "BRL"})
     basic_info.setdefault("averagePreparationTime", 30)
     basic_info.setdefault("merchantCategories", ["RESTAURANT"])

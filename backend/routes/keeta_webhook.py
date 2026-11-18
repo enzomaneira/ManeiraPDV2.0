@@ -29,10 +29,7 @@
 
 from flask import Blueprint, request, jsonify, g
 from flask_cors import cross_origin
-import copy
 import json
-import os
-from pathlib import Path
 import time
 import traceback
 import uuid
@@ -45,21 +42,6 @@ from routes.orders import save_order_from_keeta
 from auth_utils import login_required
 
 keeta_bp = Blueprint("keeta", __name__)
-
-
-MANEIRA_KEETA_MERCHANT_ID = "159633716"
-_REFERENCE_MENU_KEYS = ("basicInfo", "services", "menus", "categories", "itemOffers", "items", "optionGroups")
-_REFERENCE_MENU_FILE = Path(
-    os.getenv(
-        "KEETA_MENU_REFERENCE_FILE",
-        str(Path(__file__).resolve().parents[2] / "maneiraburguer_merchant_endpoint.json"),
-    )
-)
-
-
-def _reference_uuid(value: str) -> str:
-    """Gera IDs UUID estáveis para o fallback quando o JSON de referência não está montado."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"maneira-burguer:{value}"))
 
 
 def _build_item_images(image_url: str | None) -> list[dict]:
@@ -87,8 +69,6 @@ def _merchant_id_for_store(store_id: int | str) -> str:
         # Permite usar o fallback em testes/rotas fora de um contexto SQLAlchemy.
         pass
 
-    if requested_id == MANEIRA_KEETA_MERCHANT_ID or requested_id == "1":
-        return MANEIRA_KEETA_MERCHANT_ID
     return requested_id
 
 
@@ -180,229 +160,6 @@ def _resolve_local_store_id(
     return None
 
 
-def _fallback_maneira_menu(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict:
-    """Cardápio mínimo completo do Maneira Burguer usado sem o arquivo de referência."""
-    menu_id = _reference_uuid("menu")
-    service_id = _reference_uuid("service-delivery")
-    category_names = ("Porções", "Hamburguers", "Bebidas")
-    category_ids = {name: _reference_uuid(f"category:{name}") for name in category_names}
-    availability_id = _reference_uuid("availability:always-open")
-    group_names = ("Molhos", "Cheddar e Bacon", "Complemento", "Bebida", "Sucos", "Refrigerantes")
-    group_ids = {name: _reference_uuid(f"option-group:{name}") for name in group_names}
-    item_data = (
-        ("Onion Rings", "118743587", 21.50, "Porções", ("Molhos",)),
-        ("Batatas Maneiras", "118743586", 25.00, "Porções", ("Molhos", "Cheddar e Bacon")),
-        ("Burguer Bacon Maneiro", "118825405", 35.00, "Hamburguers", ("Molhos", "Complemento", "Bebida")),
-        ("Mushroom & Truffle Burguer", "118702187", 40.00, "Hamburguers", ("Bebida", "Complemento", "Molhos")),
-        ("Spicy Jalapeño Maneirito", "118866665", 40.00, "Hamburguers", ("Bebida", "Complemento", "Molhos")),
-        ("BBQ Bacon Stack", "119000512", 37.00, "Hamburguers", ("Bebida", "Complemento", "Molhos")),
-        ("Clássico Maneiro Cheeseburger", "118793629", 32.00, "Hamburguers", ("Complemento", "Molhos", "Bebida")),
-        ("Sucos naturais", "118712564", 14.00, "Bebidas", ("Sucos",)),
-        ("Refrigerantes", "118968811", 8.00, "Bebidas", ("Refrigerantes",)),
-    )
-    items = []
-    offers = []
-    category_offers = {category_id: [] for category_id in category_ids.values()}
-
-    # O fallback continua funcionando sem banco, mas aproveita as imagens dos
-    # itens da loja 1 quando elas estiverem disponíveis.
-    image_urls_by_external_code = {}
-    try:
-        database_items = MenuItem.query.filter_by(store_id=1).all()
-    except Exception:
-        database_items = []
-    for database_item in database_items:
-        image_url = getattr(database_item, "image_url", None)
-        if isinstance(image_url, str) and image_url.strip():
-            image_urls_by_external_code[str(database_item.external_code)] = image_url.strip()
-
-    for index, (name, external_code, price, category, groups) in enumerate(item_data):
-        item_id = _reference_uuid(f"item:{external_code}")
-        offer_id = _reference_uuid(f"item-offer:{external_code}")
-        price_details = {"value": price, "originalValue": price, "currency": "BRL"}
-        image_url = image_urls_by_external_code.get(external_code)
-        images = []
-        if isinstance(image_url, str) and image_url.lower().startswith(("https://", "http://")):
-            images = [{"type": "main", "url": image_url}]
-
-        items.append({
-            "id": item_id,
-            "name": name,
-            "description": name,
-            "externalCode": external_code,
-            "status": "AVAILABLE",
-            "images": images,
-            "deliveryPrice": price_details,
-            "nutritionalInfo": {"isAlcoholic": False},
-        })
-        offers.append({
-            "id": offer_id,
-            "itemId": item_id,
-            "index": index,
-            "status": "AVAILABLE",
-            # `price` é o preço de delivery no Open Delivery v1.5.0. Os
-            # aliases explícitos mantêm o fallback compatível com validadores
-            # que exigem deliveryPrice/pickupPrice no itemOffer.
-            "price": price_details,
-            "deliveryPrice": price_details,
-            "pickupPrice": price_details,
-            "optionGroupsId": [group_ids[group] for group in groups],
-            "availabilityId": [availability_id],
-        })
-        category_offers[category_ids[category]].append(offer_id)
-
-    categories = [
-        {
-            "id": category_ids[name],
-            "index": index,
-            "name": name,
-            "description": name,
-            "status": "AVAILABLE",
-            "itemOfferId": category_offers[category_ids[name]],
-            "availabilityId": [availability_id],
-        }
-        for index, name in enumerate(category_names)
-    ]
-    # A Keeta exige `options` quando um optionGroup é referenciado por um
-    # itemOffer. Os itemIds abaixo apontam para itens reais deste próprio
-    # Merchant, e todos os IDs são determinísticos entre deploys.
-    option_specs = {
-        "Molhos": (("Ketchup", "118743587", 0.0), ("Maionese", "118743587", 0.0), ("Mostarda", "118743587", 0.0), ("Barbecue", "118743587", 0.0)),
-        "Cheddar e Bacon": (("Cheddar Extra", "118743586", 4.0), ("Bacon Extra", "118743586", 5.0)),
-        "Complemento": (("Batata Frita", "118743586", 8.0), ("Onion Rings", "118743587", 10.0)),
-        "Bebida": (("Refrigerante 350ml", "118968811", 0.0), ("Suco Natural 350ml", "118712564", 0.0)),
-        "Sucos": (("Suco de Laranja", "118712564", 0.0), ("Suco de Manga", "118712564", 0.0)),
-        "Refrigerantes": (("Coca-Cola 350ml", "118968811", 0.0), ("Guaraná 350ml", "118968811", 0.0)),
-    }
-    item_ids_by_external_code = {
-        external_code: _reference_uuid(f"item:{external_code}")
-        for _, external_code, *_ in item_data
-    }
-    option_groups = []
-    for index, name in enumerate(group_names):
-        options = [
-            {
-                "id": _reference_uuid(f"option:{name}:{option_name}"),
-                "itemId": item_ids_by_external_code[item_external_code],
-                "index": option_index,
-                "status": "AVAILABLE",
-                "price": {"value": option_price, "originalValue": option_price, "currency": "BRL"},
-            }
-            for option_index, (option_name, item_external_code, option_price) in enumerate(option_specs[name])
-        ]
-        option_groups.append({
-            "id": group_ids[name],
-            "index": index,
-            "name": name,
-            "description": name,
-            "externalCode": f"OG-{index + 1}",
-            "status": "AVAILABLE",
-            "minPermitted": 0,
-            "maxPermitted": 1,
-            "priceMethod": "SUM",
-            "options": options,
-        })
-    return {
-        # Deve ser exatamente o merchantId informado no onboarding.
-        "id": str(merchant_id),
-        "status": "AVAILABLE",
-        "basicInfo": {
-            "name": "MANEIRA BURGUER",
-            "document": "12345678000199",
-            "merchantType": "RESTAURANT",
-            "address": {
-                "country": "BR",
-                "state": "SP",
-                "city": "São Paulo",
-                "district": "Centro",
-                "street": "Avenida Paulista",
-                "number": "1000",
-                "postalCode": "01310-100",
-                "complement": "",
-                "latitude": -23.5505,
-                "longitude": -46.6333,
-            },
-            "contactEmails": ["contato@maneiraburguer.com.br"],
-            "contactPhones": {"commercialNumber": "5511999999999"},
-            "minOrderValue": {"value": 0.0, "currency": "BRL"},
-            "averagePreparationTime": 30,
-            "merchantCategories": ["RESTAURANT"],
-        },
-        "services": [{
-            "id": service_id,
-            "status": "AVAILABLE",
-            "serviceType": "DELIVERY",
-            "menuId": menu_id,
-            "serviceHours": {
-                "id": "103912b3-0daf-536f-8aa8-96d7f58d8723",
-                "weekHours": [{
-                    "dayOfWeek": [
-                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
-                        "FRIDAY", "SATURDAY", "SUNDAY",
-                    ],
-                    "timePeriods": {
-                        "startTime": "11:00:00.000Z",
-                        "endTime": "23:00:00.000Z",
-                    },
-                }],
-            },
-        }],
-        "menus": [{
-            "id": menu_id,
-            "name": "MANEIRA BURGUER",
-            "description": "MANEIRA BURGUER",
-            "externalCode": MANEIRA_KEETA_MERCHANT_ID,
-            "categoryId": [category_ids[name] for name in category_names],
-        }],
-        "categories": categories,
-        "itemOffers": offers,
-        "items": items,
-        "optionGroups": option_groups,
-        "availabilities": [{
-            "id": availability_id,
-            "startDate": "2024-01-01",
-            "endDate": "2099-12-31",
-            "hours": [{
-                "dayOfWeek": [
-                    "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
-                    "FRIDAY", "SATURDAY", "SUNDAY",
-                ],
-                "timePeriods": {
-                    "startTime": "11:00:00.000Z",
-                    "endTime": "23:00:00.000Z",
-                },
-            }],
-        }],
-    }
-
-
-def _load_maneira_menu_reference(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -> dict:
-    """Lê o JSON gerado do cardápio e mantém o fallback executável em ambientes sem o arquivo."""
-    if _REFERENCE_MENU_FILE.is_file():
-        try:
-            with _REFERENCE_MENU_FILE.open("r", encoding="utf-8") as reference_file:
-                menu = json.load(reference_file)
-            if isinstance(menu, dict) and all(key in menu for key in _REFERENCE_MENU_KEYS):
-                # O contrato do GET é deliberadamente restrito a este envelope;
-                # não propague metadados extras que possam existir no arquivo.
-                normalized_menu = {key: menu[key] for key in _REFERENCE_MENU_KEYS}
-                # O id do arquivo não pode prevalecer: a Keeta exige que o
-                # Merchant.id seja o mesmo merchantId do onboarding.
-                normalized_menu["id"] = str(merchant_id)
-                normalized_menu.setdefault("status", "AVAILABLE")
-                # TTL e lastUpdate são ignorados pela Keeta e não fazem parte
-                # do contrato mínimo do GET /merchant.
-                normalized_menu.pop("TTL", None)
-                normalized_menu.pop("lastUpdate", None)
-                return normalized_menu
-            print(f"[Menu] AVISO: {_REFERENCE_MENU_FILE} não possui o envelope esperado; usando fallback.")
-        except (OSError, json.JSONDecodeError) as error:
-            print(f"[Menu] AVISO: falha ao ler {_REFERENCE_MENU_FILE}: {type(error).__name__}: {error}")
-    else:
-        print(f"[Menu] AVISO: arquivo de referência não encontrado em {_REFERENCE_MENU_FILE}; usando fallback.")
-    return _fallback_maneira_menu(merchant_id)
-
-
 # =============================================================================
 #  FUNÇÃO AUXILIAR — Monta o JSON completo do cardápio no formato Open Delivery
 # =============================================================================
@@ -432,18 +189,16 @@ def _build_menu_response(store_id: int):
     merchant_id = _merchant_id_for_store(store_id)
     print(f"[_build_menu_response] merchant_id do onboarding={merchant_id}")
 
-    # O Maneira Burguer possui um cardápio versionado pelo arquivo gerado para
-    # a integração. Retornamos uma cópia para nunca permitir que uma chamada
-    # modifique o objeto mantido em memória pelo processo.
-    if str(store_id) == "1" or str(store_id) == MANEIRA_KEETA_MERCHANT_ID:
-        menu = copy.deepcopy(_load_maneira_menu_reference(merchant_id))
-        menu["status"] = _merchant_status_for_store(store_id)
-        print(f"[_build_menu_response] FIM (referência Maneira Burguer) | keys={list(menu)}")
-        return menu
-
     # --- Busca a loja no banco para preencher o basicInfo ---
     store = Store.query.get(store_id)
     store_name = store.name if store else "Minha Loja"
+    config = StoreConfig.query.get(store_id)
+    # Contatos e horário cadastrados em Configurações; sem cadastro, o e-mail do
+    # dono e os valores padrão (telefone de exemplo, 08:00–20:00 em Brasília).
+    contact_email = (config.contact_email if config else None) or (store.owner.email if store and store.owner else None)
+    contact_phone = (config.contact_phone if config else None) or keeta_client.PLACEHOLDER_PHONE
+    week_hours = keeta_client.brasilia_periods_to_week_hours(config.service_hours if config else []) \
+        or keeta_client.PLACEHOLDER_WEEK_HOURS
     print(f"[_build_menu_response] Loja: nome='{store_name}'")
 
     # --- Busca os itens do cardápio no banco ---
@@ -567,18 +322,7 @@ def _build_menu_response(store_id: int):
         "menuId":      menu_id,
         "serviceHours": {
             "id": hours_id,
-            "weekHours": [
-                {
-                    "dayOfWeek": [
-                        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY",
-                        "FRIDAY", "SATURDAY", "SUNDAY",
-                    ],
-                    "timePeriods": {
-                        "startTime": "11:00:00.000Z",
-                        "endTime":   "23:00:00.000Z",
-                    },
-                },
-            ],
+            "weekHours": week_hours,
         },
     }]
 
@@ -748,11 +492,10 @@ def _build_menu_response(store_id: int):
                     "latitude":             -23.5505,
                     "longitude":            -46.6333,
                 },
-                # O push MERCHANT grava este e-mail no perfil da loja na Keeta:
-                # usamos o do dono, nunca um e-mail fixo de outra loja.
-                "contactEmails":           [store.owner.email] if store and store.owner else [],
+                # O push MERCHANT grava estes contatos no perfil da loja na Keeta.
+                "contactEmails":           [contact_email] if contact_email else [],
                 "contactPhones": {
-                    "commercialNumber":      "5511999999999",
+                    "commercialNumber":      contact_phone,
                 },
                 "minOrderValue":            {"value": 0.0, "currency": "BRL"},
                 "averagePreparationTime":  30,
@@ -1292,10 +1035,8 @@ def force_sync_menu():
 @keeta_bp.get("/menu")
 def get_merchant_menu():
     """
-    A Keeta chama este endpoint (GET /merchant) para buscar o cardápio da loja.
-    Para o Maneira Burguer, o retorno é carregado de
-    `maneiraburguer_merchant_endpoint.json` (ou do fallback versionado quando o
-    arquivo não estiver presente no ambiente).
+    A Keeta chama este endpoint (GET /merchant) para buscar o cardápio da loja,
+    montado do banco de dados (o mesmo cardápio da tela Cardápio do PDV).
 
     Isso acontece quando:
       - A Keeta quer sincronizar o menu após uma notificação de atualização
