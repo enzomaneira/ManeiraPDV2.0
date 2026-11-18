@@ -407,6 +407,21 @@ def _load_maneira_menu_reference(merchant_id: str = MANEIRA_KEETA_MERCHANT_ID) -
 #  FUNÇÃO AUXILIAR — Monta o JSON completo do cardápio no formato Open Delivery
 # =============================================================================
 
+def _merchant_status_for_store(store_id) -> str:
+    """
+    Status do Merchant segundo o botão "Loja aberta/fechada" do PDV. O push
+    MERCHANT aplica este campo (SHOP_STATUS_UPDATE): fixo em AVAILABLE, uma
+    simples edição de cardápio reabria na Keeta uma loja fechada pelo PDV.
+    """
+    try:
+        config = StoreConfig.query.get(int(store_id))
+    except (TypeError, ValueError):
+        config = None
+    if config is not None and config.is_store_open is False:
+        return "UNAVAILABLE"
+    return "AVAILABLE"
+
+
 def _build_menu_response(store_id: int):
     """
     Constrói o JSON do cardápio completo (Open Delivery format) a partir do
@@ -421,9 +436,10 @@ def _build_menu_response(store_id: int):
     # a integração. Retornamos uma cópia para nunca permitir que uma chamada
     # modifique o objeto mantido em memória pelo processo.
     if str(store_id) == "1" or str(store_id) == MANEIRA_KEETA_MERCHANT_ID:
-        menu = _load_maneira_menu_reference(merchant_id)
+        menu = copy.deepcopy(_load_maneira_menu_reference(merchant_id))
+        menu["status"] = _merchant_status_for_store(store_id)
         print(f"[_build_menu_response] FIM (referência Maneira Burguer) | keys={list(menu)}")
-        return copy.deepcopy(menu)
+        return menu
 
     # --- Busca a loja no banco para preencher o basicInfo ---
     store = Store.query.get(store_id)
@@ -689,7 +705,7 @@ def _build_menu_response(store_id: int):
         # O topo precisa repetir o merchantId usado no onboarding, não o ID
         # inteiro interno da loja e nem um UUID gerado localmente.
         "id":     merchant_id,
-        "status": "AVAILABLE",
+        "status": _merchant_status_for_store(store_id),
             "basicInfo": {
                 "name":                    store_name,
                 "document":                "12345678000199",
