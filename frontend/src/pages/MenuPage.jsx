@@ -8,16 +8,110 @@ import {
 } from 'lucide-react';
 import { formatCurrency } from '../utils/formatters';
 
-// Nova disponibilidade vale todos os dias, o dia inteiro (antes era só segunda-feira).
-const ALL_DAYS_HOURS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY']
-  .map(dayOfWeek => ({ dayOfWeek, startTime: '00:00:00.000Z', endTime: '23:59:00.000Z' }));
+// ===== Disponibilidade: horários de Brasília ↔ UTC =====
+// A Keeta só usa os horários semanais (datas são ignoradas) e eles ficam em
+// UTC+0. O lojista digita no horário de Brasília (UTC−3, sem horário de verão
+// desde 2019) e a conversão é feita aqui.
+const WEEK_DAYS = [
+  ['MONDAY', 'Seg'], ['TUESDAY', 'Ter'], ['WEDNESDAY', 'Qua'], ['THURSDAY', 'Qui'],
+  ['FRIDAY', 'Sex'], ['SATURDAY', 'Sáb'], ['SUNDAY', 'Dom'],
+];
+const DAY_CODES = WEEK_DAYS.map(([code]) => code);
+const DAY_LABELS = Object.fromEntries(WEEK_DAYS);
+const BRASILIA_OFFSET_MINUTES = 180;
+const MINUTES_PER_DAY = 1440;
+const EMPTY_AVAIL_FORM = { name: '', days: [...DAY_CODES], start: '11:00', end: '23:00' };
+
+const toMinutes = (time) => { const [h, m] = String(time).split(':').map(Number); return h * 60 + m; };
+const formatMinutes = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
+// Converte "dias + início/fim em Brasília" para as linhas em UTC que o backend
+// guarda. Um intervalo que passa da meia-noite (em Brasília ou em UTC) vira duas
+// linhas, uma em cada dia, porque cada linha precisa ter início antes do fim.
+function brasiliaRangeToUtcHours(days, start, end) {
+  const hours = [];
+  let startMin = toMinutes(start) + BRASILIA_OFFSET_MINUTES;
+  let endMin = toMinutes(end) + BRASILIA_OFFSET_MINUTES;
+  if (endMin <= startMin) endMin += MINUTES_PER_DAY;
+  days.forEach(day => {
+    const dayIndex = DAY_CODES.indexOf(day);
+    for (let offset = 0; offset < 3; offset++) {
+      const dayStart = offset * MINUTES_PER_DAY;
+      const segStart = Math.max(startMin, dayStart) - dayStart;
+      const segEnd = Math.min(endMin, dayStart + MINUTES_PER_DAY) - dayStart;
+      if (segEnd <= segStart) continue;
+      const startTime = formatMinutes(segStart);
+      const endTime = segEnd >= MINUTES_PER_DAY ? '23:59' : formatMinutes(segEnd);
+      if (endTime <= startTime) continue;
+      hours.push({ dayOfWeek: DAY_CODES[(dayIndex + offset) % 7], startTime: `${startTime}:00.000Z`, endTime: `${endTime}:00.000Z` });
+    }
+  });
+  return hours;
+}
+
+// Converte uma linha guardada em UTC para Brasília: { dayIndex, start, end } em minutos.
+function utcHourToBrasilia(hour) {
+  let dayIndex = DAY_CODES.indexOf(hour.dayOfWeek);
+  const endUtc = hour.endTime.slice(0, 5) === '23:59' ? MINUTES_PER_DAY : toMinutes(hour.endTime.slice(0, 5));
+  let start = toMinutes(hour.startTime.slice(0, 5)) - BRASILIA_OFFSET_MINUTES;
+  let end = endUtc - BRASILIA_OFFSET_MINUTES;
+  if (start < 0) { dayIndex = (dayIndex + 6) % 7; start += MINUTES_PER_DAY; end += MINUTES_PER_DAY; }
+  return { dayIndex, start, end };
+}
+
+// Rótulos em Brasília (ex.: "Sex 18:00–23:00"), juntando os pedaços que a
+// conversão para UTC separou na meia-noite.
+function brasiliaLabels(hours) {
+  const ranges = (hours || []).map(utcHourToBrasilia).sort((a, b) => a.dayIndex - b.dayIndex || a.start - b.start);
+  const merged = [];
+  ranges.forEach(range => {
+    const last = merged[merged.length - 1];
+    if (last && last.dayIndex === range.dayIndex && last.end === range.start) last.end = range.end;
+    else merged.push({ ...range });
+  });
+  return merged.map(({ dayIndex, start, end }) => {
+    const endLabel = end === MINUTES_PER_DAY ? '24:00' : formatMinutes(end % MINUTES_PER_DAY);
+    return `${DAY_LABELS[DAY_CODES[dayIndex]]} ${formatMinutes(start)}–${endLabel}`;
+  });
+}
+
+// Escolhe o item que a opção representa. A Keeta exige um item real para toda
+// opção; deixando em "criar automaticamente", o backend cria um complemento com
+// o nome e o preço da opção (ele não aparece como produto no cardápio).
+function OptionItemSelect({ value, choices, onChange }) {
+  return (
+    <div>
+      <select value={value} onChange={e => onChange(e.target.value)} aria-label="Item da opção"
+        className="w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg">
+        <option value="">Criar complemento automaticamente (nome e preço desta opção)</option>
+        {choices.map(item => (
+          <option key={item.id} value={item.id}>
+            {item.isOptionItem ? 'Complemento' : 'Produto'}: {item.name} · {formatCurrency(item.price)}{item.status !== 'AVAILABLE' ? ' (esgotado)' : ''}
+          </option>
+        ))}
+      </select>
+      <p className="text-[10px] text-slate-400 mt-1">Esgotar o item escolhido também esgota esta opção na Keeta.</p>
+    </div>
+  );
+}
 
 export default function MenuPage() {
   const [categories, setCategories] = useState([]);
-  const [items, setItems] = useState([]);
+  // Todos os itens da loja (produtos e complementos). A lista da tela é filtrada
+  // pela categoria escolhida; os seletores de opção precisam da loja inteira.
+  const [allItems, setAllItems] = useState([]);
   const [optionGroups, setOptionGroups] = useState([]);
   const [availabilities, setAvailabilities] = useState([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
+  const items = selectedCategoryId
+    ? allItems.filter(item => item.categoryId === selectedCategoryId).sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+    : allItems;
+  // Atualiza itens da lista visível sem perder os demais.
+  const setItems = (update) => setAllItems(prev => {
+    const next = typeof update === 'function' ? update(items) : update;
+    const byId = new Map(next.map(item => [item.id, item]));
+    return prev.map(item => byId.get(item.id) || item);
+  });
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState(null);
   const [syncingMenu, setSyncingMenu] = useState(false);
@@ -49,7 +143,7 @@ export default function MenuPage() {
   // --- Expansão de grupos na aba ---
   const [expandedOGs, setExpandedOGs] = useState({});
   // --- Availability rápido ---
-  const [availForm, setAvailForm] = useState({ name: '', startDate: '', endDate: '', hours: ALL_DAYS_HOURS });
+  const [availForm, setAvailForm] = useState(EMPTY_AVAIL_FORM);
   const [availSaving, setAvailSaving] = useState(false);
 
   const [deletingId, setDeletingId] = useState(null);
@@ -84,12 +178,12 @@ export default function MenuPage() {
     try {
       const [catRes, itemRes, ogRes, avRes] = await Promise.all([
         categoryService.getAll(),
-        menuService.getAll(selectedCategoryId || undefined),
+        menuService.getAll(),
         optionGroupService.getAll(),
         availabilityService.getAll(),
       ]);
       setCategories(catRes.data || []);
-      setItems(itemRes.data || []);
+      setAllItems(itemRes.data || []);
       setOptionGroups(ogRes.data || []);
       setAvailabilities(avRes.data || []);
     } catch (error) {
@@ -102,7 +196,6 @@ export default function MenuPage() {
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { setImageFailed(false); }, [itemForm.imageUrl]);
-  useEffect(() => { if (!loading) fetchData(false); }, [selectedCategoryId]);
 
   // ===== Sync Keeta =====
   const handleSyncMenu = async () => {
@@ -147,18 +240,18 @@ export default function MenuPage() {
   const openNewItem = () => {
     if (categories.length === 0) { showMessage('error', 'Crie uma categoria antes de adicionar itens.'); return; }
     setEditingItem(null); setItemTab('info');
-    setItemForm({ name: '', description: '', externalCode: '', price: '', originalPrice: '', status: 'AVAILABLE', imageUrl: '', categoryId: selectedCategoryId || categories[0].id });
+    setItemForm({ name: '', description: '', externalCode: '', price: '', originalPrice: '', status: 'AVAILABLE', imageUrl: '', categoryId: selectedCategoryId || categories[0].id, isOptionItem: false });
     setShowItemModal(true);
   };
   const openEditItem = (item) => {
     setEditingItem(item); setItemTab('info');
-    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId });
+    setItemForm({ name: item.name, description: item.description || '', externalCode: item.externalCode, price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId, isOptionItem: Boolean(item.isOptionItem) });
     setShowItemModal(true);
   };
   // Abre o formulário de novo item já preenchido com os dados de outro (código fica em branco para gerar um novo).
   const openDuplicateItem = (item) => {
     setEditingItem(null); setItemTab('info');
-    setItemForm({ name: `${item.name} (cópia)`, description: item.description || '', externalCode: '', price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId });
+    setItemForm({ name: `${item.name} (cópia)`, description: item.description || '', externalCode: '', price: String(item.price ?? ''), originalPrice: String(item.originalPrice ?? item.price ?? ''), status: item.status || 'AVAILABLE', imageUrl: item.imageUrl || '', categoryId: item.categoryId, isOptionItem: Boolean(item.isOptionItem) });
     setShowItemModal(true);
   };
 
@@ -201,7 +294,7 @@ export default function MenuPage() {
     if (!name || isNaN(price) || price < 0 || isNaN(originalPrice) || originalPrice < price) { showMessage('error', 'Informe nome, preço válido e preço original maior ou igual ao preço atual.'); return; }
     setItemSaving(true);
     // Código em branco: o backend gera um código único.
-    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim(), price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim(), categoryId: Number(itemForm.categoryId) };
+    const payload = { name, description: itemForm.description.trim(), externalCode: itemForm.externalCode.trim(), price, originalPrice, status: itemForm.status, imageUrl: itemForm.imageUrl.trim(), isOptionItem: Boolean(itemForm.isOptionItem), categoryId: itemForm.categoryId ? Number(itemForm.categoryId) : null };
     try {
       if (editingItem) await menuService.update(editingItem.id, payload);
       else await menuService.create(payload);
@@ -279,7 +372,7 @@ export default function MenuPage() {
       const payload = {
         name: optInlineForm.name.trim(), description: optInlineForm.description.trim(),
         externalCode: optInlineForm.externalCode.trim() || `opt-${Date.now()}`,
-        itemId: optInlineForm.itemId || undefined,
+        itemId: optInlineForm.itemId || null,
         price: parseFloat(String(optInlineForm.price).replace(',', '.')) || 0, status: optInlineForm.status,
       };
       let warning;
@@ -321,12 +414,16 @@ export default function MenuPage() {
 
   // ===== Availability (contextual ao item) =====
   const handleCreateAvailabilityInline = async (e) => {
-    e.preventDefault(); if (!availForm.name.trim() || !editingItem) return;
+    e.preventDefault(); if (!editingItem) return;
+    if (!availForm.name.trim()) { showMessage('error', 'Dê um nome à regra (ex.: "Almoço").'); return; }
+    if (availForm.days.length === 0) { showMessage('error', 'Escolha pelo menos um dia da semana.'); return; }
+    if (availForm.start === availForm.end) { showMessage('error', 'O horário de início e de fim não podem ser iguais.'); return; }
     setAvailSaving(true);
     try {
-      const res = await availabilityService.create(availForm);
+      const hours = brasiliaRangeToUtcHours(availForm.days, availForm.start, availForm.end);
+      const res = await availabilityService.create({ name: availForm.name.trim(), hours });
       await menuService.linkAvailability(editingItem.id, res.data.id);
-      setAvailForm({ name: '', startDate: '', endDate: '', hours: ALL_DAYS_HOURS }); fetchData();
+      setAvailForm(EMPTY_AVAIL_FORM); fetchData();
       showMessage('success', 'Disponibilidade criada e vinculada!');
     } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao criar disponibilidade.')); }
     finally { setAvailSaving(false); }
@@ -345,7 +442,10 @@ export default function MenuPage() {
   };
 
   // ===== Helpers =====
-  const avgPrice = items.length > 0 ? items.reduce((s, i) => s + i.price, 0) / items.length : 0;
+  // Contadores do topo: só produtos (complementos não são vendidos sozinhos).
+  const products = allItems.filter(item => !item.isOptionItem);
+  const complementCount = allItems.length - products.length;
+  const avgPrice = products.length > 0 ? products.reduce((s, i) => s + i.price, 0) / products.length : 0;
   const selectedCategory = categories.find(c => c.id === selectedCategoryId);
   const searchTerm = search.trim().toLowerCase();
   const visibleItems = searchTerm
@@ -434,7 +534,7 @@ export default function MenuPage() {
       const payload = {
         name: optionManagerForm.name.trim(), description: optionManagerForm.description.trim(),
         externalCode: optionManagerForm.externalCode.trim() || `opt-${Date.now()}`,
-        itemId: optionManagerForm.itemId || undefined,
+        itemId: optionManagerForm.itemId || null,
         price: parseFloat(String(optionManagerForm.price).replace(',', '.')) || 0,
         status: optionManagerForm.status,
       };
@@ -466,14 +566,13 @@ export default function MenuPage() {
     catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover opção.')); }
   };
 
-  // eslint-disable-next-line no-unused-vars
-  const getLinkedOGs = (item) => optionGroups.filter(og =>
-    (item.optionGroupsId || item.optionGroups?.map(g => g.id) || []).includes(og.id)
-  );
-  // eslint-disable-next-line no-unused-vars
-  const getLinkedAvails = (item) => availabilities.filter(av =>
-    (item.availabilityId || []).includes(av.id)
-  );
+  // O item aberto no modal, sempre na versão recarregada do backend: depois de
+  // vincular/desvincular, a cópia em editingItem fica desatualizada.
+  const currentItem = (editingItem && allItems.find(item => item.id === editingItem.id)) || editingItem;
+  const linkedGroupIds = currentItem?.optionGroupsId || [];
+  const linkedAvailabilityIds = currentItem?.availabilityId || [];
+  // Itens que podem virar opção: complementos primeiro, depois os produtos.
+  const optionItemChoices = [...allItems].sort((a, b) => Number(b.isOptionItem) - Number(a.isOptionItem) || a.name.localeCompare(b.name));
 
   return (
     <div className="max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 space-y-6 pb-10">
@@ -486,8 +585,8 @@ export default function MenuPage() {
         </div>
         <div className="flex items-center gap-4 text-sm font-bold text-slate-500">
           <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm">{categories.length} categorias</span>
-          <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm">{items.length} itens</span>
-          {items.length > 0 && <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm text-indigo-600">Média {formatCurrency(avgPrice)}</span>}
+          <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm">{products.length} produtos{complementCount > 0 ? ` · ${complementCount} complementos` : ""}</span>
+          {products.length > 0 && <span className="px-3 py-1.5 bg-white rounded-lg border border-slate-200 shadow-sm text-indigo-600">Média {formatCurrency(avgPrice)}</span>}
           <button onClick={openOGManager} className="px-3 py-1.5 bg-purple-50 rounded-lg border border-purple-200 shadow-sm text-purple-700 flex items-center gap-1.5 hover:bg-purple-100 transition-colors">
             <ListPlus className="w-4 h-4" />Grupos ({optionGroups.length})
           </button>
@@ -604,6 +703,7 @@ export default function MenuPage() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <p className={`font-bold truncate ${item.status !== 'AVAILABLE' ? 'text-slate-400' : 'text-slate-800'}`}>{item.name}</p>
+                            {item.isOptionItem && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold shrink-0" title="Não aparece como produto; usado como opção de outros itens">Complemento</span>}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-slate-400 mt-0.5">
                             {item.description && <span className="truncate max-w-[200px]">{item.description}</span>}
@@ -691,8 +791,13 @@ export default function MenuPage() {
                 <form onSubmit={handleSaveItem} className="space-y-4">
                   <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Nome *</label><input type="text" value={itemForm.name} onChange={e => setItemForm({ ...itemForm, name: e.target.value })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none font-medium" placeholder="Nome do produto" autoFocus /></div>
                   <div><label className="block text-sm font-bold text-slate-600 mb-1.5">Descrição</label><textarea value={itemForm.description} onChange={e => setItemForm({ ...itemForm, description: e.target.value })} rows={2} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:outline-none resize-none" /></div>
-                  <div><label className="block text-sm font-bold text-slate-600 mb-1.5"><Layers className="w-3.5 h-3.5 inline mr-1" />Categoria *</label>
-                    <select value={itemForm.categoryId ?? ''} onChange={e => setItemForm({ ...itemForm, categoryId: Number(e.target.value) })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                  <div><label className="flex items-start gap-2 mb-3 p-3 rounded-xl border border-amber-200 bg-amber-50 cursor-pointer">
+                      <input type="checkbox" checked={Boolean(itemForm.isOptionItem)} onChange={e => setItemForm({ ...itemForm, isOptionItem: e.target.checked })} className="mt-0.5" />
+                      <span className="text-sm text-amber-900"><span className="font-bold">Só complemento</span> — não aparece como produto no cardápio; usado como opção de outros itens (ex.: "Bacon extra").</span>
+                    </label>
+                    <label className="block text-sm font-bold text-slate-600 mb-1.5"><Layers className="w-3.5 h-3.5 inline mr-1" />Categoria {itemForm.isOptionItem ? '(opcional)' : '*'}</label>
+                    <select value={itemForm.categoryId ?? ''} onChange={e => setItemForm({ ...itemForm, categoryId: e.target.value ? Number(e.target.value) : null })} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium">
+                      {(itemForm.isOptionItem || !itemForm.categoryId) && <option value="">Sem categoria</option>}
                       {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
                     </select>
                   </div>
@@ -751,7 +856,7 @@ export default function MenuPage() {
                           placeholder="og-molhos-001" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm font-mono" />
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="block text-[11px] font-bold text-slate-500 mb-1">Mín</label>
                         <input type="number" min="0" value={ogInlineForm.minPermitted} onChange={e => setOgInlineForm({ ...ogInlineForm, minPermitted: parseInt(e.target.value) || 0 })}
@@ -762,16 +867,8 @@ export default function MenuPage() {
                         <input type="number" min="1" value={ogInlineForm.maxPermitted} onChange={e => setOgInlineForm({ ...ogInlineForm, maxPermitted: parseInt(e.target.value) || 1 })}
                           className="w-full px-2 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
                       </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-500 mb-1">Preço</label>
-                        <select value={ogInlineForm.priceMethod} onChange={e => setOgInlineForm({ ...ogInlineForm, priceMethod: e.target.value })}
-                          className="w-full px-2 py-2 bg-white border border-slate-200 rounded-lg text-xs">
-                          <option value="SUM">Somar</option>
-                          <option value="HIGHEST">Maior</option>
-                          <option value="LOWEST">Menor</option>
-                        </select>
-                      </div>
                     </div>
+                    <p className="text-[10px] text-slate-400">Na Keeta o preço das opções escolhidas sempre soma ao preço do item.</p>
                     <button type="submit" disabled={ogInlineSaving}
                       className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 ${ogInlineSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700 text-white'}`}>
                       {ogInlineSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : ogInlineEditing ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
@@ -790,7 +887,7 @@ export default function MenuPage() {
                     ) : (
                       <div className="space-y-2">
                         {optionGroups.map(og => {
-                          const isLinked = (editingItem.optionGroupsId || editingItem.optionGroups?.map(group => group.id) || []).includes(og.id);
+                          const isLinked = linkedGroupIds.includes(og.id);
                           const isExpanded = expandedOGs[og.id];
                           return (
                             <div key={og.id} className={`rounded-xl border overflow-hidden transition-all ${isLinked ? 'border-purple-300 shadow-sm' : 'border-slate-200'}`}>
@@ -804,7 +901,7 @@ export default function MenuPage() {
                                       {isLinked && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-200 text-purple-700 font-bold shrink-0">Vinculado</span>}
                                     </div>
                                     <span className="text-xs text-slate-400">
-                                      {og.optionCount || 0} opções · min={og.minPermitted} máx={og.maxPermitted} · {og.priceMethod}
+                                      {og.optionCount || 0} opções · min={og.minPermitted} máx={og.maxPermitted}
                                     </span>
                                   </div>
                                 </button>
@@ -860,11 +957,8 @@ export default function MenuPage() {
                                           onChange={e => setOptInlineForm({ ...optInlineForm, price: e.target.value })}
                                           className="w-24 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg" />
                                       </div>
-                                      <select value={optInlineForm.itemId} onChange={e => setOptInlineForm({ ...optInlineForm, itemId: e.target.value })}
-                                        className="w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg">
-                                        <option value="">Item real (opcional para legado)</option>
-                                        {items.filter(item => !item.isOptionItem || item.id === Number(optInlineForm.itemId)).map(item => <option key={item.id} value={item.id}>{item.name} · {formatCurrency(item.price)}</option>)}
-                                      </select>
+                                      <OptionItemSelect value={optInlineForm.itemId} choices={optionItemChoices}
+                                        onChange={itemId => setOptInlineForm({ ...optInlineForm, itemId })} />
                                       <div className="flex gap-2">
                                         <button type="submit" disabled={optInlineSaving}
                                           className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${optInlineSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}>
@@ -904,10 +998,24 @@ export default function MenuPage() {
                   {/* Criar nova disponibilidade inline */}
                   <form onSubmit={handleCreateAvailabilityInline} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
                     <p className="text-sm font-bold text-slate-600">Criar e Vincular Nova Regra</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      <input type="text" placeholder="Nome *" value={availForm.name} onChange={e => setAvailForm({ ...availForm, name: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                      <input type="date" value={availForm.startDate} onChange={e => setAvailForm({ ...availForm, startDate: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                      <input type="date" value={availForm.endDate} onChange={e => setAvailForm({ ...availForm, endDate: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                    <p className="text-xs text-slate-400">Fora destes dias e horários o item fica indisponível na Keeta. Horário de Brasília.</p>
+                    <input type="text" placeholder="Nome * (ex.: Almoço)" value={availForm.name} onChange={e => setAvailForm({ ...availForm, name: e.target.value })} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
+                    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Dias da semana">
+                      {WEEK_DAYS.map(([code, label]) => {
+                        const checked = availForm.days.includes(code);
+                        return (
+                          <button key={code} type="button" aria-pressed={checked}
+                            onClick={() => setAvailForm({ ...availForm, days: checked ? availForm.days.filter(d => d !== code) : DAY_CODES.filter(d => d === code || availForm.days.includes(d)) })}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${checked ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-500 border-slate-200 hover:border-teal-300'}`}>
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-slate-600">
+                      <label className="flex items-center gap-1.5">Das <input type="time" value={availForm.start} onChange={e => setAvailForm({ ...availForm, start: e.target.value })} className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" /></label>
+                      <label className="flex items-center gap-1.5">às <input type="time" value={availForm.end} onChange={e => setAvailForm({ ...availForm, end: e.target.value })} className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" /></label>
+                      {availForm.end && availForm.start && availForm.end < availForm.start && <span className="text-xs text-slate-400">(termina no dia seguinte)</span>}
                     </div>
                     <button type="submit" disabled={availSaving} className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-bold hover:bg-teal-700 disabled:opacity-50">{availSaving ? '...' : 'Criar e Vincular'}</button>
                   </form>
@@ -917,7 +1025,7 @@ export default function MenuPage() {
                     <p className="text-xs font-bold text-slate-500 mb-2">Vincular Regra Existente</p>
                     <div className="flex flex-wrap gap-2">
                       {availabilities.map(av => {
-                        const isLinked = (editingItem.availabilityId || editingItem.availabilities?.map(availability => availability.id) || []).includes(av.id);
+                        const isLinked = linkedAvailabilityIds.includes(av.id);
                         return (
                           <button key={av.id} onClick={() => isLinked ? handleUnlinkAvail(av.id) : handleLinkExistingAvail(av.id)}
                             className={`text-xs px-3 py-1.5 rounded-full font-medium transition-all ${isLinked ? 'bg-teal-100 text-teal-700 hover:bg-red-100 hover:text-red-700' : 'bg-slate-100 text-slate-500 hover:bg-teal-50 hover:text-teal-600'}`}>
@@ -930,15 +1038,15 @@ export default function MenuPage() {
                   </div>
 
                   {/* Exibir disponibilidades vinculadas */}
-                  {availabilities.filter(av => editingItem.availabilityId?.includes(av.id)).map(av => (
+                  {availabilities.filter(av => linkedAvailabilityIds.includes(av.id)).map(av => (
                     <div key={av.id} className="border border-teal-200 rounded-xl p-4 bg-teal-50/30">
                           <div className="flex items-center justify-between">
                             <span className="font-bold text-slate-700">{av.name}</span>
                             <button onClick={async () => { if (!confirm(`Remover a regra “${av.name}”?`)) return; try { await availabilityService.delete(av.id); await fetchData(); } catch (error) { showMessage('error', getErrorMessage(error, 'Erro ao remover disponibilidade.')); } }} className="text-xs text-red-400 hover:text-red-600">Remover</button>
                       </div>
-                      <div className="text-xs text-slate-400 mt-1">{av.startDate && av.endDate ? `${av.startDate} até ${av.endDate}` : 'Sem limite de data'}</div>
+                      <div className="text-xs text-slate-400 mt-1">Horário de Brasília</div>
                       <div className="flex flex-wrap gap-1 mt-2">
-                        {av.hours?.map((h, i) => <span key={i} className="text-[10px] px-2 py-0.5 bg-slate-100 rounded-full text-slate-600">{h.dayOfWeek} {h.startTime?.slice(0,5)}-{h.endTime?.slice(0,5)}</span>)}
+                        {brasiliaLabels(av.hours).map(label => <span key={label} className="text-[10px] px-2 py-0.5 bg-slate-100 rounded-full text-slate-600">{label}</span>)}
                       </div>
                     </div>
                   ))}
@@ -993,7 +1101,7 @@ export default function MenuPage() {
                   <input type="text" value={ogManagerForm.description} onChange={e => setOgManagerForm({ ...ogManagerForm, description: e.target.value })}
                     placeholder="Breve descrição do grupo" className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
                 </div>
-                <div className="grid grid-cols-4 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-1">Mínimo</label>
                     <input type="number" min="0" value={ogManagerForm.minPermitted} onChange={e => setOgManagerForm({ ...ogManagerForm, minPermitted: parseInt(e.target.value) || 0 })}
@@ -1003,15 +1111,6 @@ export default function MenuPage() {
                     <label className="block text-xs font-bold text-slate-500 mb-1">Máximo</label>
                     <input type="number" min="1" value={ogManagerForm.maxPermitted} onChange={e => setOgManagerForm({ ...ogManagerForm, maxPermitted: parseInt(e.target.value) || 1 })}
                       className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Método de Preço</label>
-                    <select value={ogManagerForm.priceMethod} onChange={e => setOgManagerForm({ ...ogManagerForm, priceMethod: e.target.value })}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm">
-                      <option value="SUM">Soma (SUM)</option>
-                      <option value="HIGHEST">Maior (HIGHEST)</option>
-                      <option value="LOWEST">Menor (LOWEST)</option>
-                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 mb-1">Status</label>
@@ -1058,7 +1157,7 @@ export default function MenuPage() {
                               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${og.status === 'AVAILABLE' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>{og.status}</span>
                             </div>
                             <div className="text-xs text-slate-400 mt-0.5">
-                              {og.description || 'Sem descrição'} · {og.externalCode} · min={og.minPermitted} max={og.maxPermitted} · {og.priceMethod}
+                              {og.description || 'Sem descrição'} · {og.externalCode} · min={og.minPermitted} max={og.maxPermitted}
                             </div>
                           </div>
                           <div className="flex items-center gap-1 ml-3">
@@ -1123,6 +1222,10 @@ export default function MenuPage() {
                                   <option value="AVAILABLE">Disponível</option>
                                   <option value="UNAVAILABLE">Indisponível</option>
                                 </select>
+                              </div>
+                              <div>
+                                <OptionItemSelect value={optionManagerForm.itemId} choices={optionItemChoices}
+                                  onChange={itemId => setOptionManagerForm({ ...optionManagerForm, itemId })} />
                               </div>
                               <div className="flex gap-2">
                                 <button type="submit" disabled={optionManagerSaving}
