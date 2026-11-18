@@ -696,7 +696,8 @@ def _validate_merchant_update(entity_type: str, updated_objects: list) -> str | 
         "MENU": {"id", "name", "description", "externalCode", "categoryId"},
         "CATEGORY": {"id", "index", "name", "status", "itemOfferId"},
         "ITEM": {"id", "name", "externalCode", "status"},
-        "ITEM_OFFER": {"id", "itemId", "index", "status", "price", "optionGroupsId"},
+        # optionGroupsId é opcional: o exemplo de pausa da documentação não o envia.
+        "ITEM_OFFER": {"id", "itemId", "index", "status", "price"},
         "OPTION_GROUP": {
             "id", "index", "name", "description", "externalCode", "status",
             "minPermitted", "maxPermitted", "priceMethod",
@@ -922,6 +923,52 @@ def normalize_availability(availability: dict) -> dict:
     }
 
 
+def sanitize_merchant_for_keeta(merchant: dict) -> dict:
+    """
+    Ajusta o Merchant às regras obrigatórias da documentação da Keeta
+    (GET /v1/merchant e merchantUpdate). Usado tanto na resposta do baseURL
+    (que a Keeta puxa) quanto no corpo do push, para os dois nunca divergirem:
+
+    - availability: datas OU horários semanais, nunca os dois;
+    - categories[].externalCode é obrigatório e único;
+    - items[].nutritionalInfo, quando enviado, exige description e calories
+      (sem esses dados o bloco é omitido; não inventamos calorias).
+    """
+    if not isinstance(merchant, dict):
+        return merchant
+    sanitized = dict(merchant)
+
+    sanitized["availabilities"] = [
+        normalize_availability(availability) for availability in merchant.get("availabilities") or []
+    ]
+
+    used_codes = set()
+    categories = []
+    for category in merchant.get("categories") or []:
+        if not isinstance(category, dict):
+            categories.append(category)
+            continue
+        category = dict(category)
+        code = str(category.get("externalCode") or category.get("id") or "").strip()
+        base, suffix = code, 2
+        while code in used_codes:
+            code, suffix = f"{base}-{suffix}", suffix + 1
+        used_codes.add(code)
+        category["externalCode"] = code
+        categories.append(category)
+    sanitized["categories"] = categories
+
+    items = []
+    for item in merchant.get("items") or []:
+        if isinstance(item, dict) and isinstance(item.get("nutritionalInfo"), dict):
+            info = item["nutritionalInfo"]
+            if not (info.get("description") and info.get("calories")):
+                item = {key: value for key, value in item.items() if key != "nutritionalInfo"}
+        items.append(item)
+    sanitized["items"] = items
+    return sanitized
+
+
 def _missing_menu_references(merchant: dict) -> str | None:
     """Confere se todo id referenciado no cardápio existe na lista correspondente."""
     def ids(name):
@@ -960,6 +1007,7 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     if not isinstance(merchant, dict):
         return False, "merchant precisa ser um objeto JSON"
 
+    merchant = sanitize_merchant_for_keeta(merchant)
     full_merchant = dict(merchant)
     # O path usa o Keeta merchantId, mas o id do objeto Merchant é um
     # identificador do software e precisa ter pelo menos 36 caracteres.
@@ -1098,9 +1146,7 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     full_merchant["itemOffers"] = item_offers
     full_merchant["optionGroups"] = option_groups or []
 
-    full_merchant["availabilities"] = [
-        normalize_availability(availability) for availability in merchant.get("availabilities") or []
-    ]
+    full_merchant["availabilities"] = merchant.get("availabilities") or []
 
     # A documentação do merchantUpdate só define entityType=MERCHANT, com
     # menus, categories, items, itemOffers, optionGroups e availabilities

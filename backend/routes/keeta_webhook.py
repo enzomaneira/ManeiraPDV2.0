@@ -895,7 +895,7 @@ def keeta_root():
     if not store_id or not Store.query.get(store_id):
         return jsonify({"error": "Informe um storeId válido."}), 400
     print(f"[keeta_root] GET /api/keeta | storeId={store_id}")
-    return jsonify(_build_menu_response(store_id))
+    return jsonify(keeta_client.sanitize_merchant_for_keeta(_build_menu_response(store_id)))
 
 
 # =============================================================================
@@ -1289,7 +1289,9 @@ def get_merchant_menu():
         # Para GET /merchant, a Keeta espera o Merchant diretamente. Não envolver
         # este retorno em entityType/updatedObjects, pois esses campos são usados
         # somente em uma notificação de atualização enviada via POST.
-        merchant = _build_menu_response(store_id)
+        # O mesmo saneamento do push: é este JSON que a Keeta valida quando
+        # recarrega o cardápio (MENU_UPDATE).
+        merchant = keeta_client.sanitize_merchant_for_keeta(_build_menu_response(store_id))
         merchant_id = _merchant_id_for_store(store_id)
         _log_menu_diagnostics(merchant, store_id, merchant_id)
 
