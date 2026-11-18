@@ -27,3 +27,6 @@ __pycache__/
 # Credenciais locais — nunca versionar
 maneirapdv-credentials.txt
 *credentials*.txt
+
+# Backups de cardápio (dados da loja) — nunca versionar
+backups/

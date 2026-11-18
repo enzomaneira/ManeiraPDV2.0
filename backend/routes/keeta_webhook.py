@@ -202,7 +202,8 @@ def _build_menu_response(store_id: int):
     print(f"[_build_menu_response] Loja: nome='{store_name}'")
 
     # --- Busca os itens do cardápio no banco ---
-    items = MenuItem.query.filter_by(store_id=store_id).all()
+    # Ordenados pela posição na categoria: é a ordem de itemOfferId que a Keeta exibe.
+    items = MenuItem.query.filter_by(store_id=store_id).order_by(MenuItem.index, MenuItem.id).all()
     categories_db = MenuCategory.query.filter_by(store_id=store_id).order_by(MenuCategory.index).all()
     print(f"[_build_menu_response] {len(items)} item(ns), {len(categories_db)} categoria(s)")
 
