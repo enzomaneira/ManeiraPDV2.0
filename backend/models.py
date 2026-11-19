@@ -98,6 +98,8 @@ class StoreConfig(db.Model):
     contact_email      = db.Column(db.String(254), nullable=True)
     contact_phone      = db.Column(db.String(20), nullable=True)
     service_hours_json = db.Column(db.Text, nullable=True)
+    # Quadro de pedidos com as etapas do entregador (a caminho, na loja, coletado...)
+    detailed_delivery_status = db.Column(db.Boolean, default=False)
 
     @property
     def service_hours(self) -> list:
@@ -115,6 +117,7 @@ class StoreConfig(db.Model):
             "serviceHours":     self.service_hours,
             "storeId":          self.store_id,
             "autoAccept":       self.auto_accept,
+            "detailedDeliveryStatus": bool(self.detailed_delivery_status),
             "merchantId":       self.keeta_merchant_id,
             "keetaMerchantId":  self.keeta_merchant_id,
             "isStoreOpen":      self.is_store_open,
@@ -461,6 +464,14 @@ class Order(db.Model):
     delivery_json    = db.Column(db.Text,        nullable=True)  # deliveredBy, street, number, complement, district, city, ...
     payments_json    = db.Column(db.Text,        nullable=True)  # prepaid, pending, methods[]
 
+    # Etapa da entrega (só avança). Valores (enum do /tracking da Keeta):
+    # PICKUP_ONGOING, ARRIVED_AT_MERCHANT, ORDER_PICKED, DELIVERY_ONGOING,
+    # ARRIVED_AT_CUSTOMER, ORDER_DELIVERED. Na entrega da Keeta vem dos eventos
+    # do entregador; na entrega própria é o restaurante que avança.
+    delivery_stage    = db.Column(db.String(40),  nullable=True)
+    delivery_stage_at = db.Column(db.String(40),  nullable=True)  # UTC ISO
+    pickup_eta        = db.Column(db.String(40),  nullable=True)  # previsão do entregador na loja (UTC ISO)
+
     created_at       = db.Column(db.String(100), nullable=True)
 
     # Relacionamento com os itens do pedido
@@ -532,13 +543,19 @@ class Order(db.Model):
         customer, delivery = clean(customer), clean(delivery)
         if self.delivery_address and self.delivery_address.startswith("ENC_"):
             protected = True
+        if delivery.get("deliveredBy") == "MARKETPLACE":
+            # Entrega da Keeta: os dados ficam mascarados por regra, não é falha.
+            protected = False
         return {
             "customerPhone":     customer.get("phone"),
             "customerPhoneExtension": customer.get("phoneExtension"),
             "customerDocument":  customer.get("documentNumber"),
             "customerOrdersCount": customer.get("ordersCount"),
             "deliveredBy":       delivery.get("deliveredBy"),
-            "deliveryDetails":   {k: v for k, v in delivery.items() if k != "deliveredBy"},
+            "deliveryDetails":   {k: v for k, v in delivery.items() if k not in ("deliveredBy", "sendTracking", "sendDelivered")},
+            "deliveryStage":     self.delivery_stage,
+            "deliveryStageAt":   self.delivery_stage_at,
+            "pickupEta":         self.pickup_eta,
             "paymentMethods":    payments.get("methods") or [],
             "paymentPending":    payments.get("pending"),
             "dataProtected":     protected,

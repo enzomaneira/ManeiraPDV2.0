@@ -92,6 +92,11 @@ def update_config():
             return jsonify({"error": "autoAccept deve ser verdadeiro ou falso."}), 400
         config.auto_accept = data["autoAccept"]
 
+    if "detailedDeliveryStatus" in data:
+        if not isinstance(data["detailedDeliveryStatus"], bool):
+            return jsonify({"error": "detailedDeliveryStatus deve ser verdadeiro ou falso."}), 400
+        config.detailed_delivery_status = data["detailedDeliveryStatus"]
+
     # O merchant ID só pode ser definido pelo onboarding (PUT /api/keeta/onboard),
     # que confirma com a Keeta e impede usar o ID de outra loja. Aqui só
     # aceitamos o mesmo valor que já está salvo (o frontend reenvia o campo).

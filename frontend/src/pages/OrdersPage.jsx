@@ -1,37 +1,31 @@
 import KanbanColumn from '../components/KanbanColumn';
 import OrderCard from '../components/OrderCard';
-import { ChefHat, CheckCircle, Bike, AlertCircle } from 'lucide-react';
+import { ChefHat, CheckCircle, Bike, AlertCircle, Navigation, Store, Package, MapPin } from 'lucide-react';
+import { boardColumns } from '../utils/deliveryStages';
+
+const ICONS = {
+    alert: <AlertCircle />, chef: <ChefHat />, check: <CheckCircle />, bike: <Bike />,
+    navigation: <Navigation />, store: <Store />, package: <Package />, map: <MapPin />,
+};
 
 export default function OrdersPage({ orders, config, onSelectOrder }) {
-    const getOrdersByStatus = (status) => orders.filter(o => o.status === status);
+    const detailed = Boolean(config.detailedDeliveryStatus);
+    const columns = boardColumns(orders, { detailed, autoAccept: config.autoAccept });
 
     return (
-        <div className="flex h-full gap-6 justify-center min-w-[900px] mx-auto max-w-[1600px]">
-            {!config.autoAccept && (
-                <KanbanColumn title="Aprovação Pendente" count={getOrdersByStatus('PENDING').length + getOrdersByStatus('NEW').length} colorTheme="blue" icon={<AlertCircle />}>
-                    {[...getOrdersByStatus('PENDING'), ...getOrdersByStatus('NEW')].map(order => (
-                        <OrderCard key={order.id} order={order} color="blue" onClick={() => onSelectOrder(order)} />
+        // Modo detalhado: colunas mais estreitas, alinhadas à esquerda e com
+        // rolagem horizontal (centralizar esconderia as primeiras colunas).
+        <div className={detailed
+            ? 'flex h-full gap-4 w-max'
+            : 'flex h-full gap-6 justify-center min-w-[900px] mx-auto max-w-[1600px]'}>
+            {columns.map(column => (
+                <KanbanColumn key={column.id} title={column.title} count={column.orders.length}
+                    colorTheme={column.theme} icon={ICONS[column.icon]} compact={detailed}>
+                    {column.orders.map(order => (
+                        <OrderCard key={order.id} order={order} onClick={() => onSelectOrder(order)} />
                     ))}
                 </KanbanColumn>
-            )}
-
-            <KanbanColumn title="Em Preparo" count={getOrdersByStatus('PREPARING').length} colorTheme="orange" icon={<ChefHat />}>
-                {getOrdersByStatus('PREPARING').map(order => (
-                    <OrderCard key={order.id} order={order} color="orange" onClick={() => onSelectOrder(order)} />
-                ))}
-            </KanbanColumn>
-
-            <KanbanColumn title="Pronto p/ Entrega" count={getOrdersByStatus('READY').length} colorTheme="green" icon={<CheckCircle />}>
-                {getOrdersByStatus('READY').map(order => (
-                    <OrderCard key={order.id} order={order} color="green" onClick={() => onSelectOrder(order)} />
-                ))}
-            </KanbanColumn>
-
-            <KanbanColumn title="Entregas" count={getOrdersByStatus('DISPATCHED').length} colorTheme="purple" icon={<Bike />}>
-                {getOrdersByStatus('DISPATCHED').map(order => (
-                    <OrderCard key={order.id} order={order} color="purple" onClick={() => onSelectOrder(order)} />
-                ))}
-            </KanbanColumn>
+            ))}
         </div>
     );
 }

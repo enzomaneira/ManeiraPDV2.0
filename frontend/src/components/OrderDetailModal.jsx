@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { XCircle, CheckCircle, Bike, Ban, Zap, Navigation, User, Clock, DollarSign, Tag, MapPin, Phone, MessageCircle, ShieldAlert, RefreshCw, Store, Wallet } from 'lucide-react';
-import { formatCurrency, formatFullDate } from '../utils/formatters';
+import { XCircle, CheckCircle, Bike, Ban, Zap, Navigation, User, Clock, DollarSign, Tag, MapPin, Phone, MessageCircle, ShieldAlert, RefreshCw, Store, Wallet, Package } from 'lucide-react';
+import { formatCurrency, formatFullDate, formatTime } from '../utils/formatters';
+import { STAGE_LABELS, isKeetaDelivery, nextOwnStages } from '../utils/deliveryStages';
 import { orderService } from '../services/api';
 
 const PAYMENT_METHOD_NAMES = {
@@ -14,6 +15,51 @@ function phoneDigits(phone) {
     const digits = (phone || '').replace(/\D/g, '');
     if (!digits) return '';
     return phone.trim().startsWith('+') || digits.length > 11 ? digits : `55${digits}`;
+}
+
+// Botões das próximas etapas da entrega própria: a próxima em destaque e as
+// demais como atalho (o motoboy da loja pode pular etapas).
+const STAGE_BUTTON_ICONS = { PICKUP_ONGOING: Navigation, ARRIVED_AT_MERCHANT: Store, ORDER_PICKED: Package,
+    DELIVERY_ONGOING: Bike, ARRIVED_AT_CUSTOMER: MapPin, ORDER_DELIVERED: CheckCircle };
+
+function StageButtons({ stages, onPick, compact = false }) {
+    const [next, ...others] = stages;
+    const NextIcon = STAGE_BUTTON_ICONS[next] || Bike;
+    if (compact) {
+        return (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-slate-400">Entregador:</span>
+                {stages.map(stage => {
+                    const Icon = STAGE_BUTTON_ICONS[stage] || Bike;
+                    return (
+                        <button key={stage} onClick={() => onPick(stage)}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-sky-50 text-sky-700 border border-sky-200 text-xs font-bold hover:bg-sky-100">
+                            <Icon className="w-3.5 h-3.5"/> {STAGE_LABELS[stage]}
+                        </button>
+                    );
+                })}
+            </div>
+        );
+    }
+    return (
+        <div className="space-y-2">
+            <button onClick={() => onPick(next)}
+                className={`w-full py-4 text-white font-bold rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2 text-lg ${next === 'ORDER_DELIVERED' ? 'bg-green-600 hover:bg-green-700 shadow-green-200' : 'bg-purple-600 hover:bg-purple-700 shadow-purple-200'}`}>
+                <NextIcon className="w-6 h-6" /> {next === 'ORDER_DELIVERED' ? 'Entregue (finalizar)' : STAGE_LABELS[next]}
+            </button>
+            {others.length > 0 && (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                    <span className="text-xs font-bold text-slate-400">Pular para:</span>
+                    {others.map(stage => (
+                        <button key={stage} onClick={() => onPick(stage)}
+                            className="px-2.5 py-1 rounded-lg border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50">
+                            {stage === 'ORDER_DELIVERED' ? 'Entregue' : STAGE_LABELS[stage]}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
 }
 
 function CustomerSection({ order, mapUrl, onOrderUpdated }) {
@@ -74,6 +120,13 @@ function CustomerSection({ order, mapUrl, onOrderUpdated }) {
                     </button>
                     {retryError && <p className="text-xs font-bold text-red-600">{retryError}</p>}
                 </div>
+            )}
+
+            {order.deliveredBy === 'MARKETPLACE' && !order.phone && (
+                <p className="flex items-start gap-2 text-xs text-slate-500">
+                    <Bike className="w-4 h-4 shrink-0 text-slate-400"/>
+                    O entregador da Keeta busca o pedido na loja. Telefone e endereço do cliente ficam só com a Keeta.
+                </p>
             )}
 
             {order.phone && (
@@ -138,8 +191,10 @@ function describePayment(method, total) {
     return text;
 }
 
-export default function OrderDetailModal({ order, onClose, onStatusChange, onOrderUpdated }) {
+export default function OrderDetailModal({ order, onClose, onStatusChange, onStageChange, onOrderUpdated, detailed = false }) {
     if (!order) return null;
+    const keetaDelivery = isKeetaDelivery(order);
+    const ownStages = detailed ? nextOwnStages(order) : [];
 
     const getHeaderColor = () => {
         switch(order.status) {
@@ -174,6 +229,13 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onOrd
                         {order.pickupCode && (
                             <p className="opacity-80 text-xs mt-1 font-bold bg-white/10 px-2 py-0.5 rounded inline-block">
                                 🏷️ Retirada: {order.pickupCode}
+                            </p>
+                        )}
+                        {order.deliveryStage && (
+                            <p className="text-xs mt-1 ml-1 font-bold bg-white/20 px-2 py-0.5 rounded inline-flex items-center gap-1">
+                                <Bike className="w-3 h-3"/> {STAGE_LABELS[order.deliveryStage]}
+                                {order.deliveryStageAt && <> · {formatTime(order.deliveryStageAt)}</>}
+                                {order.deliveryStage === 'PICKUP_ONGOING' && order.pickupEta && <> · chega às {formatTime(order.pickupEta)}</>}
                             </p>
                         )}
                     </div>
@@ -329,6 +391,9 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onOrd
                             </button>
                         </div>
                     )}
+                    {order.status === 'PREPARING' && ownStages.length > 0 && (
+                        <StageButtons stages={ownStages} onPick={(stage) => onStageChange(order.id, stage)} compact />
+                    )}
                     {order.status === 'PREPARING' && (
                          <div className="flex gap-4">
                             <button onClick={() => { if(window.confirm('Cancelar este pedido?')) onStatusChange(order.id, 'CANCELED'); }} className="w-1/3 py-4 bg-white border-2 border-slate-100 text-red-400 font-bold rounded-2xl hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all flex items-center justify-center gap-2">
@@ -339,14 +404,36 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onOrd
                             </button>
                         </div>
                     )}
-                    {order.status === 'READY' && (
+                    {/* Entrega da Keeta: quem avança é o entregador dela (eventos da Keeta) */}
+                    {(order.status === 'READY' || order.status === 'DISPATCHED') && keetaDelivery && (
+                        <div className="space-y-2">
+                            <div className="w-full py-3 px-4 bg-sky-50 text-sky-800 font-bold rounded-2xl border border-sky-100 flex items-center justify-center gap-2 text-sm text-center">
+                                <Bike className="w-5 h-5 shrink-0" />
+                                {order.deliveryStage ? STAGE_LABELS[order.deliveryStage] : 'Aguardando o entregador da Keeta'}
+                                {order.deliveryStage === 'PICKUP_ONGOING' && order.pickupEta && <> · chega às {formatTime(order.pickupEta)}</>}
+                            </div>
+                            <button onClick={() => { if (window.confirm('Finalizar este pedido só no PDV? A Keeta não é avisada (a entrega é dela).')) onStatusChange(order.id, 'COMPLETED'); }}
+                                className="w-full text-xs font-bold text-slate-400 hover:text-slate-600 py-1">
+                                Finalizar manualmente no PDV
+                            </button>
+                        </div>
+                    )}
+                    {/* Entrega própria com etapas detalhadas */}
+                    {(order.status === 'READY' || order.status === 'DISPATCHED') && !keetaDelivery && detailed && ownStages.length > 0 && (
+                        <StageButtons stages={ownStages} onPick={(stage) => {
+                            if (stage === 'ORDER_DELIVERED' && !window.confirm('Confirmar entrega do pedido?')) return;
+                            onStageChange(order.id, stage);
+                        }} />
+                    )}
+                    {/* Entrega própria no modo simples */}
+                    {order.status === 'READY' && !keetaDelivery && !detailed && (
                         <div className="flex gap-4">
                             <button onClick={() => onStatusChange(order.id, 'DISPATCHED')} className="w-full py-4 bg-purple-600 text-white font-bold rounded-2xl hover:bg-purple-700 shadow-xl shadow-purple-200 transition-all flex items-center justify-center gap-2 text-lg">
                                 <Bike className="w-6 h-6" /> Despachar Motoqueiro
                             </button>
                         </div>
                     )}
-                    {order.status === 'DISPATCHED' && (
+                    {order.status === 'DISPATCHED' && !keetaDelivery && !detailed && (
                         <div className="flex gap-4">
                             <button onClick={() => { if(window.confirm('Confirmar entrega do pedido?')) onStatusChange(order.id, 'COMPLETED'); }} className="w-full py-4 bg-green-600 text-white font-bold rounded-2xl hover:bg-green-700 shadow-xl shadow-green-200 transition-all flex items-center justify-center gap-2 text-lg">
                                 <CheckCircle className="w-6 h-6" /> Finalizar Entrega

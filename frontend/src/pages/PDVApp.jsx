@@ -56,6 +56,9 @@ function formatOrder(order) {
     customerDocument: order.customerDocument || null,
     customerOrdersCount: order.customerOrdersCount ?? null,
     dataProtected: Boolean(order.dataProtected),
+    deliveryStage: order.deliveryStage || null,
+    deliveryStageAt: order.deliveryStageAt || null,
+    pickupEta: order.pickupEta || null,
     createdAt: order.createdAt,
     // Cartão de pedido e Histórico mostram/ordenam por "time".
     time: order.createdAt,
@@ -77,6 +80,7 @@ function PDVApp() {
 
   const [config, setConfig] = useState({
     autoAccept: true,
+    detailedDeliveryStatus: false,
     keetaId: "",
     keetaStatus: "DISCONNECTED",
   });
@@ -90,6 +94,7 @@ function PDVApp() {
           setConfig(prev => ({
             ...prev,
             autoAccept: res.data.autoAccept,
+            detailedDeliveryStatus: Boolean(res.data.detailedDeliveryStatus),
             keetaId: res.data.keetaMerchantId || "",
             keetaStatus: res.data.keetaMerchantId ? "CONNECTED" : "DISCONNECTED",
           }));
@@ -145,6 +150,18 @@ function PDVApp() {
       fetchOrders();
     } catch (error) {
       alert("Erro ao atualizar pedido!");
+    }
+  };
+
+  // 4. Etapa da entrega própria (entregador a caminho, na loja, coletado...)
+  const handleStageChange = async (orderId, stage) => {
+    try {
+      const { data } = await orderService.updateDeliveryStage(orderId, stage);
+      setSelectedOrder(formatOrder(data.order));
+      fetchOrders();
+      if (data.keeta?.warning) alert(data.keeta.warning);
+    } catch (error) {
+      alert(error.response?.data?.error || 'Erro ao atualizar a etapa da entrega.');
     }
   };
 
@@ -229,6 +246,8 @@ function PDVApp() {
         order={selectedOrder}
         onClose={() => setSelectedOrder(null)}
         onStatusChange={handleStatusChange}
+        onStageChange={handleStageChange}
+        detailed={config.detailedDeliveryStatus}
         onOrderUpdated={(raw) => { setSelectedOrder(formatOrder(raw)); fetchOrders(); }}
       />
     </div>

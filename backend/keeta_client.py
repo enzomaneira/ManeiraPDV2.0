@@ -427,7 +427,7 @@ def confirm_order(order_id: str) -> bool:
     try:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][confirm_order] Resposta | status_code={response.status_code} | body={response.text[:300]}")
-        sucesso = response.status_code in (200, 201, 204)
+        sucesso = response.status_code in (200, 201, 202, 204)
         print(f"[Keeta][confirm_order] FIM | order_id={order_id} | sucesso={sucesso}")
         return sucesso
     except Exception as e:
@@ -454,7 +454,7 @@ def notify_ready_for_pickup(order_id: str) -> bool:
     try:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][notify_ready_for_pickup] Resposta | status_code={response.status_code} | body={response.text[:300]}")
-        sucesso = response.status_code in (200, 201, 204)
+        sucesso = response.status_code in (200, 201, 202, 204)
         print(f"[Keeta][notify_ready_for_pickup] FIM | order_id={order_id} | sucesso={sucesso}")
         return sucesso
     except Exception as e:
@@ -481,13 +481,59 @@ def notify_dispatched(order_id: str) -> bool:
     try:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][notify_dispatched] Resposta | status_code={response.status_code} | body={response.text[:300]}")
-        sucesso = response.status_code in (200, 201, 204)
+        sucesso = response.status_code in (200, 201, 202, 204)
         print(f"[Keeta][notify_dispatched] FIM | order_id={order_id} | sucesso={sucesso}")
         return sucesso
     except Exception as e:
         print(f"[Keeta][notify_dispatched] ERRO: {type(e).__name__}: {e}")
         print(f"[Keeta][notify_dispatched] FIM (falha) | order_id={order_id}")
         return False
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _post_fulfill(order_id: str, action: str, payload: dict | None) -> tuple[bool, int | None]:
+    """POST /v1/orders/{orderId}/{action} da Merchant Fulfill API (só entrega
+    própria). Retorna (sucesso, status_code). A Keeta responde 202."""
+    url = f"{BASE_URL}/v1/orders/{order_id}/{action}"
+    body = canonical_json(payload) if payload else ""
+    try:
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
+        ok = response.status_code in (200, 201, 202, 204)
+        print(f"[Keeta][{action}] order_id={order_id} | status_code={response.status_code} | sucesso={ok}"
+              + ("" if ok else f" | body={response.text[:300]}"))
+        return ok, response.status_code
+    except Exception as e:
+        print(f"[Keeta][{action}] ERRO order_id={order_id}: {type(e).__name__}: {e}")
+        return False, None
+
+
+TRACKING_EVENTS = ("PICKUP_ONGOING", "ARRIVED_AT_MERCHANT", "ORDER_PICKED",
+                   "DELIVERY_ONGOING", "ARRIVED_AT_CUSTOMER", "ORDER_DELIVERED")
+
+
+def send_delivery_tracking(order_id: str, event_type: str) -> tuple[bool, int | None]:
+    """
+    Envia uma atualização da entrega própria para a Keeta.
+    Endpoint: POST /v1/orders/{orderId}/tracking  (event.type + event.datetime obrigatórios)
+    """
+    if event_type not in TRACKING_EVENTS:
+        raise ValueError(f"Evento de entrega inválido: {event_type}")
+    payload = {"deliveryTrackingInfo": {"event": {"type": event_type, "datetime": _utc_now_iso()}}}
+    return _post_fulfill(order_id, "tracking", payload)
+
+
+def dispatch_own_delivery(order_id: str) -> tuple[bool, int | None]:
+    """Pedido saiu para entrega (entrega própria): POST /dispatch com o evento DELIVERY_ONGOING."""
+    payload = {"deliveryTrackingInfo": {"event": {"type": "DELIVERY_ONGOING", "datetime": _utc_now_iso()}}}
+    return _post_fulfill(order_id, "dispatch", payload)
+
+
+def notify_delivered(order_id: str) -> tuple[bool, int | None]:
+    """Pedido entregue (entrega própria): POST /delivered, sem corpo. A Keeta responde com o evento DELIVERED."""
+    return _post_fulfill(order_id, "delivered", None)
 
 
 def request_cancellation(order_id: str, reason: str = "Dificuldades internas do restaurante") -> bool:
@@ -516,7 +562,7 @@ def request_cancellation(order_id: str, reason: str = "Dificuldades internas do 
     try:
         response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
         print(f"[Keeta][request_cancellation] Resposta | status_code={response.status_code} | body={response.text[:300]}")
-        sucesso = response.status_code in (200, 201, 204)
+        sucesso = response.status_code in (200, 201, 202, 204)
         print(f"[Keeta][request_cancellation] FIM | order_id={order_id} | sucesso={sucesso}")
         return sucesso
     except Exception as e:

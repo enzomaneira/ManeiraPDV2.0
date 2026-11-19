@@ -35,6 +35,7 @@ import traceback
 import uuid
 from sqlalchemy.exc import IntegrityError
 import keeta_client
+import delivery_stages
 from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
 from models import menu_item_option_groups, menu_item_availabilities, menu_category_availabilities
 from database import db
@@ -803,7 +804,7 @@ def receive_order_event():
 
         # --- 5. Atualiza o status no banco de acordo com o tipo do evento ---
         print(f"[Webhook][receive_order_event] Processando mapeamento de status para event_type={event_type}...")
-        _handle_event(event_type, order_id)
+        _handle_event(event_type, order_id, event)
     except Exception as e:
         # Nunca deixamos uma exceção aqui impedir a resposta 200 à Keeta.
         # Se algo falhar, o pior caso é o pedido ficar desatualizado — o que
@@ -819,7 +820,7 @@ def receive_order_event():
     return jsonify({"message": "ok"}), 200
 
 
-def _handle_event(event_type: str, order_id: str):
+def _handle_event(event_type: str, order_id: str, event: dict | None = None):
     """
     Mapeia os tipos de evento da Keeta para os status internos do PDV.
 
@@ -848,16 +849,30 @@ def _handle_event(event_type: str, order_id: str):
         "REFUND_FAILED":    "CANCELED",
     }
 
-    new_status = status_map.get(event_type)
-    print(f"[Webhook][_handle_event] Status mapeado: '{event_type}' → '{new_status}'")
+    # Eventos do entregador da Keeta (só quando a entrega é da Keeta):
+    #   PICKUP_ONGOING (a caminho, com previsão), RIDER_ARRIVED_AT_STORE (na loja),
+    #   ORDER_COLLECTED (coletou: o pedido sai da cozinha).
+    status_map["ORDER_COLLECTED"] = "DELIVERY_IN_PROGRESS"
 
-    if new_status:
+    new_status = status_map.get(event_type)
+    new_stage = delivery_stages.KEETA_EVENT_TO_STAGE.get(event_type)
+    print(f"[Webhook][_handle_event] Mapeado: '{event_type}' → status '{new_status}' | etapa '{new_stage}'")
+
+    if new_status or new_stage:
         order = Order.query.filter_by(external_id=order_id).first()
         if order:
-            status_anterior = order.status
-            order.status = new_status
+            status_anterior, etapa_anterior = order.status, order.delivery_stage
+            # Status e etapa só avançam: eventos podem chegar fora de ordem ou
+            # repetidos, e DISPATCHED/DELIVERED também ecoam nossas chamadas.
+            mudou_status = delivery_stages.advance_status(order, new_status)
+            mudou_etapa = delivery_stages.advance_stage(order, new_stage) if new_stage else False
+            if event_type == "PICKUP_ONGOING":
+                eta = delivery_stages.pickup_eta_from_metadata((event or {}).get("metadata"))
+                if eta:
+                    order.pickup_eta = eta
             db.session.commit()
-            print(f"[Webhook][_handle_event] Pedido {order_id} atualizado: '{status_anterior}' → '{new_status}' (order_id interno={order.id})")
+            print(f"[Webhook][_handle_event] Pedido {order_id}: status '{status_anterior}' → '{order.status}' (mudou={mudou_status}) | "
+                  f"etapa '{etapa_anterior}' → '{order.delivery_stage}' (mudou={mudou_etapa}) | order_id interno={order.id}")
         else:
             print(f"[Webhook][_handle_event] AVISO: pedido com external_id={order_id} não encontrado no banco.")
     else:

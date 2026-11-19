@@ -75,6 +75,8 @@ export const orderService = {
     }),
     // Busca o pedido de novo na Keeta e tenta abrir telefone/endereço protegidos
     retryDecrypt: (orderId) => api.post(`/orders/${orderId}/decrypt`),
+    // Entrega própria: avança a etapa (entregador a caminho, na loja, coletado...)
+    updateDeliveryStage: (orderId, stage) => api.patch(`/orders/${orderId}/delivery-stage`, { stage }),
 };
 
 export const categoryService = {

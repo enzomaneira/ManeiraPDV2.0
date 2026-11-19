@@ -17,6 +17,7 @@ from database import db
 from models import Order, OrderItem, StoreConfig
 from auth_utils import login_required, rate_limited
 import keeta_client
+import delivery_stages
 import threading
 
 orders_bp = Blueprint("orders", __name__)
@@ -157,42 +158,56 @@ def update_status(order_id):
     # --- Notificações para a Keeta (em thread separada para não bloquear a resposta) ---
     # A ideia é: o operador muda o status no PDV → o PDV avisa a Keeta
 
-    if order.external_id:
-        print(f"[Orders][update_status] Pedido possui external_id={order.external_id}. Disparando notificação assíncrona para a Keeta...")
+    # Valores lidos antes da thread: depois do commit o objeto expira e não
+    # pode ser recarregado fora do contexto da requisição.
+    external_id = order.external_id
+    delivery = _delivery_info(order)
+    own_delivery = delivery.get("deliveredBy") != "MARKETPLACE"
+
+    if external_id:
+        print(f"[Orders][update_status] Pedido possui external_id={external_id}. Disparando notificação assíncrona para a Keeta...")
 
         def notify_keeta():
-            print(f"[Orders][update_status][thread] INÍCIO notificação Keeta | external_id={order.external_id} | old_status={old_status} | new_status={new_status}")
+            print(f"[Orders][update_status][thread] INÍCIO notificação Keeta | external_id={external_id} | old_status={old_status} | new_status={new_status}")
             try:
                 # Confirmar: de PENDING ou NEW para PREPARING → confirma na Keeta
                 if old_status in ("PENDING", "NEW") and new_status == "PREPARING":
-                    print(f"[Orders][update_status][thread] Chamando keeta_client.confirm_order({order.external_id})")
-                    resultado = keeta_client.confirm_order(order.external_id)
+                    resultado = keeta_client.confirm_order(external_id)
                     print(f"[Orders][update_status][thread] Resultado confirm_order: {resultado}")
 
                 elif new_status == "READY_FOR_PICKUP":
-                    print(f"[Orders][update_status][thread] Chamando keeta_client.notify_ready_for_pickup({order.external_id})")
-                    resultado = keeta_client.notify_ready_for_pickup(order.external_id)
+                    resultado = keeta_client.notify_ready_for_pickup(external_id)
                     print(f"[Orders][update_status][thread] Resultado notify_ready_for_pickup: {resultado}")
 
-                elif new_status == "DELIVERY_IN_PROGRESS":
-                    print(f"[Orders][update_status][thread] Chamando keeta_client.notify_dispatched({order.external_id})")
-                    resultado = keeta_client.notify_dispatched(order.external_id)
-                    print(f"[Orders][update_status][thread] Resultado notify_dispatched: {resultado}")
+                # Despacho e entrega só existem na entrega própria; na entrega da
+                # Keeta quem informa é o entregador dela.
+                elif new_status == "DELIVERY_IN_PROGRESS" and own_delivery:
+                    resultado = keeta_client.dispatch_own_delivery(external_id)
+                    print(f"[Orders][update_status][thread] Resultado dispatch: {resultado}")
+
+                elif new_status == "COMPLETED" and own_delivery and delivery.get("sendDelivered") is not False:
+                    resultado = keeta_client.notify_delivered(external_id)
+                    print(f"[Orders][update_status][thread] Resultado delivered: {resultado}")
 
                 # Cancelar/Recusar: de qualquer status para CANCELED → cancela na Keeta
                 elif new_status == "CANCELED":
-                    print(f"[Orders][update_status][thread] Chamando keeta_client.request_cancellation({order.external_id})")
-                    resultado = keeta_client.request_cancellation(order.external_id)
+                    resultado = keeta_client.request_cancellation(external_id)
                     print(f"[Orders][update_status][thread] Resultado request_cancellation: {resultado}")
                 else:
                     print(f"[Orders][update_status][thread] Nenhuma ação de notificação necessária para essa transição.")
             except Exception as e:
                 print(f"[Orders][update_status][thread] ERRO ao notificar Keeta: {type(e).__name__}: {e}")
-            print(f"[Orders][update_status][thread] FIM notificação Keeta | external_id={order.external_id}")
+            print(f"[Orders][update_status][thread] FIM notificação Keeta | external_id={external_id}")
 
         threading.Thread(target=notify_keeta, daemon=True).start()
     else:
         print(f"[Orders][update_status] Pedido sem external_id (pedido manual). Nenhuma notificação à Keeta será enviada.")
+
+    # A etapa da entrega acompanha o despacho e a conclusão feitos pelo botão simples
+    if new_status == "DELIVERY_IN_PROGRESS" and own_delivery:
+        delivery_stages.advance_stage(order, "DELIVERY_ONGOING")
+    elif new_status == "COMPLETED" and own_delivery:
+        delivery_stages.advance_stage(order, "ORDER_DELIVERED")
 
     order.status = new_status
     db.session.commit()
@@ -233,6 +248,81 @@ def retry_decrypt(order_id):
     return jsonify(result)
 
 
+def _delivery_info(order) -> dict:
+    try:
+        info = json.loads(order.delivery_json) if order.delivery_json else {}
+    except (TypeError, ValueError):
+        info = {}
+    return info if isinstance(info, dict) else {}
+
+
+# Etapas que o restaurante pode marcar na entrega própria, e o status que cada
+# uma exige antes (o motoboy pode chegar enquanto ainda está no preparo, mas
+# só coleta/sai com o pedido pronto).
+OWN_STAGE_MIN_STATUS = {
+    "PICKUP_ONGOING":      "PREPARING",
+    "ARRIVED_AT_MERCHANT": "PREPARING",
+    "ORDER_PICKED":        "READY_FOR_PICKUP",
+    "DELIVERY_ONGOING":    "READY_FOR_PICKUP",
+    "ARRIVED_AT_CUSTOMER": "READY_FOR_PICKUP",
+    "ORDER_DELIVERED":     "READY_FOR_PICKUP",
+}
+
+
+# -----------------------------------------------------------------------------
+#  PATCH /api/orders/<id>/delivery-stage   body: {"stage": "ARRIVED_AT_MERCHANT"}
+#  Entrega própria: o restaurante avança a etapa e o PDV avisa a Keeta
+#  (/tracking; DELIVERY_ONGOING usa /dispatch e ORDER_DELIVERED também /delivered).
+# -----------------------------------------------------------------------------
+@orders_bp.patch("/<int:order_id>/delivery-stage")
+@login_required
+def update_delivery_stage(order_id):
+    store = g.current_user.store
+    order = Order.query.get(order_id)
+    if not order or not store or order.store_id != store.id:
+        return jsonify({"error": "Pedido não encontrado."}), 404
+
+    stage = (request.get_json(silent=True) or {}).get("stage")
+    if stage not in OWN_STAGE_MIN_STATUS:
+        return jsonify({"error": "Etapa de entrega inválida."}), 400
+    delivery = _delivery_info(order)
+    if delivery.get("deliveredBy") == "MARKETPLACE":
+        return jsonify({"error": "Este pedido é entregue pela Keeta: as etapas vêm do entregador dela."}), 400
+    if order.status in delivery_stages.FINAL_STATUSES:
+        return jsonify({"error": "O pedido já foi concluído ou cancelado."}), 400
+    if delivery_stages.STATUS_RANK.get(order.status, 0) < delivery_stages.STATUS_RANK[OWN_STAGE_MIN_STATUS[stage]]:
+        needed = "aceito" if OWN_STAGE_MIN_STATUS[stage] == "PREPARING" else "pronto"
+        return jsonify({"error": f"Marque o pedido como {needed} antes desta etapa."}), 400
+    if not delivery_stages.advance_stage(order, stage):
+        return jsonify({"error": "O pedido já passou desta etapa."}), 409
+
+    if stage in ("ORDER_PICKED", "DELIVERY_ONGOING", "ARRIVED_AT_CUSTOMER"):
+        delivery_stages.advance_status(order, "DELIVERY_IN_PROGRESS")
+    elif stage == "ORDER_DELIVERED":
+        delivery_stages.advance_status(order, "COMPLETED")
+    external_id = order.external_id
+    db.session.commit()  # grava antes de chamar a Keeta: falha lá não desfaz aqui
+
+    keeta = {"sent": None, "warning": None}
+    if external_id:
+        calls = []
+        if stage == "DELIVERY_ONGOING":
+            calls.append(keeta_client.dispatch_own_delivery)
+        else:
+            if delivery.get("sendTracking") is not False:
+                calls.append(lambda oid: keeta_client.send_delivery_tracking(oid, stage))
+            if stage == "ORDER_DELIVERED" and delivery.get("sendDelivered") is not False:
+                calls.append(keeta_client.notify_delivered)
+        results = [call(external_id) for call in calls]
+        keeta["sent"] = all(ok for ok, _ in results) if results else None
+        failed = [code for ok, code in results if not ok]
+        if failed:
+            keeta["warning"] = ("A Keeta já tinha recebido esta etapa." if all(code == 422 for code in failed)
+                                else "A etapa foi salva no PDV, mas a Keeta não confirmou o recebimento.")
+    print(f"[Orders][update_delivery_stage] order_id={order.id} | etapa={stage} | status={order.status} | keeta={keeta}")
+    return jsonify({"order": order.to_dict(), "keeta": keeta})
+
+
 def _collect_encrypted(node, found: list):
     """Junta todas as strings ENC_... de um nó do pedido (qualquer profundidade)."""
     if isinstance(node, dict):
@@ -262,6 +352,10 @@ def _decrypt_contact_data(customer: dict, delivery: dict):
     ciphers = list(dict.fromkeys(_collect_encrypted(customer, []) + _collect_encrypted(delivery, [])))
     if not ciphers:
         return customer, delivery, (0, 0)
+    if delivery.get("deliveredBy") == "MARKETPLACE":
+        # Entrega feita pela Keeta: os dados do cliente nunca são liberados
+        # (LGPD), então nem tentamos.
+        return customer, delivery, (len(ciphers), 0)
     plain = keeta_client.batch_decrypt(ciphers)
     return _replace_encrypted(customer, plain), _replace_encrypted(delivery, plain), (len(ciphers), len(plain))
 
@@ -317,7 +411,7 @@ def _format_address(info: dict) -> str | None:
     return line
 
 
-def _apply_contact_data(order: "Order", customer: dict, delivery: dict, payments: dict):
+def _apply_contact_data(order: "Order", customer: dict, delivery: dict, payments: dict, flags: dict | None = None):
     """Grava nome, telefone, endereço e pagamento no pedido (já descriptografados)."""
     phone = customer.get("phone") if isinstance(customer.get("phone"), dict) else {}
     customer_info = _merge_keep_plain({
@@ -343,6 +437,10 @@ def _apply_contact_data(order: "Order", customer: dict, delivery: dict, payments
         "formattedAddress":  _text(address.get("formattedAddress")),
         "estimatedDeliveryDateTime": _text(delivery.get("estimatedDeliveryDateTime")),
     }, order.delivery_json)
+    # Se a Keeta espera /tracking e /delivered (só faz sentido em entrega própria)
+    for key in ("sendTracking", "sendDelivered"):
+        if isinstance((flags or {}).get(key), bool):
+            delivery_info[key] = flags[key]
 
     order.customer_json = json.dumps(customer_info, ensure_ascii=False)
     order.delivery_json = json.dumps(delivery_info, ensure_ascii=False)
@@ -456,7 +554,7 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     customer = order_json.get("customer") or {}
     delivery = order_json.get("delivery") or {}
     customer, delivery, decrypt_stats = _decrypt_contact_data(customer, delivery)
-    _apply_contact_data(order, customer, delivery, order_json.get("payments") or {})
+    _apply_contact_data(order, customer, delivery, order_json.get("payments") or {}, order_json)
     print(f"[Orders][save_order_from_keeta] Cliente/entrega gravados | criptografados={decrypt_stats[0]} | "
           f"descriptografados={decrypt_stats[1]} | entrega_por={delivery.get('deliveredBy')}")
 

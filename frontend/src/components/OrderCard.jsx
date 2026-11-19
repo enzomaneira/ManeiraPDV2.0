@@ -1,5 +1,6 @@
-import { Clock, User, Tag } from 'lucide-react';
+import { Clock, User, Tag, Bike } from 'lucide-react';
 import { formatCurrency, formatTime } from '../utils/formatters';
+import { STAGE_LABELS } from '../utils/deliveryStages';
 
 export default function OrderCard({ order, onClick }) {
   
@@ -69,9 +70,19 @@ export default function OrderCard({ order, onClick }) {
       <div className="mb-3 pl-2">
         <h4 className="font-bold text-slate-700 text-sm truncate">{order.customer}</h4>
         <div className="flex items-center gap-1 text-xs text-slate-400 mt-0.5">
-            <User className="w-3 h-3" /> 
-            <span className="truncate max-w-[150px]">{order.platform}</span>
+            <User className="w-3 h-3" />
+            <span className="truncate max-w-[150px]">
+              {order.platform}
+              {order.deliveredBy && <> · {order.deliveredBy === 'MARKETPLACE' ? 'Entrega Keeta' : 'Entrega própria'}</>}
+            </span>
         </div>
+        {order.deliveryStage && (
+          <div className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-sky-700 bg-sky-50 border border-sky-100 px-2 py-0.5 rounded-lg">
+            <Bike className="w-3 h-3" />
+            {STAGE_LABELS[order.deliveryStage] || order.deliveryStage}
+            {order.deliveryStage === 'PICKUP_ONGOING' && order.pickupEta && <> · chega {formatTime(order.pickupEta)}</>}
+          </div>
+        )}
       </div>
 
       {/* Resumo de Itens */}

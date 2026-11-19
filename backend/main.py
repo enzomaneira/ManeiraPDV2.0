@@ -168,6 +168,11 @@ def _run_lightweight_migrations():
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_json TEXT",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_json TEXT",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payments_json TEXT",
+        # Order: etapas da entrega (entregador a caminho, na loja, coletado...)
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_stage VARCHAR(40)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_stage_at VARCHAR(40)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_eta VARCHAR(40)",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS detailed_delivery_status BOOLEAN DEFAULT FALSE",
         # OrderItem: opções/adicionais do item
         "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
         # MenuItem: novos campos para suportar Open Delivery e subitens reais.
