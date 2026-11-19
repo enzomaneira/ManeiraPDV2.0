@@ -3,6 +3,7 @@ import { XCircle, CheckCircle, Bike, Ban, Zap, Navigation, User, Clock, DollarSi
 import { formatCurrency, formatFullDate, formatTime } from '../utils/formatters';
 import { STAGE_LABELS, isKeetaDelivery, nextOwnStages } from '../utils/deliveryStages';
 import { orderItemParts } from '../utils/orderItems';
+import PlatformTag from './PlatformTag';
 import { orderService } from '../services/api';
 
 const PAYMENT_METHOD_NAMES = {
@@ -233,6 +234,7 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                         <div className="flex items-center gap-3">
                             <span className="text-sm font-medium opacity-80 uppercase tracking-widest bg-black/10 px-2 py-1 rounded">Código</span>
                             <h2 className="text-4xl font-black tracking-tighter">{order.displayId}</h2>
+                            <PlatformTag order={order} className="text-xs px-2.5 py-1 shadow-sm" />
                         </div>
                         <p className="opacity-90 text-xs mt-2 flex items-center gap-1 font-medium">
                             <Clock className="w-3 h-3"/> {formatFullDate(order.createdAt)}

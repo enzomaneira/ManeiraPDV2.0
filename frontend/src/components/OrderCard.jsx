@@ -1,6 +1,7 @@
 import { Clock, User, Tag, Bike, Store } from 'lucide-react';
 import { formatCurrency, formatTime } from '../utils/formatters';
 import { STAGE_LABELS } from '../utils/deliveryStages';
+import PlatformTag from './PlatformTag';
 
 export default function OrderCard({ order, onClick, showBrand = false }) {
   
@@ -58,10 +59,13 @@ export default function OrderCard({ order, onClick, showBrand = false }) {
       {/* Cabeçalho */}
       <div className="flex justify-between items-start mb-3 pl-2">
         <div>
-          <div className="bg-slate-100 px-2 py-1 rounded-lg border border-slate-200 group-hover:bg-indigo-50 group-hover:border-indigo-100 transition-colors inline-block">
-            <span className="text-xs font-bold text-slate-500 group-hover:text-indigo-600">
-              #{order.displayId}
-            </span>
+          <div className="flex items-center gap-1.5">
+            <div className="bg-slate-100 px-2 py-1 rounded-lg border border-slate-200 group-hover:bg-indigo-50 group-hover:border-indigo-100 transition-colors inline-block">
+              <span className="text-xs font-bold text-slate-500 group-hover:text-indigo-600">
+                #{order.displayId}
+              </span>
+            </div>
+            <PlatformTag order={order} />
           </div>
           {order.pickupCode && (
             <div className="text-[10px] text-slate-400 mt-1 font-medium">
@@ -81,8 +85,7 @@ export default function OrderCard({ order, onClick, showBrand = false }) {
         <div className="flex items-center gap-1 text-xs text-slate-400 mt-0.5">
             <User className="w-3 h-3" />
             <span className="truncate max-w-[150px]">
-              {order.platform}
-              {order.deliveredBy && <> · {order.deliveredBy === 'MARKETPLACE' ? `Entrega ${order.platform}` : 'Entrega própria'}</>}
+              {order.deliveredBy ? (order.deliveredBy === 'MARKETPLACE' ? `Entrega ${order.platform}` : 'Entrega própria') : order.platform}
             </span>
         </div>
         {order.deliveryStage && (
