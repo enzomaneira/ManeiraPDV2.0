@@ -236,7 +236,7 @@ function PDVApp() {
             deixa a área encolher dentro do flex para a rolagem funcionar. */}
         <div className={`flex-1 min-h-0 p-8 ${activeTab === 'orders' ? 'overflow-x-auto overflow-y-hidden' : 'overflow-y-auto'}`}>
           {activeTab === 'orders' && <OrdersPage orders={orders} config={config} onSelectOrder={setSelectedOrder} />}
-          {activeTab === 'history' && <HistoryPage orders={orders} />}
+          {activeTab === 'history' && <HistoryPage orders={orders} onSelectOrder={setSelectedOrder} />}
           {activeTab === 'settings' && <SettingsPage config={config} setConfig={setConfig} />}
           {activeTab === 'menu' && <MenuPage />}
         </div>

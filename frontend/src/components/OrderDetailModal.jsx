@@ -203,6 +203,8 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
             case 'NEW': return 'bg-blue-600';
             case 'PREPARING': return 'bg-orange-500';
             case 'READY': return 'bg-green-600';
+            case 'COMPLETED': return 'bg-slate-600';
+            case 'CANCELED': return 'bg-red-600';
             default: return 'bg-purple-600';
         }
     };
@@ -429,6 +431,11 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                     {order.status === 'COMPLETED' && (
                         <div className="w-full py-3 bg-slate-50 text-slate-400 font-bold rounded-xl text-center flex items-center justify-center gap-2 border border-slate-100">
                             <CheckCircle className="w-4 h-4"/> Pedido Finalizado
+                        </div>
+                    )}
+                    {order.status === 'CANCELED' && (
+                        <div className="w-full py-3 bg-red-50 text-red-500 font-bold rounded-xl text-center flex items-center justify-center gap-2 border border-red-100">
+                            <Ban className="w-4 h-4"/> Pedido Cancelado
                         </div>
                     )}
                 </div>

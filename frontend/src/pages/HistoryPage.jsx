@@ -1,14 +1,23 @@
-import { History, Search, Calendar, Ban, CheckCircle } from 'lucide-react';
+import { useState } from 'react';
+import { History, Search, Calendar, Ban, CheckCircle, ChevronRight } from 'lucide-react';
 import { formatCurrency, formatFullDate } from '../utils/formatters';
 
-export default function HistoryPage({ orders }) {
-    
+export default function HistoryPage({ orders, onSelectOrder }) {
+    const [query, setQuery] = useState('');
+
     // FILTRO ATUALIZADO: Mostra Cancelados OU Completados (Entregues)
     // Nota: Se quiser mostrar os que estão "Saiu para Entrega" aqui também, adicione || o.status === 'DISPATCHED'
     const historyOrders = orders.filter(o => o.status === 'COMPLETED' || o.status === 'CANCELED');
 
     // Ordenar do mais recente para o mais antigo
     const sortedOrders = [...historyOrders].sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    // Busca pelo número do pedido ou pelo nome do cliente
+    const term = query.trim().toLowerCase().replace(/^#/, '');
+    const visibleOrders = term
+        ? sortedOrders.filter(o => String(o.displayId || o.id).toLowerCase().includes(term)
+            || (o.customer || '').toLowerCase().includes(term))
+        : sortedOrders;
 
     return (
         <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
@@ -18,7 +27,7 @@ export default function HistoryPage({ orders }) {
                 </h3>
                 <div className="relative">
                     <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input type="text" placeholder="Buscar..." className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64" />
+                    <input type="text" value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar por número ou cliente" aria-label="Buscar no histórico" className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64" />
                 </div>
             </div>
             
@@ -32,18 +41,22 @@ export default function HistoryPage({ orders }) {
                             <th className="px-6 py-4">Plataforma</th>
                             <th className="px-6 py-4">Total</th>
                             <th className="px-6 py-4">Status</th>
+                            <th className="px-2 py-4"><span className="sr-only">Detalhes</span></th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {sortedOrders.length === 0 ? (
+                        {visibleOrders.length === 0 ? (
                             <tr>
-                                <td colSpan="6" className="px-6 py-12 text-center text-slate-400">
-                                    Nenhum pedido finalizado ainda.
+                                <td colSpan="7" className="px-6 py-12 text-center text-slate-400">
+                                    {term ? 'Nenhum pedido encontrado para essa busca.' : 'Nenhum pedido finalizado ainda.'}
                                 </td>
                             </tr>
                         ) : (
-                            sortedOrders.map((order) => (
-                                <tr key={order.id} className="hover:bg-slate-50 transition-colors">
+                            visibleOrders.map((order) => (
+                                <tr key={order.id} onClick={() => onSelectOrder?.(order)}
+                                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectOrder?.(order); } }}
+                                    tabIndex={0} role="button" aria-label={`Ver detalhes do pedido ${order.displayId || order.id}`}
+                                    className="hover:bg-indigo-50/60 focus:bg-indigo-50/60 focus:outline-none cursor-pointer transition-colors group">
                                     <td className="px-6 py-4 font-bold">#{order.displayId || order.id}</td>
                                     <td className="px-6 py-4 flex items-center gap-2">
                                         <Calendar className="w-4 h-4 text-slate-400" /> {formatFullDate(order.time)}
@@ -63,6 +76,9 @@ export default function HistoryPage({ orders }) {
                                                 <CheckCircle className="w-3 h-3"/> Entregue
                                             </span>
                                         )}
+                                    </td>
+                                    <td className="px-2 py-4 text-slate-300 group-hover:text-indigo-500">
+                                        <ChevronRight className="w-4 h-4" />
                                     </td>
                                 </tr>
                             ))
