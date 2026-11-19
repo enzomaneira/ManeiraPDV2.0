@@ -17,6 +17,8 @@ from auth_utils import login_required
 from routes.auth import validate_email
 import keeta_client
 from delivery_stages import OPTIONAL_STAGES
+from auth_utils import rate_limited
+import store_sync
 
 config_bp = Blueprint("config", __name__)
 
@@ -57,8 +59,35 @@ def get_config():
     else:
         print(f"[Config][get_config] Config encontrada: {config.to_dict()}")
 
+    # Puxa da Keeta o status (aberta/fechada) e, se a loja ainda não cadastrou,
+    # o horário de funcionamento. No máximo uma consulta a cada 5 min por loja.
+    try:
+        store_sync.sync_store_from_keeta(config)
+    except Exception as e:
+        db.session.rollback()
+        print(f"[Config][get_config] AVISO: sincronização com a Keeta falhou: {type(e).__name__}: {e}")
+
     print(f"[Config][get_config] FIM (sucesso) | store_id={store.id}")
     return _config_response(config)
+
+
+@config_bp.post("/sync-keeta")
+@login_required
+def sync_from_keeta():
+    """Busca agora na Keeta o status e (se ainda não cadastrado) o horário da loja."""
+    store = g.current_user.store
+    config = StoreConfig.query.get(store.id) if store else None
+    if not config or not config.keeta_merchant_id:
+        return jsonify({"error": "Ative a integração com a Keeta primeiro."}), 400
+    if rate_limited(f"keeta-sync:{store.id}", limit=10, window_seconds=600):
+        return jsonify({"error": "Muitas consultas seguidas. Tente de novo em alguns minutos."}), 429
+    result = store_sync.sync_store_from_keeta(config, force=True)
+    if not result["synced"]:
+        return jsonify({"error": "Não foi possível consultar a loja na Keeta agora."}), 502
+    data = config.to_dict()
+    data["ownerEmail"] = g.current_user.email
+    data["keetaSync"] = result
+    return jsonify(data)
 
 
 @config_bp.post("/")

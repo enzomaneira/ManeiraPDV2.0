@@ -36,6 +36,7 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 import keeta_client
 import delivery_stages
+import store_sync
 from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
 from models import menu_item_option_groups, menu_item_availabilities, menu_category_availabilities
 from database import db
@@ -1233,6 +1234,13 @@ def onboard_merchant():
         print(f"[Webhook][onboard_merchant] FALHA (409): merchant_id={merchant_id} vinculado a outra loja durante o onboarding.")
         return jsonify({"error": "Este merchant ID já está vinculado a outro restaurante."}), 409
     print(f"[Webhook][onboard_merchant] Config salva: {config.to_dict()}")
+
+    # Traz da Keeta o status e o horário que já estão cadastrados lá
+    try:
+        store_sync.sync_store_from_keeta(config, force=True)
+    except Exception as e:
+        db.session.rollback()
+        print(f"[Webhook][onboard_merchant] AVISO: sincronização com a Keeta falhou: {type(e).__name__}: {e}")
 
     print(f"[Webhook][onboard_merchant] FIM (sucesso) | store_id={store.id} | merchant_id={merchant_id}")
     return jsonify({

@@ -87,11 +87,13 @@ function PDVApp() {
 
   // 1. Busca a configuração da loja do usuário logado
   useEffect(() => {
-    const fetchConfig = async () => {
+    const fetchConfig = async (onlyStoreStatus = false) => {
       try {
         const res = await api.get('/config');
         if (res.data) {
-          setConfig(prev => ({
+          // Na recarga periódica só o status muda: não desfaz edições ainda
+          // não salvas na tela de Configurações.
+          if (!onlyStoreStatus) setConfig(prev => ({
             ...prev,
             autoAccept: res.data.autoAccept,
             enabledDeliveryStages: res.data.enabledDeliveryStages || [],
@@ -110,6 +112,10 @@ function PDVApp() {
     };
 
     fetchConfig();
+    // O backend consulta a Keeta (no máximo a cada 5 min) e traz o status da
+    // loja; assim o botão LOJA ABERTA/FECHADA acompanha o que vale na Keeta.
+    const interval = setInterval(() => fetchConfig(true), 5 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   // 2. Busca de Pedidos (da loja do usuário logado)

@@ -1385,6 +1385,123 @@ def sync_menu_entities(merchant_id: str, merchant: dict) -> tuple[bool, str | No
     return True, None
 
 
+def _week_minute(day: str, hhmmss) -> int | None:
+    """'MONDAY' + '18:30:00.000Z' -> minuto da semana (segunda 00:00 = 0)."""
+    if day not in WEEK_DAYS:
+        return None
+    try:
+        minutes = _parse_hhmm(str(hhmmss)[:5])
+    except ValueError:
+        return None
+    if str(hhmmss).startswith("23:59"):
+        minutes = _MINUTES_PER_DAY  # 23:59 marca "até a meia-noite"
+    return WEEK_DAYS.index(day) * _MINUTES_PER_DAY + minutes
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def week_hours_to_brasilia_periods(week_hours: list) -> list:
+    """
+    Caminho inverso de brasilia_periods_to_week_hours: weekHours da Keeta
+    (UTC+0, cortados na meia-noite UTC) -> períodos em Brasília [{days, start, end}],
+    juntando os pedaços que a Keeta devolve separados.
+    """
+    week = 7 * _MINUTES_PER_DAY
+    intervals = []
+    for entry in _as_list(week_hours):
+        if not isinstance(entry, dict):
+            continue
+        for day in _as_list(entry.get("dayOfWeek")):
+            for period in _as_list(entry.get("timePeriods")):
+                if not isinstance(period, dict):
+                    continue
+                start = _week_minute(str(day).upper(), period.get("startTime"))
+                end = _week_minute(str(day).upper(), period.get("endTime"))
+                if start is None or end is None or end <= start:
+                    continue
+                intervals.append([start - BRASILIA_OFFSET_MINUTES, end - BRASILIA_OFFSET_MINUTES])
+    if not intervals:
+        return []
+
+    # Normaliza para a semana (segunda 00:00 de Brasília = 0) e junta os encostados
+    normalized = []
+    for start, end in intervals:
+        shift = (start // week) * week
+        normalized.append([start - shift, end - shift])
+    normalized.sort()
+    merged = []
+    for start, end in normalized:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    # Domingo à noite que passa da meia-noite encosta na segunda de manhã
+    if len(merged) > 1 and merged[-1][1] >= week and merged[0][0] <= merged[-1][1] - week:
+        merged[0] = [merged[-1][0], max(merged[-1][1], merged[0][1] + week)]
+        merged.pop()
+
+    by_hours: dict[tuple[str, str], list[str]] = {}
+    for start, end in merged:
+        pieces = []
+        # Aberto 24h por mais de um dia: um período por dia
+        while end - start > _MINUTES_PER_DAY:
+            pieces.append((start, start + _MINUTES_PER_DAY))
+            start += _MINUTES_PER_DAY
+        pieces.append((start, end))
+        for piece_start, piece_end in pieces:
+            day = WEEK_DAYS[(piece_start // _MINUTES_PER_DAY) % 7]
+            start_min = piece_start % _MINUTES_PER_DAY
+            end_min = piece_end % _MINUTES_PER_DAY
+            if end_min == start_min:  # dia inteiro
+                end_min = start_min - 1 if start_min else _MINUTES_PER_DAY - 1
+            key = (f"{start_min // 60:02d}:{start_min % 60:02d}", f"{end_min // 60:02d}:{end_min % 60:02d}")
+            by_hours.setdefault(key, []).append(day)
+    return [{"days": [d for d in WEEK_DAYS if d in days], "start": start, "end": end}
+            for (start, end), days in sorted(by_hours.items(), key=lambda item: (WEEK_DAYS.index(item[1][0]), item[0]))]
+
+
+def is_placeholder_week_hours(week_hours: list) -> bool:
+    """True se os horários na Keeta são os de exemplo que o PDV envia enquanto
+    a loja não cadastra os próprios (todos os dias 11:00–23:00 UTC)."""
+    periods = week_hours_to_brasilia_periods(week_hours)
+    return periods == week_hours_to_brasilia_periods(PLACEHOLDER_WEEK_HOURS)
+
+
+def get_merchant_status(keeta_merchant_id: str) -> dict | None:
+    """
+    Busca na Keeta o status da loja e os horários de funcionamento.
+    Endpoint: GET /v1/merchant/{id}/status  (id = o merchantId do onboarding)
+    Retorna {"status": "AVAILABLE"|"UNAVAILABLE"|None, "weekHours": [...]} ou None se falhar.
+    """
+    merchant_id = str(keeta_merchant_id or "").strip()
+    if not merchant_id:
+        return None
+    url = f"{BASE_URL}/v1/merchant/{merchant_id}/status"
+    try:
+        response = requests.get(url, headers=_build_headers(url), timeout=(5, 8))
+        if response.status_code != 200:
+            print(f"[Keeta][get_merchant_status] merchant={merchant_id} | status_code={response.status_code} | body={response.text[:300]}")
+            return None
+        data = response.json()
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]  # formato {code, message, data: {...}}
+    except Exception as e:
+        print(f"[Keeta][get_merchant_status] ERRO merchant={merchant_id}: {type(e).__name__}: {e}")
+        return None
+
+    services = [s for s in _as_list((data or {}).get("services")) if isinstance(s, dict)]
+    delivery = next((s for s in services if s.get("serviceType") == "DELIVERY"), services[0] if services else {})
+    service_hours = delivery.get("serviceHours") if isinstance(delivery.get("serviceHours"), dict) else {}
+    week_hours = _as_list(service_hours.get("weekHours"))
+    status = data.get("status") if data.get("status") in ("AVAILABLE", "UNAVAILABLE") else None
+    print(f"[Keeta][get_merchant_status] merchant={merchant_id} | status={status} | servicos={len(services)} | weekHours={len(week_hours)}")
+    return {"status": status, "weekHours": week_hours}
+
+
 def update_store_status(keeta_merchant_id: str, is_open: bool) -> tuple[bool, str | None]:
     """
     Abre ou fecha a loja na plataforma Keeta.
