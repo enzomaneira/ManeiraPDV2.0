@@ -3,6 +3,7 @@ import api from '../services/api';
 import AccountSettings from '../components/AccountSettings';
 import StoreContactSettings from '../components/StoreContactSettings';
 import DeliveryStageSettings from '../components/DeliveryStageSettings';
+import IfoodSettings from '../components/IfoodSettings';
 import { Save, Store, Globe, Wifi, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function SettingsPage({ config, setConfig }) {
@@ -198,6 +199,8 @@ export default function SettingsPage({ config, setConfig }) {
               </div>
           </div>
       </div>
+
+      <IfoodSettings />
 
       <StoreContactSettings />
 

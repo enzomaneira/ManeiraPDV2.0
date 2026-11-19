@@ -102,6 +102,7 @@ class StoreConfig(db.Model):
     store_id          = db.Column(db.Integer, db.ForeignKey("stores.id"), primary_key=True)
     auto_accept       = db.Column(db.Boolean, default=True)
     keeta_merchant_id = db.Column(db.String(100), nullable=True)
+    ifood_merchant_id = db.Column(db.String(100), nullable=True)  # loja deste restaurante no iFood
     is_store_open     = db.Column(db.Boolean, default=True)
     keeta_authorized  = db.Column(db.Boolean, default=False)
     keeta_auth_id     = db.Column(db.String(100), nullable=True)
@@ -148,6 +149,7 @@ class StoreConfig(db.Model):
             "enabledDeliveryStages": self.enabled_delivery_stages,
             "merchantId":       self.keeta_merchant_id,
             "keetaMerchantId":  self.keeta_merchant_id,
+            "ifoodMerchantId":  self.ifood_merchant_id,
             "isStoreOpen":      self.is_store_open,
             "keetaAuthorized":  self.keeta_authorized,
             "keetaAuthId":      self.keeta_auth_id,
@@ -460,7 +462,8 @@ class Order(db.Model):
     __tablename__ = "orders"
 
     id               = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    external_id      = db.Column(db.String(100), unique=True, nullable=True)  # ID da Keeta
+    external_id      = db.Column(db.String(100), unique=True, nullable=True)  # ID do pedido na plataforma
+    platform         = db.Column(db.String(20),  nullable=True, default="KEETA")  # KEETA | IFOOD (vazio = pedido antigo/manual)
     pickup_code      = db.Column(db.String(50),  nullable=True)
     display_id       = db.Column(db.String(50),  nullable=True)
     store_id         = db.Column(db.Integer,     nullable=False)
@@ -522,6 +525,7 @@ class Order(db.Model):
         return {
             "id":              self.id,
             "externalId":      self.external_id,
+            "platform":        self.platform or ("KEETA" if self.external_id else "BALCAO"),
             "pickupCode":      self.pickup_code,
             "displayId":       self.display_id,
             "storeId":         self.store_id,

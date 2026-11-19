@@ -104,7 +104,7 @@ function CustomerSection({ order, mapUrl, onOrderUpdated }) {
                 )}
                 {order.deliveredBy && (
                     <span className={`ml-auto flex items-center gap-1 text-[11px] font-bold uppercase tracking-wide px-2 py-1 rounded-lg border ${ownDelivery ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
-                        {ownDelivery ? <><Store className="w-3 h-3"/> Entrega própria</> : <><Bike className="w-3 h-3"/> Entrega Keeta</>}
+                        {ownDelivery ? <><Store className="w-3 h-3"/> Entrega própria</> : <><Bike className="w-3 h-3"/> Entrega {order.platform}</>}
                     </span>
                 )}
             </div>
@@ -126,7 +126,9 @@ function CustomerSection({ order, mapUrl, onOrderUpdated }) {
             {order.deliveredBy === 'MARKETPLACE' && !order.phone && (
                 <p className="flex items-start gap-2 text-xs text-slate-500">
                     <Bike className="w-4 h-4 shrink-0 text-slate-400"/>
-                    O entregador da Keeta busca o pedido na loja. Telefone e endereço do cliente ficam só com a Keeta.
+                    {order.platformId === 'IFOOD'
+                        ? 'O entregador do iFood busca o pedido na loja.'
+                        : 'O entregador da Keeta busca o pedido na loja. Telefone e endereço do cliente ficam só com a Keeta.'}
                 </p>
             )}
 
@@ -366,7 +368,7 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                                                     <div>🏪 Loja banca: -{formatCurrency(Math.abs(merchantSponsor.amount?.value || 0))}</div>
                                                 )}
                                                 {marketplaceSponsor && (
-                                                    <div>📱 Keeta banca: -{formatCurrency(Math.abs(marketplaceSponsor.amount?.value || 0))}</div>
+                                                    <div>📱 {order.platform} banca: -{formatCurrency(Math.abs(marketplaceSponsor.amount?.value || 0))}</div>
                                                 )}
                                             </div>
                                         )}
@@ -432,10 +434,10 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                         <div className="space-y-2">
                             <div className="w-full py-3 px-4 bg-sky-50 text-sky-800 font-bold rounded-2xl border border-sky-100 flex items-center justify-center gap-2 text-sm text-center">
                                 <Bike className="w-5 h-5 shrink-0" />
-                                {order.deliveryStage ? STAGE_LABELS[order.deliveryStage] : 'Aguardando o entregador da Keeta'}
+                                {order.deliveryStage ? STAGE_LABELS[order.deliveryStage] : `Aguardando o entregador ${order.platformId === 'IFOOD' ? 'do iFood' : 'da Keeta'}`}
                                 {order.deliveryStage === 'PICKUP_ONGOING' && order.pickupEta && <> · chega às {formatTime(order.pickupEta)}</>}
                             </div>
-                            <button onClick={() => { if (window.confirm('Finalizar este pedido só no PDV? A Keeta não é avisada (a entrega é dela).')) onStatusChange(order.id, 'COMPLETED'); }}
+                            <button onClick={() => { if (window.confirm(`Finalizar este pedido só no PDV? ${order.platform} não é avisado(a) (a entrega é da plataforma).`)) onStatusChange(order.id, 'COMPLETED'); }}
                                 className="w-full text-xs font-bold text-slate-400 hover:text-slate-600 py-1">
                                 Finalizar manualmente no PDV
                             </button>

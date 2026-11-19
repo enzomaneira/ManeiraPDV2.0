@@ -82,7 +82,7 @@ export default function OrderCard({ order, onClick, showBrand = false }) {
             <User className="w-3 h-3" />
             <span className="truncate max-w-[150px]">
               {order.platform}
-              {order.deliveredBy && <> · {order.deliveredBy === 'MARKETPLACE' ? 'Entrega Keeta' : 'Entrega própria'}</>}
+              {order.deliveredBy && <> · {order.deliveredBy === 'MARKETPLACE' ? `Entrega ${order.platform}` : 'Entrega própria'}</>}
             </span>
         </div>
         {order.deliveryStage && (

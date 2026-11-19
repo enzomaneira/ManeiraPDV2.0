@@ -162,6 +162,11 @@ export default function ReportsPage({ stores = [] }) {
                                 ...(data.customers.unknown ? [{ name: 'Sem informação', value: data.customers.unknown }] : []),
                             ]} formatValue={(v) => count(v, 'pedido', 'pedidos')} />
                         </Card>
+                        {data.byPlatform?.length > 1 && (
+                            <Card title="Por plataforma" subtitle="Faturamento em cada aplicativo">
+                                <RankedBars rows={data.byPlatform} valueKey="revenue" formatValue={formatCurrency} detail={(r) => count(r.orders, 'pedido', 'pedidos')} />
+                            </Card>
+                        )}
                         {multiBrand && data.storeId === 'all' && (
                             <Card title="Por restaurante" subtitle="Faturamento de cada marca">
                                 <RankedBars rows={data.byStore} valueKey="revenue" formatValue={formatCurrency} detail={(r) => count(r.orders, 'pedido', 'pedidos')} />

@@ -12,6 +12,8 @@ import ReportsPage from './ReportsPage';
 import { orderService, storeService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
+const PLATFORM_NAMES = { KEETA: 'Keeta', IFOOD: 'iFood', BALCAO: 'Balcão' };
+
 // Converte o pedido da API para o formato usado pelas telas do PDV
 function formatOrder(order) {
   let displayStatus = order.status;
@@ -41,7 +43,8 @@ function formatOrder(order) {
     displayId: order.displayId || order.pickupCode || order.id,
     pickupCode: order.pickupCode || null,
     customer: order.customerName,
-    platform: "Keeta",
+    platform: PLATFORM_NAMES[order.platform] || 'Keeta',
+    platformId: order.platform || 'KEETA',
     status: displayStatus,
     total: order.totalPrice,
     itemsPrice: order.itemsPrice || 0,
@@ -120,6 +123,16 @@ function PDVApp() {
     // O backend consulta a Keeta (no máximo a cada 5 min) e traz o status da
     // loja; assim o botão LOJA ABERTA/FECHADA acompanha o que vale na Keeta.
     const interval = setInterval(() => fetchConfig(true), 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // iFood: com o PDV aberto, busca os eventos das lojas do iFood a cada 30s
+  // (o backend ignora chamadas repetidas de outras abas). O webhook, quando
+  // configurado no portal do iFood, entrega os pedidos sem esperar.
+  useEffect(() => {
+    const pollIfood = () => api.post('/ifood/poll').then(({ data }) => { if (data?.events) fetchOrders(); }).catch(() => {});
+    pollIfood();
+    const interval = setInterval(pollIfood, 30000);
     return () => clearInterval(interval);
   }, []);
 

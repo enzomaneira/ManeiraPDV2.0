@@ -207,6 +207,7 @@ def sales_report():
     payments = defaultdict(lambda: {"orders": 0, "revenue": 0.0})
     delivery = defaultdict(lambda: {"orders": 0, "revenue": 0.0})
     by_store = defaultdict(lambda: {"orders": 0, "revenue": 0.0})
+    by_platform = defaultdict(lambda: {"orders": 0, "revenue": 0.0})
     customers = {"new": 0, "returning": 0, "unknown": 0}
     for order, _ in valid:
         value = order.total_price or 0
@@ -222,7 +223,10 @@ def sales_report():
         payments[label]["revenue"] += value
 
         by = _load(order.delivery_json).get("deliveredBy")
-        kind = "Entrega própria" if by == "MERCHANT" else "Entrega Keeta" if by == "MARKETPLACE" else "Não informado"
+        platform_name = {"IFOOD": "iFood", "BALCAO": "Balcão"}.get(order.platform or "", "Keeta")
+        kind = "Entrega própria" if by == "MERCHANT" else f"Entrega {platform_name}" if by == "MARKETPLACE" else "Não informado"
+        by_platform[platform_name]["orders"] += 1
+        by_platform[platform_name]["revenue"] += value
         delivery[kind]["orders"] += 1
         delivery[kind]["revenue"] += value
 
@@ -264,5 +268,6 @@ def sales_report():
         "payments": split(payments),
         "delivery": split(delivery),
         "byStore": split(by_store),
+        "byPlatform": split(by_platform),
         "customers": customers,
     })

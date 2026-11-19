@@ -15,6 +15,7 @@ from routes.config        import config_bp
 from routes.stores        import stores_bp
 from routes.auth          import auth_bp
 from routes.reports       import reports_bp
+from routes.ifood         import ifood_bp
 
 print("\n" + "=" * 70)
 print("[Main][INIT] Carregando módulo main.py...")
@@ -66,6 +67,7 @@ def create_app():
     CORS(config_bp, origins=cors_origins)
     CORS(stores_bp, origins=cors_origins)
     CORS(reports_bp, origins=cors_origins)
+    CORS(ifood_bp, origins=cors_origins)
     # keeta_bp: sem CORS — chamadas server-to-server da Keeta
     print(f"[Main][create_app] CORS configurado por blueprint | origins={cors_origins} | keeta_bp: sem CORS (webhooks)")
 
@@ -118,6 +120,7 @@ def create_app():
     print("[Main][create_app]   → stores_bp registrado em /api/stores")
     application.register_blueprint(auth_bp,   url_prefix="/api/auth")
     application.register_blueprint(reports_bp, url_prefix="/api/reports")
+    application.register_blueprint(ifood_bp,  url_prefix="/api/ifood")
     print("[Main][create_app]   → auth_bp registrado em /api/auth")
 
     # Cria as tabelas ao iniciar
@@ -177,6 +180,9 @@ def _run_lightweight_migrations():
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_eta VARCHAR(40)",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS detailed_delivery_status BOOLEAN DEFAULT FALSE",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS delivery_stages_json TEXT",
+        # iFood: loja de cada restaurante e plataforma de cada pedido
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS ifood_merchant_id VARCHAR(100)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform VARCHAR(20)",
         # OrderItem: opções/adicionais do item
         "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
         # MenuItem: novos campos para suportar Open Delivery e subitens reais.
@@ -215,6 +221,9 @@ def _run_lightweight_migrations():
     # Índices criados depois do backfill. Um merchant da Keeta pertence a uma
     # única loja local (evita pedidos caindo no restaurante errado).
     index_statements = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_store_config_ifood_merchant_id "
+        "ON store_config (ifood_merchant_id) "
+        "WHERE ifood_merchant_id IS NOT NULL AND ifood_merchant_id <> ''",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_store_config_keeta_merchant_id "
         "ON store_config (keeta_merchant_id) "
         "WHERE keeta_merchant_id IS NOT NULL AND keeta_merchant_id <> ''",

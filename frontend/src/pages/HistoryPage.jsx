@@ -66,7 +66,7 @@ export default function HistoryPage({ orders, onSelectOrder, showBrand = false }
                                     {showBrand && <td className="px-6 py-4 text-xs font-bold text-indigo-700">{order.storeName}</td>}
                                     <td className="px-6 py-4 font-medium text-slate-900">{order.customer}</td>
                                     <td className="px-6 py-4">
-                                        <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-bold">{order.platform}</span>
+                                        <span className={`px-2 py-1 rounded text-xs font-bold ${order.platformId === 'IFOOD' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-800'}`}>{order.platform}</span>
                                     </td>
                                     <td className="px-6 py-4 font-bold text-slate-700">{formatCurrency(order.total)}</td>
                                     <td className="px-6 py-4">

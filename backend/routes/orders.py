@@ -17,6 +17,7 @@ from database import db
 from models import Order, OrderItem, StoreConfig
 from auth_utils import login_required, rate_limited
 import keeta_client
+import ifood_client
 import delivery_stages
 import threading
 
@@ -118,6 +119,7 @@ def create_order():
 
     order = Order(
         store_id=store.id,
+        platform="BALCAO",
         status="NEW",
         customer_name="Cliente Balcão",
         payment_type="BALCAO",
@@ -193,8 +195,26 @@ def update_status(order_id):
     external_id = order.external_id
     delivery = _delivery_info(order)
     own_delivery = delivery.get("deliveredBy") != "MARKETPLACE"
+    is_ifood = order.platform == "IFOOD"
 
-    if external_id:
+    if external_id and is_ifood:
+        def notify_ifood():
+            try:
+                if old_status in ("PENDING", "NEW") and new_status == "PREPARING":
+                    ifood_client.confirm_order(external_id)
+                elif new_status == "READY_FOR_PICKUP":
+                    # Retirada no balcão ou entregador do iFood: avisa que está pronto
+                    if not own_delivery or delivery.get("orderType") == "TAKEOUT":
+                        ifood_client.ready_to_pickup(external_id)
+                elif new_status == "DELIVERY_IN_PROGRESS" and own_delivery:
+                    ifood_client.dispatch_order(external_id)
+                elif new_status == "CANCELED":
+                    ifood_client.request_cancellation(external_id)
+                # COMPLETED: o iFood conclui o pedido sozinho
+            except Exception as e:
+                print(f"[Orders][update_status][iFood] ERRO ao notificar: {type(e).__name__}: {e}")
+        threading.Thread(target=notify_ifood, daemon=True).start()
+    elif external_id:
         print(f"[Orders][update_status] Pedido possui external_id={external_id}. Disparando notificação assíncrona para a Keeta...")
 
         def notify_keeta():
@@ -267,6 +287,14 @@ def retry_decrypt(order_id):
     if rate_limited(f"decrypt:{order.id}", limit=10, window_seconds=600):
         return jsonify({"error": "Muitas tentativas. Aguarde alguns minutos e tente de novo."}), 429
 
+    if order.platform == "IFOOD":
+        from routes.ifood import save_order_from_ifood
+        details = ifood_client.get_order(order.external_id)
+        if not details:
+            return jsonify({"error": "Não foi possível buscar o pedido no iFood. Tente de novo em instantes."}), 502
+        save_order_from_ifood(details, order.store_id)
+        db.session.refresh(order)
+        return jsonify(order.to_dict())
     order_data = keeta_client.get_order_details(order.external_id)
     if not order_data:
         return jsonify({"error": "Não foi possível buscar o pedido na Keeta. Tente de novo em instantes."}), 502
@@ -332,7 +360,14 @@ def update_delivery_stage(order_id):
     db.session.commit()  # grava antes de chamar a Keeta: falha lá não desfaz aqui
 
     keeta = {"sent": None, "warning": None}
-    if external_id:
+    if external_id and order.platform == "IFOOD":
+        # No iFood a entrega própria só tem "saiu para entrega"; as demais etapas ficam no PDV
+        if stage == "DELIVERY_ONGOING":
+            ok, _ = ifood_client.dispatch_order(external_id)
+            keeta["sent"] = ok
+            if not ok:
+                keeta["warning"] = "A etapa foi salva no PDV, mas o iFood não confirmou o recebimento."
+    elif external_id:
         # Na entrega própria as etapas vão sempre para a Keeta. Os campos
         # sendTracking/sendDelivered do pedido só dizem se a Keeta *espera* a
         # chamada; mesmo com false ela aceita (e o restaurante quer informar).
@@ -527,6 +562,7 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     # Busca pedido existente ou cria um novo
     print(f"[Orders][save_order_from_keeta] Buscando pedido existente com external_id={keeta_id}...")
     order = Order.query.filter_by(external_id=keeta_id).first() or Order()
+    order.platform = "KEETA"
     is_new = not order.id
     print(f"[Orders][save_order_from_keeta] Pedido {'NOVO (será criado)' if is_new else f'EXISTENTE (id={order.id}, será atualizado)'}")
 
