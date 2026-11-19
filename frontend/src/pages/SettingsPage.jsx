@@ -155,8 +155,13 @@ export default function SettingsPage({ config, setConfig }) {
               </div>
           </div>
 
-          {/* Card 2: Preferências */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-fit">
+          {/* Card 2: Integração iFood (ao lado da Keeta) */}
+          <IfoodSettings />
+      </div>
+
+      <div>
+          {/* Card 3: Preferências */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
                   <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
                     <Store className="w-6 h-6" />
@@ -199,8 +204,6 @@ export default function SettingsPage({ config, setConfig }) {
               </div>
           </div>
       </div>
-
-      <IfoodSettings />
 
       <StoreContactSettings />
 
