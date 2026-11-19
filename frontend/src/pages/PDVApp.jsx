@@ -11,6 +11,60 @@ import SettingsPage from './SettingsPage';
 import { orderService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
+// Converte o pedido da API para o formato usado pelas telas do PDV
+function formatOrder(order) {
+  let displayStatus = order.status;
+  if (order.status === 'PENDING' || order.status === 'NEW') displayStatus = 'PENDING';
+  else if (order.status === 'READY_FOR_PICKUP') displayStatus = 'READY';
+  else if (order.status === 'DELIVERY_IN_PROGRESS') displayStatus = 'DISPATCHED';
+  else if (order.status === 'CANCELLED') displayStatus = 'CANCELED';
+  else if (order.status === 'DELIVERED' || order.status === 'COMPLETED' || order.status === 'PICKED_UP') {
+    displayStatus = 'COMPLETED';
+  }
+
+  const processedItems = order.items.map(item => ({
+    name: item.menuItemName,
+    quantity: item.quantity,
+    price: item.unitPrice,
+    originalPrice: item.originalPrice,
+    total: item.total,
+    subtotal: item.subtotal,
+    options: item.options || []
+  }));
+
+  return {
+    id: order.id,
+    keetaId: order.externalId,
+    displayId: order.displayId || order.pickupCode || order.id,
+    pickupCode: order.pickupCode || null,
+    customer: order.customerName,
+    platform: "Keeta",
+    status: displayStatus,
+    total: order.totalPrice,
+    itemsPrice: order.itemsPrice || 0,
+    otherFeesTotal: order.otherFeesTotal || 0,
+    discount: order.discount || 0,
+    subtotal: processedItems.reduce((acc, i) => acc + i.total, 0),
+    paymentType: order.paymentType,
+    paymentMethods: order.paymentMethods || [],
+    address: order.deliveryAddress,
+    addressDetails: order.deliveryDetails || {},
+    coordinates: order.latitude != null && order.longitude != null ? { lat: order.latitude, lng: order.longitude } : null,
+    deliveredBy: order.deliveredBy || null,
+    phone: order.customerPhone || null,
+    phoneExtension: order.customerPhoneExtension || null,
+    customerDocument: order.customerDocument || null,
+    customerOrdersCount: order.customerOrdersCount ?? null,
+    dataProtected: Boolean(order.dataProtected),
+    createdAt: order.createdAt,
+    // Cartão de pedido e Histórico mostram/ordenam por "time".
+    time: order.createdAt,
+    items: processedItems,
+    fees: order.fees || [],
+    discounts: order.discounts || []
+  };
+}
+
 function PDVApp() {
   const { user, logout } = useAuth();
 
@@ -59,49 +113,7 @@ function PDVApp() {
       const response = await orderService.getAll();
       if (!response.data) return;
 
-      const formattedOrders = response.data.map(order => {
-        let displayStatus = order.status;
-        if (order.status === 'PENDING' || order.status === 'NEW') displayStatus = 'PENDING';
-        else if (order.status === 'READY_FOR_PICKUP') displayStatus = 'READY';
-        else if (order.status === 'DELIVERY_IN_PROGRESS') displayStatus = 'DISPATCHED';
-        else if (order.status === 'CANCELLED') displayStatus = 'CANCELED';
-        else if (order.status === 'DELIVERED' || order.status === 'COMPLETED' || order.status === 'PICKED_UP') {
-          displayStatus = 'COMPLETED';
-        }
-
-        const processedItems = order.items.map(item => ({
-          name: item.menuItemName,
-          quantity: item.quantity,
-          price: item.unitPrice,
-          originalPrice: item.originalPrice,
-          total: item.total,
-          subtotal: item.subtotal,
-          options: item.options || []
-        }));
-
-        return {
-          id: order.id,
-          keetaId: order.externalId,
-          displayId: order.displayId || order.pickupCode || order.id,
-          pickupCode: order.pickupCode || null,
-          customer: order.customerName,
-          platform: "Keeta",
-          status: displayStatus,
-          total: order.totalPrice,
-          itemsPrice: order.itemsPrice || 0,
-          otherFeesTotal: order.otherFeesTotal || 0,
-          discount: order.discount || 0,
-          subtotal: processedItems.reduce((acc, i) => acc + i.total, 0),
-          paymentType: order.paymentType,
-          address: order.deliveryAddress,
-          createdAt: order.createdAt,
-          // Cartão de pedido e Histórico mostram/ordenam por "time".
-          time: order.createdAt,
-          items: processedItems,
-          fees: order.fees || [],
-          discounts: order.discounts || []
-        };
-      });
+      const formattedOrders = response.data.map(formatOrder);
 
       setOrders(formattedOrders);
       setIsConnected(true);
@@ -217,6 +229,7 @@ function PDVApp() {
         order={selectedOrder}
         onClose={() => setSelectedOrder(null)}
         onStatusChange={handleStatusChange}
+        onOrderUpdated={(raw) => { setSelectedOrder(formatOrder(raw)); fetchOrders(); }}
       />
     </div>
   );

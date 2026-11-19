@@ -1,7 +1,144 @@
-import { XCircle, CheckCircle, Bike, Ban, Zap, Navigation, User, Clock, DollarSign, Tag, MapPin } from 'lucide-react';
+import { useState } from 'react';
+import { XCircle, CheckCircle, Bike, Ban, Zap, Navigation, User, Clock, DollarSign, Tag, MapPin, Phone, MessageCircle, ShieldAlert, RefreshCw, Store, Wallet } from 'lucide-react';
 import { formatCurrency, formatFullDate } from '../utils/formatters';
+import { orderService } from '../services/api';
 
-export default function OrderDetailModal({ order, onClose, onStatusChange }) {
+const PAYMENT_METHOD_NAMES = {
+    CREDIT: 'Cartão de crédito', DEBIT: 'Cartão de débito', CREDIT_DEBIT: 'Cartão', PIX: 'PIX', CASH: 'Dinheiro',
+    MEAL_VOUCHER: 'Vale-refeição', FOOD_VOUCHER: 'Vale-alimentação', DIGITAL_WALLET: 'Carteira digital',
+    COUPON: 'Cupom', REDEEM: 'Resgate', PREPAID_REDEEM: 'Resgate pré-pago', OTHER: 'Outro',
+};
+
+// Dígitos para links de telefone; números do Brasil sem DDI ganham o 55.
+function phoneDigits(phone) {
+    const digits = (phone || '').replace(/\D/g, '');
+    if (!digits) return '';
+    return phone.trim().startsWith('+') || digits.length > 11 ? digits : `55${digits}`;
+}
+
+function CustomerSection({ order, mapUrl, onOrderUpdated }) {
+    const [retrying, setRetrying] = useState(false);
+    const [retryError, setRetryError] = useState(null);
+    const details = order.addressDetails || {};
+    const ownDelivery = order.deliveredBy === 'MERCHANT';
+    const digits = phoneDigits(order.phone);
+    const addressText = (order.address || '').toLowerCase();
+    // Só repete complemento/referência se não estiverem já no endereço formatado
+    const extraLines = [
+        details.complement && !addressText.includes(details.complement.toLowerCase()) && ['Complemento', details.complement],
+        details.reference && !addressText.includes(details.reference.toLowerCase()) && ['Referência', details.reference],
+        details.postalCode && !addressText.includes(details.postalCode.toLowerCase()) && ['CEP', details.postalCode],
+    ].filter(Boolean);
+
+    const retry = async () => {
+        setRetrying(true);
+        setRetryError(null);
+        try {
+            const { data } = await orderService.retryDecrypt(order.id);
+            onOrderUpdated?.(data);
+            if (data.dataProtected) setRetryError('A Keeta ainda não liberou os dados. Tente de novo em alguns minutos.');
+        } catch (error) {
+            setRetryError(error.response?.data?.error || 'Não foi possível falar com a Keeta agora.');
+        } finally {
+            setRetrying(false);
+        }
+    };
+
+    return (
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+            <div className="flex items-center gap-2 border-b border-slate-50 pb-3 flex-wrap">
+                <div className="p-1.5 bg-slate-100 rounded-full"><User className="w-4 h-4 text-slate-500"/></div>
+                <span className="font-bold text-slate-700 text-lg">{order.customer}</span>
+                {order.customerOrdersCount > 1 && (
+                    <span className="text-[11px] text-slate-500 font-medium">{order.customerOrdersCount} pedidos na loja</span>
+                )}
+                {order.customerOrdersCount === 1 && (
+                    <span className="text-[11px] text-emerald-600 font-bold">1º pedido na loja</span>
+                )}
+                {order.deliveredBy && (
+                    <span className={`ml-auto flex items-center gap-1 text-[11px] font-bold uppercase tracking-wide px-2 py-1 rounded-lg border ${ownDelivery ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                        {ownDelivery ? <><Store className="w-3 h-3"/> Entrega própria</> : <><Bike className="w-3 h-3"/> Entrega Keeta</>}
+                    </span>
+                )}
+            </div>
+
+            {order.dataProtected && (
+                <div className="flex flex-col gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+                    <p className="flex items-start gap-2 font-medium">
+                        <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5"/>
+                        Telefone e endereço estão protegidos pela Keeta e não puderam ser abertos agora.
+                    </p>
+                    <button type="button" onClick={retry} disabled={retrying}
+                        className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-amber-300 font-bold text-xs hover:bg-amber-100 disabled:opacity-60">
+                        <RefreshCw className={`w-3.5 h-3.5 ${retrying ? 'animate-spin' : ''}`}/> {retrying ? 'Buscando na Keeta…' : 'Tentar novamente'}
+                    </button>
+                    {retryError && <p className="text-xs font-bold text-red-600">{retryError}</p>}
+                </div>
+            )}
+
+            {order.phone && (
+                <div className="flex gap-3 items-center flex-wrap">
+                    <Phone className="w-5 h-5 text-emerald-600 shrink-0" />
+                    <span className="text-sm text-slate-700 font-bold">
+                        {order.phone}{order.phoneExtension && <span className="font-medium text-slate-500"> · ramal {order.phoneExtension}</span>}
+                    </span>
+                    <div className="flex gap-2 ml-auto">
+                        <a href={`tel:+${digits}${order.phoneExtension ? `,${order.phoneExtension}` : ''}`}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold hover:bg-emerald-100">
+                            <Phone className="w-3.5 h-3.5"/> Ligar
+                        </a>
+                        {!order.phoneExtension && digits && (
+                            <a href={`https://wa.me/${digits}`} target="_blank" rel="noopener noreferrer"
+                                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-green-50 text-green-700 border border-green-200 text-xs font-bold hover:bg-green-100">
+                                <MessageCircle className="w-3.5 h-3.5"/> WhatsApp
+                            </a>
+                        )}
+                    </div>
+                </div>
+            )}
+            {order.phoneExtension && (
+                <p className="text-[11px] text-slate-400 -mt-2 ml-8">Ao ligar, digite o ramal {order.phoneExtension} quando for pedido.</p>
+            )}
+
+            {(order.address || extraLines.length > 0) && (
+                <div className="flex gap-3 items-start">
+                    <MapPin className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                        {order.address && <p className="text-sm text-slate-600 leading-relaxed font-medium">{order.address}</p>}
+                        {extraLines.map(([label, value]) => (
+                            <p key={label} className="text-xs text-slate-500"><span className="font-bold text-slate-600">{label}:</span> {value}</p>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {order.customerDocument && (
+                <p className="text-xs text-slate-500 ml-8"><span className="font-bold text-slate-600">CPF/CNPJ na nota:</span> {order.customerDocument}</p>
+            )}
+
+            {mapUrl && (
+                <a href={mapUrl} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 w-full py-3 bg-blue-50 text-blue-600 font-bold rounded-xl hover:bg-blue-100 transition-colors text-sm border border-blue-100">
+                    <Navigation className="w-4 h-4" /> Abrir Localização no Maps
+                </a>
+            )}
+        </div>
+    );
+}
+
+// "Dinheiro · troco para R$ 100,00 (levar R$ 48,41)"
+function describePayment(method, total) {
+    const name = PAYMENT_METHOD_NAMES[method.method] || method.method || 'Pagamento';
+    let text = method.brand && method.brand !== 'OTHER' ? `${name} ${method.brand}` : name;
+    if (method.methodInfo) text += ` (${method.methodInfo})`;
+    if (method.method === 'CASH' && method.changeFor > 0) {
+        const change = method.changeFor - (method.value ?? total ?? 0);
+        text += ` · troco para ${formatCurrency(method.changeFor)}`;
+        if (change > 0.009) text += ` (levar ${formatCurrency(change)} de troco)`;
+    }
+    return text;
+}
+
+export default function OrderDetailModal({ order, onClose, onStatusChange, onOrderUpdated }) {
     if (!order) return null;
 
     const getHeaderColor = () => {
@@ -14,9 +151,11 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
         }
     };
 
-    const mapUrl = order.coordinates?.lat 
+    const mapUrl = order.coordinates
         ? `https://www.google.com/maps/search/?api=1&query=${order.coordinates.lat},${order.coordinates.lng}`
-        : null;
+        : order.address
+            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.address)}`
+            : null;
 
     return (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -159,28 +298,23 @@ export default function OrderDetailModal({ order, onClose, onStatusChange }) {
                         <div className={`mt-3 py-2 px-3 rounded-lg text-center text-xs font-bold uppercase tracking-wide border ${order.paymentType === 'ONLINE' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}`}>
                             {order.paymentType === 'ONLINE' ? '✅ PAGO ONLINE (Não Cobrar)' : '⚠️ COBRAR NA ENTREGA'}
                         </div>
-                    </div>
-
-                    {/* Info Cliente */}
-                    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-                        <div className="flex items-center gap-2 border-b border-slate-50 pb-3">
-                            <div className="p-1.5 bg-slate-100 rounded-full"><User className="w-4 h-4 text-slate-500"/></div>
-                            <span className="font-bold text-slate-700 text-lg">{order.customer}</span>
-                        </div>
-                        <div className="flex gap-3 items-start">
-                            <MapPin className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                            <div>
-                                <p className="text-sm text-slate-600 leading-relaxed font-medium">
-                                    {order.address}
-                                </p>
+                        {order.paymentMethods?.length > 0 && (
+                            <div className="space-y-1">
+                                {order.paymentMethods.map((method, idx) => (
+                                    <p key={idx} className="flex items-start gap-1.5 text-xs text-slate-600">
+                                        <Wallet className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-px"/>
+                                        <span>
+                                            <b>{describePayment(method, order.total)}</b>
+                                            {order.paymentMethods.length > 1 && <> · {formatCurrency(method.value)}</>}
+                                            {method.type === 'PENDING' && <span className="text-yellow-700 font-bold"> · cobrar na entrega</span>}
+                                        </span>
+                                    </p>
+                                ))}
                             </div>
-                        </div>
-                        {mapUrl && (
-                            <a href={mapUrl} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 w-full py-3 bg-blue-50 text-blue-600 font-bold rounded-xl hover:bg-blue-100 transition-colors text-sm border border-blue-100">
-                                <Navigation className="w-4 h-4" /> Abrir Localização no Maps
-                            </a>
                         )}
                     </div>
+
+                    <CustomerSection order={order} mapUrl={mapUrl} onOrderUpdated={onOrderUpdated} />
                 </div>
 
                 {/* Footer (Botões) */}

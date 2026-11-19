@@ -164,6 +164,10 @@ def _run_lightweight_migrations():
         # Order: totais detalhados da Keeta
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS items_price DOUBLE PRECISION",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS other_fees_total DOUBLE PRECISION",
+        # Order: dados do cliente, da entrega e do pagamento (já descriptografados)
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_json TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_json TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payments_json TEXT",
         # OrderItem: opções/adicionais do item
         "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
         # MenuItem: novos campos para suportar Open Delivery e subitens reais.

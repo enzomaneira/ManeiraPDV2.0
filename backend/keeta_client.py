@@ -583,6 +583,63 @@ def get_order_details(order_id: str, order_url: str | None = None) -> dict | Non
         return None
 
 
+ENCRYPTED_PREFIX = "ENC_"
+DECRYPT_BATCH_SIZE = 50          # limite da Keeta por chamada
+DECRYPT_TIMEOUT = (5, 8)         # roda dentro do webhook: a Keeta reenvia se demorarmos
+
+
+def is_encrypted(value) -> bool:
+    return isinstance(value, str) and value.startswith(ENCRYPTED_PREFIX)
+
+
+def batch_decrypt(cipher_texts) -> dict[str, str]:
+    """
+    Descriptografa dados do cliente (telefone, endereço...) de pedidos com
+    entrega própria ou 3PL.
+
+    Endpoint: POST /v1/batchDecrypt  (até 50 itens por chamada)
+      body:     {"cipherInfos": [{"cipherText": "ENC_..."}]}
+      resposta: {"plainInfos": [{"cipherText", "plainText", "errorCode", "errorMsg"}]}
+
+    Retorna {cipherText: plainText} só com os itens descriptografados com
+    sucesso (errorCode 0). Itens com erro ou lotes que falharem ficam de fora.
+
+    ATENÇÃO: o resultado é dado pessoal do cliente. Nunca registrar plainText
+    nem o corpo da resposta nos logs, só contagens.
+    """
+    unique = list(dict.fromkeys(c for c in cipher_texts if is_encrypted(c)))
+    if not unique:
+        return {}
+
+    url = f"{BASE_URL}/v1/batchDecrypt"
+    result: dict[str, str] = {}
+    for start in range(0, len(unique), DECRYPT_BATCH_SIZE):
+        chunk = unique[start:start + DECRYPT_BATCH_SIZE]
+        body = canonical_json({"cipherInfos": [{"cipherText": c} for c in chunk]})
+        try:
+            response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=DECRYPT_TIMEOUT)
+            if response.status_code != 200:
+                print(f"[Keeta][batch_decrypt] FALHA no lote | status_code={response.status_code} | itens={len(chunk)}")
+                continue
+            data = response.json()
+            if isinstance(data, dict) and isinstance(data.get("data"), dict):
+                data = data["data"]  # formato {code, message, data: {...}}
+            plain_infos = (data or {}).get("plainInfos") or []
+            ok = 0
+            for info in plain_infos:
+                cipher, plain = info.get("cipherText"), info.get("plainText")
+                if cipher in chunk and info.get("errorCode", 0) == 0 and isinstance(plain, str):
+                    result[cipher] = plain
+                    ok += 1
+            errors = sorted({str(i.get("errorCode")) for i in plain_infos if i.get("errorCode", 0) != 0})
+            print(f"[Keeta][batch_decrypt] lote: {ok}/{len(chunk)} descriptografado(s)"
+                  + (f" | errorCodes={','.join(errors)}" if errors else ""))
+        except Exception as e:
+            print(f"[Keeta][batch_decrypt] ERRO no lote: {type(e).__name__} | itens={len(chunk)}")
+    print(f"[Keeta][batch_decrypt] FIM | {len(result)}/{len(unique)} descriptografado(s)")
+    return result
+
+
 # =============================================================================
 #  4. CHAMADAS DE LOJA (Merchant API)
 # =============================================================================

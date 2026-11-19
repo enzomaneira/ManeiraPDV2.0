@@ -73,6 +73,8 @@ export const orderService = {
     updateStatus: (orderId, newStatus) => api.patch(`/orders/${orderId}/status`, {
         status: newStatus
     }),
+    // Busca o pedido de novo na Keeta e tenta abrir telefone/endereço protegidos
+    retryDecrypt: (orderId) => api.post(`/orders/${orderId}/decrypt`),
 };
 
 export const categoryService = {

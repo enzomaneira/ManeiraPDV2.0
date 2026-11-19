@@ -453,6 +453,14 @@ class Order(db.Model):
     fees_json        = db.Column(db.Text,        nullable=True)
     discounts_json   = db.Column(db.Text,        nullable=True)
 
+    # Dados do cliente/entrega/pagamento vindos do orderDetails da Keeta. Em
+    # entrega própria, telefone e endereço chegam criptografados (ENC_...) e
+    # são guardados já descriptografados via batchDecrypt; o que não pôde ser
+    # descriptografado continua com o prefixo ENC_ e nunca é exibido.
+    customer_json    = db.Column(db.Text,        nullable=True)  # phone, phoneExtension, documentNumber, email, ordersCount
+    delivery_json    = db.Column(db.Text,        nullable=True)  # deliveredBy, street, number, complement, district, city, ...
+    payments_json    = db.Column(db.Text,        nullable=True)  # prepaid, pending, methods[]
+
     created_at       = db.Column(db.String(100), nullable=True)
 
     # Relacionamento com os itens do pedido
@@ -480,7 +488,8 @@ class Order(db.Model):
             "storeId":         self.store_id,
             "status":          self.status,
             "customerName":    self.customer_name,
-            "deliveryAddress": self.delivery_address,
+            # Pedidos antigos podem ter guardado o endereço ainda criptografado
+            "deliveryAddress": None if (self.delivery_address or "").startswith("ENC_") else self.delivery_address,
             "latitude":        self.latitude,
             "longitude":       self.longitude,
             "totalPrice":      self.total_price,
@@ -492,6 +501,47 @@ class Order(db.Model):
             "discounts":       discounts,
             "createdAt":       self.created_at,
             "items":           [item.to_dict() for item in self.items],
+            **self._contact_details(),
+        }
+
+    def _contact_details(self) -> dict:
+        """Cliente, entrega e pagamento para a tela de detalhes. Campos que ainda
+        estão criptografados (ENC_...) viram None e marcam dataProtected."""
+        import json as _json
+
+        def load(raw):
+            try:
+                value = _json.loads(raw) if raw else {}
+                return value if isinstance(value, dict) else {}
+            except Exception:
+                return {}
+
+        customer, delivery, payments = load(self.customer_json), load(self.delivery_json), load(self.payments_json)
+        protected = False
+
+        def clean(info: dict) -> dict:
+            nonlocal protected
+            out = {}
+            for key, value in info.items():
+                if isinstance(value, str) and value.startswith("ENC_"):
+                    protected = True
+                    value = None
+                out[key] = value
+            return out
+
+        customer, delivery = clean(customer), clean(delivery)
+        if self.delivery_address and self.delivery_address.startswith("ENC_"):
+            protected = True
+        return {
+            "customerPhone":     customer.get("phone"),
+            "customerPhoneExtension": customer.get("phoneExtension"),
+            "customerDocument":  customer.get("documentNumber"),
+            "customerOrdersCount": customer.get("ordersCount"),
+            "deliveredBy":       delivery.get("deliveredBy"),
+            "deliveryDetails":   {k: v for k, v in delivery.items() if k != "deliveredBy"},
+            "paymentMethods":    payments.get("methods") or [],
+            "paymentPending":    payments.get("pending"),
+            "dataProtected":     protected,
         }
 
 

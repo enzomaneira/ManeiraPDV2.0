@@ -9,12 +9,13 @@
 #  qual é a loja (store_id) que deve ser consultada/alterada.
 # =============================================================================
 
+import json
 import random
 from datetime import datetime
 from flask import Blueprint, request, jsonify, g
 from database import db
 from models import Order, OrderItem, StoreConfig
-from auth_utils import login_required
+from auth_utils import login_required, rate_limited
 import keeta_client
 import threading
 
@@ -205,6 +206,169 @@ def update_status(order_id):
 #  FUNÇÃO DE SERVIÇO (usada pelo webhook)
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+#  POST /api/orders/<id>/decrypt
+#  Busca de novo o pedido na Keeta e tenta descriptografar telefone/endereço
+#  (botão "Tentar novamente" nos detalhes, quando os dados ficaram protegidos)
+# -----------------------------------------------------------------------------
+@orders_bp.post("/<int:order_id>/decrypt")
+@login_required
+def retry_decrypt(order_id):
+    store = g.current_user.store
+    order = Order.query.get(order_id)
+    if not order or not store or order.store_id != store.id:
+        return jsonify({"error": "Pedido não encontrado."}), 404
+    if not order.external_id:
+        return jsonify({"error": "Este pedido não veio da Keeta."}), 400
+    if rate_limited(f"decrypt:{order.id}", limit=10, window_seconds=600):
+        return jsonify({"error": "Muitas tentativas. Aguarde alguns minutos e tente de novo."}), 429
+
+    order_data = keeta_client.get_order_details(order.external_id)
+    if not order_data:
+        return jsonify({"error": "Não foi possível buscar o pedido na Keeta. Tente de novo em instantes."}), 502
+    save_order_from_keeta(order_data, order.store_id)
+    db.session.refresh(order)
+    result = order.to_dict()
+    print(f"[Orders][retry_decrypt] order_id={order.id} | ainda_protegido={result['dataProtected']}")
+    return jsonify(result)
+
+
+def _collect_encrypted(node, found: list):
+    """Junta todas as strings ENC_... de um nó do pedido (qualquer profundidade)."""
+    if isinstance(node, dict):
+        for value in node.values():
+            _collect_encrypted(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_encrypted(value, found)
+    elif keeta_client.is_encrypted(node):
+        found.append(node)
+    return found
+
+
+def _replace_encrypted(node, plain: dict):
+    if isinstance(node, dict):
+        return {k: _replace_encrypted(v, plain) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_replace_encrypted(v, plain) for v in node]
+    if keeta_client.is_encrypted(node):
+        return plain.get(node, node)
+    return node
+
+
+def _decrypt_contact_data(customer: dict, delivery: dict):
+    """Descriptografa os campos ENC_ de customer/delivery. Retorna as cópias
+    descriptografadas e (quantos estavam criptografados, quantos abriram)."""
+    ciphers = list(dict.fromkeys(_collect_encrypted(customer, []) + _collect_encrypted(delivery, [])))
+    if not ciphers:
+        return customer, delivery, (0, 0)
+    plain = keeta_client.batch_decrypt(ciphers)
+    return _replace_encrypted(customer, plain), _replace_encrypted(delivery, plain), (len(ciphers), len(plain))
+
+
+def _is_plain(value) -> bool:
+    return isinstance(value, str) and value.strip() != "" and not keeta_client.is_encrypted(value)
+
+
+def _text(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _merge_keep_plain(new: dict, old_raw: str | None) -> dict:
+    """Se um campo continua criptografado agora (ex.: a Keeta recusou a
+    descriptografia depois do fim do pedido) mas já tínhamos o valor em texto,
+    mantém o valor antigo. Assim um reenvio do webhook não apaga o que já foi
+    descriptografado."""
+    try:
+        old = json.loads(old_raw) if old_raw else {}
+    except Exception:
+        old = {}
+    if not isinstance(old, dict):
+        old = {}
+    merged = dict(new)
+    for key, value in new.items():
+        if (value is None or keeta_client.is_encrypted(value)) and _is_plain(old.get(key)):
+            merged[key] = old[key]
+    return merged
+
+
+def _format_address(info: dict) -> str | None:
+    """Endereço em uma linha. Usa o formattedAddress da Keeta quando está em
+    texto; senão monta a partir das partes (só com partes já descriptografadas)."""
+    if _is_plain(info.get("formattedAddress")):
+        return info["formattedAddress"].strip()
+    keys = ("street", "number", "complement", "district", "city", "state", "postalCode")
+    if any(keeta_client.is_encrypted(info.get(k)) for k in keys):
+        return None  # endereço pela metade (ex.: sem o número) confunde mais do que ajuda
+    parts = {k: info.get(k) if _is_plain(info.get(k)) else None for k in keys}
+    if not parts["street"]:
+        return None
+    line = parts["street"] + (f", {parts['number']}" if parts["number"] else "")
+    if parts["complement"]:
+        line += f" - {parts['complement']}"
+    place = ", ".join(p for p in (parts["district"], parts["city"]) if p)
+    state = (parts["state"] or "").replace("BR-", "")
+    if place or state:
+        line += " - " + place + (f"/{state}" if state else "")
+    if parts["postalCode"]:
+        line += f" - CEP {parts['postalCode']}"
+    return line
+
+
+def _apply_contact_data(order: "Order", customer: dict, delivery: dict, payments: dict):
+    """Grava nome, telefone, endereço e pagamento no pedido (já descriptografados)."""
+    phone = customer.get("phone") if isinstance(customer.get("phone"), dict) else {}
+    customer_info = _merge_keep_plain({
+        "name":           _text(customer.get("name")),
+        "phone":          _text(phone.get("number")),
+        "phoneExtension": _text(phone.get("extension")),
+        "documentNumber": _text(customer.get("documentNumber")),
+        "email":          _text(customer.get("email")),
+        "ordersCount":    customer.get("ordersCountOnMerchant"),
+    }, order.customer_json)
+
+    address = delivery.get("deliveryAddress") if isinstance(delivery.get("deliveryAddress"), dict) else {}
+    delivery_info = _merge_keep_plain({
+        "deliveredBy":       _text(delivery.get("deliveredBy")),
+        "street":            _text(address.get("street")),
+        "number":            _text(address.get("number")),
+        "complement":        _text(address.get("complement")),
+        "district":          _text(address.get("district")),
+        "city":              _text(address.get("city")),
+        "state":             _text(address.get("state")),
+        "postalCode":        _text(address.get("postalCode")),
+        "reference":         _text(address.get("reference")),
+        "formattedAddress":  _text(address.get("formattedAddress")),
+        "estimatedDeliveryDateTime": _text(delivery.get("estimatedDeliveryDateTime")),
+    }, order.delivery_json)
+
+    order.customer_json = json.dumps(customer_info, ensure_ascii=False)
+    order.delivery_json = json.dumps(delivery_info, ensure_ascii=False)
+
+    name = customer_info.get("name")
+    if _is_plain(name):
+        order.customer_name = name
+    elif not _is_plain(order.customer_name):
+        order.customer_name = "Cliente"
+
+    formatted = _format_address(delivery_info)
+    if formatted:
+        order.delivery_address = formatted
+    elif not _is_plain(order.delivery_address):
+        # Sem endereço legível (retirada, ou ainda criptografado): nunca gravar ENC_.
+        order.delivery_address = None if address else "Retirada / Não informado"
+
+    methods = []
+    for method in payments.get("methods") or []:
+        if isinstance(method, dict):
+            methods.append({k: method.get(k) for k in ("method", "type", "value", "brand", "methodInfo", "changeFor")
+                            if method.get(k) is not None})
+    order.payments_json = json.dumps({"prepaid": payments.get("prepaid"), "pending": payments.get("pending"),
+                                      "methods": methods}, ensure_ascii=False)
+
+
 def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     """
     Recebe o JSON completo de um pedido da Keeta e salva/atualiza no banco.
@@ -285,10 +449,16 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
     order.created_at  = order_json.get("createdAt")
     print(f"[Orders][save_order_from_keeta] Identificação: pickup_code={pickup_code} | display_id={order.display_id} | created_at={order.created_at}")
 
-    # --- Cliente ---
-    customer = order_json.get("customer", {})
-    order.customer_name = customer.get("name", "Cliente")
-    print(f"[Orders][save_order_from_keeta] Cliente: {order.customer_name}")
+    # --- Cliente, entrega e pagamento (com descriptografia) ---
+    # Em entrega própria/3PL a Keeta manda telefone e endereço criptografados
+    # (ENC_...). Descriptografamos pelo batchDecrypt e guardamos já em texto.
+    # Nunca registrar esses dados nos logs.
+    customer = order_json.get("customer") or {}
+    delivery = order_json.get("delivery") or {}
+    customer, delivery, decrypt_stats = _decrypt_contact_data(customer, delivery)
+    _apply_contact_data(order, customer, delivery, order_json.get("payments") or {})
+    print(f"[Orders][save_order_from_keeta] Cliente/entrega gravados | criptografados={decrypt_stats[0]} | "
+          f"descriptografados={decrypt_stats[1]} | entrega_por={delivery.get('deliveredBy')}")
 
     total_node = order_json.get("total", {})
     order_amount = total_node.get("orderAmount", {})
@@ -316,14 +486,12 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
         order.payment_type = "NA_ENTREGA"
     print(f"[Orders][save_order_from_keeta] payment_type={order.payment_type}")
 
-    # --- Endereço de entrega ---
-    delivery_address = delivery.get("deliveryAddress", {})
-    order.delivery_address = delivery_address.get("formattedAddress", "Retirada / Não informado")
-    coords = delivery_address.get("coordinates", {})
-    if "latitude" in coords:
+    # --- Coordenadas da entrega (o endereço em texto é tratado em _apply_contact_data) ---
+    coords = (delivery.get("deliveryAddress") or {}).get("coordinates") or {}
+    if isinstance(coords.get("latitude"), (int, float)) and isinstance(coords.get("longitude"), (int, float)):
         order.latitude  = coords["latitude"]
         order.longitude = coords["longitude"]
-    print(f"[Orders][save_order_from_keeta] Endereço: {order.delivery_address} | lat={order.latitude} | lng={order.longitude}")
+    print(f"[Orders][save_order_from_keeta] Endereço gravado | tem_coordenadas={order.latitude is not None}")
 
     # --- JSONs brutos para auditoria ---
     import json
