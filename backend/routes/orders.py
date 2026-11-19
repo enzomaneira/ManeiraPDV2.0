@@ -185,7 +185,7 @@ def update_status(order_id):
                     resultado = keeta_client.dispatch_own_delivery(external_id)
                     print(f"[Orders][update_status][thread] Resultado dispatch: {resultado}")
 
-                elif new_status == "COMPLETED" and own_delivery and delivery.get("sendDelivered") is not False:
+                elif new_status == "COMPLETED" and own_delivery:
                     resultado = keeta_client.notify_delivered(external_id)
                     print(f"[Orders][update_status][thread] Resultado delivered: {resultado}")
 
@@ -305,13 +305,15 @@ def update_delivery_stage(order_id):
 
     keeta = {"sent": None, "warning": None}
     if external_id:
+        # Na entrega própria as etapas vão sempre para a Keeta. Os campos
+        # sendTracking/sendDelivered do pedido só dizem se a Keeta *espera* a
+        # chamada; mesmo com false ela aceita (e o restaurante quer informar).
         calls = []
         if stage == "DELIVERY_ONGOING":
             calls.append(keeta_client.dispatch_own_delivery)
         else:
-            if delivery.get("sendTracking") is not False:
-                calls.append(lambda oid: keeta_client.send_delivery_tracking(oid, stage))
-            if stage == "ORDER_DELIVERED" and delivery.get("sendDelivered") is not False:
+            calls.append(lambda oid: keeta_client.send_delivery_tracking(oid, stage))
+            if stage == "ORDER_DELIVERED":
                 calls.append(keeta_client.notify_delivered)
         results = [call(external_id) for call in calls]
         keeta["sent"] = all(ok for ok, _ in results) if results else None
@@ -319,7 +321,8 @@ def update_delivery_stage(order_id):
         if failed:
             keeta["warning"] = ("A Keeta já tinha recebido esta etapa." if all(code == 422 for code in failed)
                                 else "A etapa foi salva no PDV, mas a Keeta não confirmou o recebimento.")
-    print(f"[Orders][update_delivery_stage] order_id={order.id} | etapa={stage} | status={order.status} | keeta={keeta}")
+    print(f"[Orders][update_delivery_stage] order_id={order.id} | etapa={stage} | status={order.status} | keeta={keeta} | "
+          f"sendTracking={delivery.get('sendTracking')} | sendDelivered={delivery.get('sendDelivered')}")
     return jsonify({"order": order.to_dict(), "keeta": keeta})
 
 
