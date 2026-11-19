@@ -22,6 +22,7 @@ export default function GroupEditor({ group, items, categories, presetProductIds
   });
   const [options, setOptions] = useState(() => (group?.options || []).map(option => ({
     key: `op-${option.id}`, id: option.id, itemId: option.itemId, name: itemById[option.itemId]?.name || option.name, price: String(option.price ?? 0),
+    maxQty: String(option.maxPermitted || 1),
   })));
   const [productIds, setProductIds] = useState(() => new Set(
     group ? items.filter(item => isProduct(item) && (item.optionGroupsId || []).includes(group.id)).map(item => item.id) : presetProductIds,
@@ -32,6 +33,11 @@ export default function GroupEditor({ group, items, categories, presetProductIds
   const set = (changes) => setForm(prev => ({ ...prev, ...changes }));
   const minPermitted = form.required ? Number(form.min) || 1 : 0;
   const maxPermitted = Math.max(Number(form.max) || 1, minPermitted, 1);
+  // Quantas vezes cada opção pode ser escolhida (1 = não repete). O cliente só
+  // consegue escolher, no total, a soma desses limites.
+  const optionLimit = (option) => Math.max(1, Math.floor(Number(option.maxQty) || 1));
+  const reachable = options.reduce((sum, option) => sum + optionLimit(option), 0);
+  const allowsRepeat = options.some(option => optionLimit(option) > 1);
   const usedItemIds = new Set(options.map(option => option.itemId).filter(Boolean));
   const pickable = [...items].filter(item => !usedItemIds.has(item.id))
     .sort((a, b) => Number(b.isOptionItem) - Number(a.isOptionItem) || a.name.localeCompare(b.name));
@@ -40,10 +46,10 @@ export default function GroupEditor({ group, items, categories, presetProductIds
     if (newOption.mode === 'existing') {
       const item = itemById[Number(newOption.itemId)];
       if (!item) { showMessage('error', 'Escolha o item.'); return; }
-      setOptions(prev => [...prev, { key: newKey(), itemId: item.id, name: item.name, price: newOption.price || '0' }]);
+      setOptions(prev => [...prev, { key: newKey(), itemId: item.id, name: item.name, price: newOption.price || '0', maxQty: '1' }]);
     } else {
       if (!newOption.name.trim()) { showMessage('error', 'Digite o nome da opção (ex.: Bacon extra).'); return; }
-      setOptions(prev => [...prev, { key: newKey(), itemId: null, name: newOption.name.trim(), price: newOption.price || '0' }]);
+      setOptions(prev => [...prev, { key: newKey(), itemId: null, name: newOption.name.trim(), price: newOption.price || '0', maxQty: '1' }]);
     }
     setNewOption({ mode: newOption.mode, name: '', price: '', itemId: '' });
   };
@@ -57,7 +63,8 @@ export default function GroupEditor({ group, items, categories, presetProductIds
     e.preventDefault();
     if (!form.name.trim()) { showMessage('error', 'Dê um nome ao grupo (ex.: Molhos).'); return; }
     if (options.length === 0) { showMessage('error', 'Adicione pelo menos uma opção ao grupo.'); return; }
-    if (minPermitted > options.length) { showMessage('error', `O cliente precisa escolher ${minPermitted}, mas o grupo só tem ${options.length} opções.`); return; }
+    if (minPermitted > reachable) { showMessage('error', `O cliente precisa escolher ${minPermitted}, mas as opções só somam ${reachable} escolha${reachable === 1 ? '' : 's'}. Aumente o "até" de alguma opção ou o número de opções.`); return; }
+    if (options.some(option => optionLimit(option) > maxPermitted)) { showMessage('error', `Uma opção não pode ser escolhida mais vezes que o máximo do grupo (${maxPermitted}).`); return; }
     const prices = options.map(option => parseFloat(String(option.price).replace(',', '.')));
     if (prices.some(price => isNaN(price) || price < 0)) { showMessage('error', 'Confira os preços das opções.'); return; }
     setSaving(true);
@@ -72,7 +79,7 @@ export default function GroupEditor({ group, items, categories, presetProductIds
         if (!keep.has(old.id)) await optionGroupService.deleteOption(groupId, old.id, { sync: false });
       }
       for (const [index, option] of options.entries()) {
-        const body = { name: option.name, price: prices[index], index, status: 'AVAILABLE' };
+        const body = { name: option.name, price: prices[index], index, status: 'AVAILABLE', maxPermitted: optionLimit(option) };
         if (option.id) await optionGroupService.updateOption(groupId, option.id, body, { sync: false });
         else await optionGroupService.createOption(groupId, { ...body, itemId: option.itemId }, { sync: false });
       }
@@ -117,8 +124,13 @@ export default function GroupEditor({ group, items, categories, presetProductIds
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
               {form.required && <label className="flex items-center gap-1.5">Escolher no mínimo <input type="number" min="1" className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg" value={form.min} onChange={e => set({ min: e.target.value })} /></label>}
               <label className="flex items-center gap-1.5">{form.required ? 'e no máximo' : 'Pode escolher até'} <input type="number" min="1" className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg" value={form.max} onChange={e => set({ max: e.target.value })} /></label>
-              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white border border-slate-200">{groupRuleText({ minPermitted, maxPermitted })}</span>
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-white border border-slate-200">{groupRuleText({ minPermitted, maxPermitted })}{allowsRepeat ? ' · pode repetir' : ''}</span>
             </div>
+            {options.length > 0 && maxPermitted > reachable && (
+              <p className="text-xs text-amber-700">
+                Com as opções de agora o cliente só consegue escolher {reachable}. Para deixar repetir a mesma opção, aumente o “até” dela abaixo.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -135,6 +147,11 @@ export default function GroupEditor({ group, items, categories, presetProductIds
                   <input className={inputClass + ' flex-1 min-w-[160px]'} value={option.name} onChange={e => updateOption(option.key, { name: e.target.value })} disabled={Boolean(item && isProduct(item))} aria-label="Nome da opção" />
                   <label className="flex items-center gap-1 text-sm text-slate-500">+ R$
                     <input type="number" step="0.01" min="0" className="w-24 px-2 py-2 border border-slate-200 rounded-lg" value={option.price} onChange={e => updateOption(option.key, { price: e.target.value })} aria-label={`Preço de ${option.name}`} />
+                  </label>
+                  <label className="flex items-center gap-1 text-sm text-slate-500" title="Quantas vezes o cliente pode escolher esta mesma opção">até
+                    <input type="number" min="1" max={maxPermitted} step="1" className="w-14 px-2 py-2 border border-slate-200 rounded-lg" value={option.maxQty}
+                      onChange={e => updateOption(option.key, { maxQty: e.target.value })} aria-label={`Quantas vezes ${option.name} pode ser escolhida`} />
+                    x
                   </label>
                   {item && isProduct(item) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-bold" title={`Vendido sozinho por ${formatCurrency(item.price)}`}>produto do cardápio</span>}
                   <button type="button" onClick={() => setOptions(prev => prev.filter(entry => entry.key !== option.key))} className="p-2 text-slate-300 hover:text-red-600" aria-label={`Remover ${option.name}`}><Trash2 className="w-4 h-4" /></button>

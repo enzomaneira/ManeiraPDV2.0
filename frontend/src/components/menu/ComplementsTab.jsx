@@ -59,6 +59,7 @@ export default function ComplementsTab({ optionGroups, items, loading, busyId, o
                       {item?.name || option.name}
                       {shared && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-bold" title="Este item também é vendido sozinho no cardápio">também é produto</span>}
                     </span>
+                    {option.maxPermitted > 1 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-bold" title="O cliente pode escolher esta opção mais de uma vez">até {option.maxPermitted}x</span>}
                     <span className="w-20 text-right text-sm font-bold tabular-nums text-slate-600">{option.price > 0 ? `+ ${formatCurrency(option.price)}` : 'Grátis'}</span>
                     {item && (
                       <StatusToggle available={available} busy={busyId === item.id} onClick={() => onToggleItem(item)}

@@ -343,6 +343,8 @@ def _build_menu_response(store_id: int):
         option_group_ids_map[og.id] = og_id
         options_list = []
         available_options_count = 0
+        available_selections = 0   # soma dos limites das opções disponíveis
+        total_selections = 0       # soma dos limites de todas as opções
         for opt in og.options:
             # Toda opção precisa apontar para um Item enviado em items[].
             if opt.item_id not in store_item_ids:
@@ -353,15 +355,21 @@ def _build_menu_response(store_id: int):
             opt_status = opt.status or "AVAILABLE"
             if item_status_by_id.get(opt.item_id) != "AVAILABLE":
                 opt_status = "UNAVAILABLE"
+            # Quantas vezes o cliente pode escolher ESTA opção (1 = não repete).
+            # A doc da Keeta diz que hoje ignora options[].maxPermitted; enviamos
+            # mesmo assim (é o campo do padrão Open Delivery para repetição).
+            opt_limit = max(1, opt.max_permitted or 1)
             if opt_status == "AVAILABLE":
                 available_options_count += 1
+                available_selections += opt_limit
+            total_selections += opt_limit
             options_list.append({
                 "id":           str(opt.id),
                 "itemId":       str(opt.item_id),
                 "index":        len(options_list),
                 "status":       opt_status,
                 "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},
-                "maxPermitted": opt.max_permitted,
+                "maxPermitted": opt_limit,
             })
 
         min_permitted = og.min_permitted if og.min_permitted is not None else 0
@@ -377,13 +385,13 @@ def _build_menu_response(store_id: int):
         # minPermitted enviado à Keeta para o mínimo seguro (nunca mais que
         # as opções disponíveis) e avisamos no log para o lojista corrigir
         # a configuração na origem.
-        if min_permitted > available_options_count:
+        if min_permitted > available_selections:
             print(f"[_build_menu_response] AVISO: optionGroup '{og.name}' (id={og_id}) tem "
                   f"minPermitted={min_permitted} mas só {available_options_count} opção(ões) "
                   f"disponível(eis) de {len(options_list)} total. Isso esconderia todos os itens "
                   f"vinculados na Keeta! Ajustando minPermitted={available_options_count} apenas "
                   f"para esta resposta — corrija o grupo no cardápio para resolver definitivamente.")
-            min_permitted = available_options_count
+            min_permitted = available_selections
 
         # Um grupo sem opções não pode ser referenciado por uma oferta. Não o
         # retornamos no Merchant para evitar que a Keeta rejeite o cardápio.
@@ -400,7 +408,9 @@ def _build_menu_response(store_id: int):
             "externalCode": og.external_code or og_id,
             "status":       og.status or "AVAILABLE",
             "minPermitted": min_permitted,
-            "maxPermitted": min(max_permitted, len(options_list)),
+            # Máximo do grupo: não passa do que dá para escolher somando o limite
+            # de cada opção (uma opção que repete permite passar do nº de opções).
+            "maxPermitted": max(min_permitted, min(max_permitted, total_selections)),
             "priceMethod":  og.price_method or "SUM",
             "options":      options_list,
         }

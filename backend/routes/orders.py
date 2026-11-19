@@ -23,6 +23,27 @@ import threading
 orders_bp = Blueprint("orders", __name__)
 
 
+def option_labels(options) -> list[str]:
+    """Rótulos dos complementos de um item, juntando repetidos e mostrando a
+    quantidade: [Bacon (1), Bacon (1), Cheddar] -> ["2x Bacon", "Cheddar"].
+    A Keeta pode mandar o mesmo complemento com quantity 2 ou repetido na lista."""
+    totals: dict[str, float] = {}
+    for option in options or []:
+        if not isinstance(option, dict):
+            continue
+        name = str(option.get("name") or "").strip()
+        if not name:
+            continue
+        quantity = option.get("quantity")
+        quantity = quantity if isinstance(quantity, (int, float)) and quantity > 0 else 1
+        totals[name] = totals.get(name, 0) + quantity
+    labels = []
+    for name, quantity in totals.items():
+        quantity = int(quantity) if float(quantity).is_integer() else quantity
+        labels.append(f"{quantity}x {name}" if quantity != 1 else name)
+    return labels
+
+
 def _account_store_ids() -> list[int]:
     """Restaurantes (marcas) da conta logada. O quadro de pedidos é da cozinha:
     mostra e deixa agir nos pedidos de todas as marcas, não só da selecionada."""
@@ -621,8 +642,8 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
 
         options = item_node.get("options", [])
         if options:
-            opt_names = [o.get("name", "") for o in options]
-            full_name += f" ({', '.join(opt_names)})"
+            # Mesmo complemento escolhido mais de uma vez: "2x Bacon Extra"
+            full_name += f" ({', '.join(option_labels(options))})"
 
         instructions = item_node.get("specialInstructions", "")
         if instructions:

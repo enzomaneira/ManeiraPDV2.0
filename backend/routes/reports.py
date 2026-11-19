@@ -68,10 +68,13 @@ def _base_item_name(item) -> str:
         options = json.loads(item.options_json) if item.options_json else []
     except (TypeError, ValueError):
         options = []
+    from routes.orders import option_labels
     names = [str(o.get("name", "")) for o in options if isinstance(o, dict)]
-    suffix = f" ({', '.join(names)})"
-    if names and name.endswith(suffix):
-        name = name[: -len(suffix)]
+    # Formato atual ("2x Bacon") e o antigo (só os nomes)
+    for suffix in (f" ({', '.join(option_labels(options))})", f" ({', '.join(names)})"):
+        if names and name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
     return name or "Item"
 
 

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { XCircle, CheckCircle, Bike, Ban, Zap, Navigation, User, Clock, DollarSign, Tag, MapPin, Phone, MessageCircle, ShieldAlert, RefreshCw, Store, Wallet, Package } from 'lucide-react';
 import { formatCurrency, formatFullDate, formatTime } from '../utils/formatters';
 import { STAGE_LABELS, isKeetaDelivery, nextOwnStages } from '../utils/deliveryStages';
+import { orderItemParts } from '../utils/orderItems';
 import { orderService } from '../services/api';
 
 const PAYMENT_METHOD_NAMES = {
@@ -265,13 +266,27 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                                 // Lógica de Exibição do Desconto
                                 // Se o preço original (35) for maior que o preço pago (25), mostra o risco.
                                 const hasDiscount = (item.originalPrice > item.price);
+                                const parts = orderItemParts(item);
 
                                 return (
                                     <div key={idx} className="flex justify-between items-start p-3 rounded-xl bg-white border border-slate-200 shadow-sm">
                                         <div className="flex gap-4 items-center">
                                             <span className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-lg text-sm font-bold text-slate-700 border border-slate-200">{item.quantity}x</span>
                                             <div>
-                                                <span className="font-bold text-slate-700 text-sm block">{item.name}</span>
+                                                <span className="font-bold text-slate-700 text-sm block">{parts.name}</span>
+                                                {parts.options.length > 0 && (
+                                                    <ul className="mt-1 mb-1 space-y-0.5">
+                                                        {parts.options.map(option => (
+                                                            <li key={option.name} className="text-xs text-slate-600 flex items-center gap-1.5">
+                                                                <span className={`min-w-[1.75rem] text-center px-1 rounded font-bold ${option.quantity > 1 ? 'bg-purple-100 text-purple-800' : 'bg-slate-100 text-slate-500'}`}>{option.quantity}x</span>
+                                                                <span>{option.name}</span>
+                                                                {option.price > 0 && <span className="text-slate-400">+ {formatCurrency(option.price * option.quantity)}</span>}
+                                                                {item.quantity > 1 && <span className="text-slate-400">em cada</span>}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                                {parts.note && <p className="text-xs font-bold text-amber-700 mb-1">Obs.: {parts.note}</p>}
                                                 <div className="flex items-center gap-2">
                                                     <span className="text-xs text-slate-500 font-medium">
                                                         Unit: {formatCurrency(item.price)}
