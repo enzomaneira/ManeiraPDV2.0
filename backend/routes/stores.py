@@ -291,6 +291,68 @@ def _option_group_min_permitted_warning(group) -> str | None:
     return None
 
 
+# --- Restaurantes da conta (marcas de uma dark kitchen) ---
+
+MAX_STORES_PER_ACCOUNT = 10
+
+
+def _store_summary(store):
+    from models import StoreConfig
+    config = StoreConfig.query.get(store.id)
+    return {
+        "id": store.id,
+        "name": store.name,
+        "keetaMerchantId": config.keeta_merchant_id if config else None,
+        "isStoreOpen": bool(config.is_store_open) if config else True,
+        # O quadro de pedidos junta as marcas: precisa das preferências de cada uma
+        "autoAccept": bool(config.auto_accept) if config else True,
+        "enabledDeliveryStages": config.enabled_delivery_stages if config else [],
+    }
+
+
+@stores_bp.get("")
+@stores_bp.get("/")
+@login_required
+def list_my_stores():
+    """Restaurantes da conta, para o seletor do PDV."""
+    return jsonify([_store_summary(store) for store in g.current_user.stores])
+
+
+@stores_bp.post("")
+@stores_bp.post("/")
+@login_required
+def create_store():
+    """Cria mais um restaurante (marca) na mesma conta. Body: { "name": "Nome da marca" }"""
+    from routes.auth import validate_name, STORE_NAME_MAX_LENGTH
+    from models import Store, StoreConfig
+    from sqlalchemy.exc import IntegrityError
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    error = validate_name(name, "o nome do restaurante", STORE_NAME_MAX_LENGTH)
+    if error:
+        return jsonify({"error": error}), 400
+    if len(g.current_user.stores) >= MAX_STORES_PER_ACCOUNT:
+        return jsonify({"error": f"Limite de {MAX_STORES_PER_ACCOUNT} restaurantes por conta."}), 400
+    if any(store.name.strip().lower() == name.lower() for store in g.current_user.stores):
+        return jsonify({"error": "Já existe um restaurante com esse nome nesta conta."}), 409
+
+    try:
+        store = Store(name=name, owner_id=g.current_user.id)
+        db.session.add(store)
+        db.session.flush()
+        # Mesmos padrões do cadastro da conta
+        db.session.add(StoreConfig(store_id=store.id, auto_accept=True, is_store_open=True))
+        db.session.commit()
+    except IntegrityError as e:
+        # Se a migração que libera várias lojas por conta não rodou, cai aqui
+        db.session.rollback()
+        print(f"[Stores][create_store] ERRO de integridade ao criar loja: {e}")
+        return jsonify({"error": "Não foi possível criar o restaurante agora. Avise o suporte (banco ainda não liberou várias lojas por conta)."}), 500
+    print(f"[Stores][create_store] Loja criada | user_id={g.current_user.id} | store_id={store.id}")
+    return jsonify(_store_summary(store)), 201
+
+
 # --- Loja do usuário logado ---
 
 @stores_bp.get("/me")

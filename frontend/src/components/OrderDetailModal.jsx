@@ -191,7 +191,7 @@ function describePayment(method, total) {
     return text;
 }
 
-export default function OrderDetailModal({ order, onClose, onStatusChange, onStageChange, onOrderUpdated, enabledStages = [] }) {
+export default function OrderDetailModal({ order, onClose, onStatusChange, onStageChange, onOrderUpdated, enabledStages = [], showBrand = false }) {
     if (!order) return null;
     const keetaDelivery = isKeetaDelivery(order);
     // Entrega própria: botões das próximas etapas (principais + as escolhidas pela loja)
@@ -222,6 +222,11 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                 {/* Header */}
                 <div className={`p-6 text-white flex justify-between items-start rounded-t-3xl ${getHeaderColor()}`}>
                     <div>
+                        {showBrand && order.storeName && (
+                            <p className="mb-2 inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider bg-white/20 px-2 py-1 rounded">
+                                <Store className="w-3.5 h-3.5"/> {order.storeName}
+                            </p>
+                        )}
                         <div className="flex items-center gap-3">
                             <span className="text-sm font-medium opacity-80 uppercase tracking-widest bg-black/10 px-2 py-1 rounded">Código</span>
                             <h2 className="text-4xl font-black tracking-tighter">{order.displayId}</h2>

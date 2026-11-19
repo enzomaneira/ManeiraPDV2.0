@@ -1,4 +1,5 @@
 import { ChefHat, ShoppingBag, History, Utensils, Settings, LogOut } from 'lucide-react';
+import StoreSwitcher from './StoreSwitcher';
 
 export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
   const initials = user?.name
@@ -17,6 +18,8 @@ export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
           </h1>
         </div>
 
+        <StoreSwitcher user={user} />
+
         <nav className="p-4 space-y-2">
           <SidebarItem icon={<ShoppingBag />} label="Pedidos" id="orders" activeTab={activeTab} onClick={setActiveTab} />
           <SidebarItem icon={<History />} label="Histórico" id="history" activeTab={activeTab} onClick={setActiveTab} />
@@ -30,7 +33,7 @@ export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
            <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center font-bold shrink-0">{initials}</div>
            <div className="hidden md:block flex-1 min-w-0">
              <p className="text-sm font-semibold truncate">{user?.name || 'Usuário'}</p>
-             <p className="text-xs text-slate-400 truncate">{user?.storeName || 'Sem restaurante'}</p>
+             <p className="text-xs text-slate-400 truncate">{user?.email || ''}</p>
            </div>
            <button
              onClick={onLogout}

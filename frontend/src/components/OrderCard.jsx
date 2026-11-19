@@ -1,8 +1,8 @@
-import { Clock, User, Tag, Bike } from 'lucide-react';
+import { Clock, User, Tag, Bike, Store } from 'lucide-react';
 import { formatCurrency, formatTime } from '../utils/formatters';
 import { STAGE_LABELS } from '../utils/deliveryStages';
 
-export default function OrderCard({ order, onClick }) {
+export default function OrderCard({ order, onClick, showBrand = false }) {
   
   // --- LÓGICA DE CÁLCULO ROBUSTA ---
   
@@ -45,6 +45,15 @@ export default function OrderCard({ order, onClick }) {
     >
       {/* Indicador lateral de status */}
       <div className={`absolute left-0 top-0 bottom-0 w-1 ${getStatusColor()}`}></div>
+
+      {/* Marca (dark kitchen): a cozinha precisa saber a embalagem/etiqueta */}
+      {showBrand && order.storeName && (
+        <div className="pl-2 mb-2">
+          <span className="inline-flex items-center gap-1 max-w-full text-[11px] font-black uppercase tracking-wide text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-lg">
+            <Store className="w-3 h-3 shrink-0" /> <span className="truncate">{order.storeName}</span>
+          </span>
+        </div>
+      )}
 
       {/* Cabeçalho */}
       <div className="flex justify-between items-start mb-3 pl-2">

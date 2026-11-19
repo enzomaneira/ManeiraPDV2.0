@@ -217,6 +217,33 @@ def _run_lightweight_migrations():
         "WHERE keeta_merchant_id IS NOT NULL AND keeta_merchant_id <> ''",
     ]
 
+    # Várias lojas por conta (dark kitchen): remove a unicidade de stores.owner_id.
+    # O nome da constraint não é conhecido de antemão, então procuramos no catálogo.
+    if db.engine.dialect.name == "postgresql":
+        index_statements.append("""
+            DO $$
+            DECLARE r record;
+            BEGIN
+                FOR r IN
+                    SELECT con.conname AS name
+                    FROM pg_constraint con
+                    JOIN pg_class rel ON rel.oid = con.conrelid
+                    JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ANY (con.conkey)
+                    WHERE rel.relname = 'stores' AND con.contype = 'u'
+                      AND att.attname = 'owner_id' AND array_length(con.conkey, 1) = 1
+                LOOP
+                    EXECUTE 'ALTER TABLE stores DROP CONSTRAINT ' || quote_ident(r.name);
+                END LOOP;
+                FOR r IN
+                    SELECT indexname AS name FROM pg_indexes
+                    WHERE tablename = 'stores' AND indexdef ~* 'unique' AND indexdef ~ '[(]owner_id[)]'
+                LOOP
+                    EXECUTE 'DROP INDEX IF EXISTS ' || quote_ident(r.name);
+                END LOOP;
+            END $$
+        """)
+        index_statements.append("CREATE INDEX IF NOT EXISTS ix_stores_owner_id ON stores (owner_id)")
+
     for stmt in backfill_statements + index_statements:
         try:
             db.session.execute(text(stmt))

@@ -133,8 +133,15 @@ def login_required(view_func):
             print(f"[Auth][login_required] REJEITADO (401): token anterior à última troca de senha | user_id={user_id}")
             return jsonify({"error": "Sessão expirada. Entre novamente."}), 401
 
-        print(f"[Auth][login_required] Autorizado | user_id={user.id} | store_id={user.store.id if user.store else None}")
         g.current_user = user
+        # Restaurante selecionado no PDV (marcas da mesma conta). Só vale um
+        # restaurante desta conta; qualquer outro valor cai no primeiro.
+        g.current_store = None
+        requested = (request.headers.get("X-Store-Id") or "").strip()
+        if requested.isdigit():
+            g.current_store = next((s for s in user.stores if s.id == int(requested)), None)
+        print(f"[Auth][login_required] Autorizado | user_id={user.id} | store_id={user.store.id if user.store else None}"
+              f"{'' if not requested or g.current_store else f' | X-Store-Id ignorado={requested}'}")
         return view_func(*args, **kwargs)
 
     return wrapper

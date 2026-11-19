@@ -18,8 +18,9 @@ class User(db.Model):
     Tabela: users
     Representa um usuário (dono/operador) que faz login no sistema.
 
-    Cada usuário está vinculado a NO MÁXIMO um restaurante (Store).
-    Essa relação é 1 para 1: um usuário só administra a sua própria loja.
+    Uma conta pode ter vários restaurantes (Store), por exemplo as marcas de
+    uma dark kitchen. Cada requisição age sobre o restaurante selecionado no
+    PDV (header X-Store-Id, validado em login_required) — veja `User.store`.
     """
     __tablename__ = "users"
 
@@ -31,8 +32,19 @@ class User(db.Model):
     reset_token_expires_at = db.Column(db.DateTime, nullable=True)
     created_at    = db.Column(db.String(100), nullable=True)
 
-    # Relacionamento 1:1 com a loja (Store) desse usuário
-    store = db.relationship("Store", back_populates="owner", uselist=False)
+    # Restaurantes (marcas) desta conta, na ordem de criação
+    stores = db.relationship("Store", back_populates="owner", order_by="Store.id")
+
+    @property
+    def store(self):
+        """Restaurante selecionado nesta requisição (g.current_store, só se for
+        desta conta) ou, fora de requisição/sem seleção, o primeiro da conta."""
+        from flask import g, has_request_context
+        if has_request_context():
+            current = getattr(g, "current_store", None)
+            if current is not None and current.owner_id == self.id:
+                return current
+        return self.stores[0] if self.stores else None
 
     def set_password(self, raw_password: str):
         self.password_hash = generate_password_hash(raw_password)
@@ -47,6 +59,7 @@ class User(db.Model):
             "email":   self.email,
             "storeId": self.store.id if self.store else None,
             "storeName": self.store.name if self.store else None,
+            "stores":  [{"id": s.id, "name": s.name} for s in self.stores],
         }
 
 
@@ -55,16 +68,16 @@ class Store(db.Model):
     Tabela: stores
     Representa uma loja/restaurante cadastrado no PDV.
 
-    Cada loja pertence a um único usuário (owner_id) — é o vínculo
-    entre o login do sistema e o restaurante integrado com a Keeta.
+    Cada loja pertence a um usuário (owner_id); um usuário pode ter várias
+    (marcas de uma dark kitchen), cada uma com cardápio e integração Keeta próprios.
     """
     __tablename__ = "stores"
 
     id       = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name     = db.Column(db.String(255), nullable=False)
-    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, unique=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
 
-    owner = db.relationship("User", back_populates="store")
+    owner = db.relationship("User", back_populates="stores")
 
     def to_dict(self):
         return {"id": self.id, "name": self.name, "ownerId": self.owner_id}

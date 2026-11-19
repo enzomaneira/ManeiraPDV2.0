@@ -15,12 +15,23 @@ const api = axios.create({
 
 // Chave usada para guardar o token JWT no navegador
 export const TOKEN_KEY = 'maneirapdv_token';
+// Restaurante (marca) selecionado na conta; vai no header X-Store-Id
+export const STORE_KEY = 'maneirapdv_store';
+
+export const selectStore = (storeId) => {
+    if (storeId) localStorage.setItem(STORE_KEY, String(storeId));
+    else localStorage.removeItem(STORE_KEY);
+};
 
 // --- Interceptor: injeta o token JWT em toda requisição, se existir ---
 api.interceptors.request.use((config) => {
     const token = localStorage.getItem(TOKEN_KEY);
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
+    }
+    const storeId = localStorage.getItem(STORE_KEY);
+    if (storeId) {
+        config.headers['X-Store-Id'] = storeId;
     }
     return config;
 });
@@ -32,6 +43,7 @@ api.interceptors.response.use(
     (error) => {
         if (error.response?.status === 401) {
             localStorage.removeItem(TOKEN_KEY);
+            localStorage.removeItem(STORE_KEY);
             if (window.location.pathname !== '/login') {
                 window.location.href = '/login';
             }
@@ -53,7 +65,11 @@ export const authService = {
 };
 
 export const storeService = {
+    // Renomeia o restaurante selecionado
     rename: (name) => api.put('/stores/me', { name }),
+    // Restaurantes (marcas) da conta e criação de mais um
+    list: () => api.get('/stores'),
+    create: (name) => api.post('/stores', { name }),
 };
 
 export const imageService = {

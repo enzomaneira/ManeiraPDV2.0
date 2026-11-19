@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { History, Search, Calendar, Ban, CheckCircle, ChevronRight } from 'lucide-react';
 import { formatCurrency, formatFullDate } from '../utils/formatters';
 
-export default function HistoryPage({ orders, onSelectOrder }) {
+export default function HistoryPage({ orders, onSelectOrder, showBrand = false }) {
     const [query, setQuery] = useState('');
 
     // FILTRO ATUALIZADO: Mostra Cancelados OU Completados (Entregues)
@@ -16,7 +16,8 @@ export default function HistoryPage({ orders, onSelectOrder }) {
     const term = query.trim().toLowerCase().replace(/^#/, '');
     const visibleOrders = term
         ? sortedOrders.filter(o => String(o.displayId || o.id).toLowerCase().includes(term)
-            || (o.customer || '').toLowerCase().includes(term))
+            || (o.customer || '').toLowerCase().includes(term)
+            || (o.storeName || '').toLowerCase().includes(term))
         : sortedOrders;
 
     return (
@@ -37,6 +38,7 @@ export default function HistoryPage({ orders, onSelectOrder }) {
                         <tr>
                             <th className="px-6 py-4">ID</th>
                             <th className="px-6 py-4">Data/Hora</th>
+                            {showBrand && <th className="px-6 py-4">Restaurante</th>}
                             <th className="px-6 py-4">Cliente</th>
                             <th className="px-6 py-4">Plataforma</th>
                             <th className="px-6 py-4">Total</th>
@@ -47,7 +49,7 @@ export default function HistoryPage({ orders, onSelectOrder }) {
                     <tbody className="divide-y divide-slate-100">
                         {visibleOrders.length === 0 ? (
                             <tr>
-                                <td colSpan="7" className="px-6 py-12 text-center text-slate-400">
+                                <td colSpan={showBrand ? 8 : 7} className="px-6 py-12 text-center text-slate-400">
                                     {term ? 'Nenhum pedido encontrado para essa busca.' : 'Nenhum pedido finalizado ainda.'}
                                 </td>
                             </tr>
@@ -61,6 +63,7 @@ export default function HistoryPage({ orders, onSelectOrder }) {
                                     <td className="px-6 py-4 flex items-center gap-2">
                                         <Calendar className="w-4 h-4 text-slate-400" /> {formatFullDate(order.time)}
                                     </td>
+                                    {showBrand && <td className="px-6 py-4 text-xs font-bold text-indigo-700">{order.storeName}</td>}
                                     <td className="px-6 py-4 font-medium text-slate-900">{order.customer}</td>
                                     <td className="px-6 py-4">
                                         <span className="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs font-bold">{order.platform}</span>

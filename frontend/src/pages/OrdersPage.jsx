@@ -8,7 +8,7 @@ const ICONS = {
     navigation: <Navigation />, store: <Store />, package: <Package />, map: <MapPin />,
 };
 
-export default function OrdersPage({ orders, config, onSelectOrder }) {
+export default function OrdersPage({ orders, config, onSelectOrder, showBrand = false }) {
     const enabledStages = config.enabledDeliveryStages || [];
     // Com etapas extras o quadro passa de 4 colunas: colunas mais estreitas
     const detailed = enabledStages.length > 0;
@@ -24,7 +24,7 @@ export default function OrdersPage({ orders, config, onSelectOrder }) {
                 <KanbanColumn key={column.id} title={column.title} count={column.orders.length}
                     colorTheme={column.theme} icon={ICONS[column.icon]} compact={detailed}>
                     {column.orders.map(order => (
-                        <OrderCard key={order.id} order={order} onClick={() => onSelectOrder(order)} />
+                        <OrderCard key={order.id} order={order} showBrand={showBrand} onClick={() => onSelectOrder(order)} />
                     ))}
                 </KanbanColumn>
             ))}

@@ -23,6 +23,18 @@ import threading
 orders_bp = Blueprint("orders", __name__)
 
 
+def _account_store_ids() -> list[int]:
+    """Restaurantes (marcas) da conta logada. O quadro de pedidos é da cozinha:
+    mostra e deixa agir nos pedidos de todas as marcas, não só da selecionada."""
+    return [store.id for store in g.current_user.stores]
+
+
+def _account_order(order_id):
+    """Pedido de qualquer restaurante da conta, ou None (vira 404)."""
+    order = Order.query.get(order_id)
+    return order if order and order.store_id in _account_store_ids() else None
+
+
 # -----------------------------------------------------------------------------
 #  GET /api/orders
 #  Lista todos os pedidos da loja do usuário logado
@@ -32,17 +44,19 @@ orders_bp = Blueprint("orders", __name__)
 def list_orders():
     print(f"\n[Orders][list_orders] INÍCIO | user_id={g.current_user.id}")
 
-    store = g.current_user.store
-    if not store:
+    store_ids = _account_store_ids()
+    if not store_ids:
         print(f"[Orders][list_orders] FALHA (404): usuário sem restaurante vinculado | user_id={g.current_user.id}")
         return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
 
-    print(f"[Orders][list_orders] Buscando pedidos para store_id={store.id}...")
-    orders = Order.query.filter_by(store_id=store.id).all()
-    print(f"[Orders][list_orders] {len(orders)} pedido(s) encontrado(s) | status={[o.status for o in orders]}")
-
-    result = [o.to_dict() for o in orders]
-    print(f"[Orders][list_orders] FIM (sucesso) | store_id={store.id} | total={len(result)}")
+    orders = Order.query.filter(Order.store_id.in_(store_ids)).all()
+    names = {store.id: store.name for store in g.current_user.stores}
+    result = []
+    for order in orders:
+        data = order.to_dict()
+        data["storeName"] = names.get(order.store_id)
+        result.append(data)
+    print(f"[Orders][list_orders] FIM (sucesso) | store_ids={store_ids} | total={len(result)}")
     return jsonify(result)
 
 
@@ -55,12 +69,9 @@ def list_orders():
 def get_order(order_id):
     print(f"\n[Orders][get_order] INÍCIO | user_id={g.current_user.id} | order_id={order_id}")
 
-    store = g.current_user.store
-    order = Order.query.get_or_404(order_id)
-    print(f"[Orders][get_order] Pedido encontrado no banco: id={order.id} | store_id={order.store_id} | status={order.status}")
-
-    if not store or order.store_id != store.id:
-        print(f"[Orders][get_order] FALHA (404): pedido não pertence ao usuário | order.store_id={order.store_id} | user.store_id={store.id if store else None}")
+    order = _account_order(order_id)
+    if not order:
+        print(f"[Orders][get_order] FALHA (404): pedido não encontrado nas lojas da conta | order_id={order_id}")
         return jsonify({"error": "Pedido não encontrado."}), 404
 
     print(f"[Orders][get_order] FIM (sucesso) | order_id={order_id}")
@@ -140,13 +151,11 @@ def create_order():
 def update_status(order_id):
     print(f"\n[Orders][update_status] INÍCIO | user_id={g.current_user.id} | order_id={order_id}")
 
-    store = g.current_user.store
-    order = Order.query.get_or_404(order_id)
-    print(f"[Orders][update_status] Pedido encontrado: id={order.id} | store_id={order.store_id} | status_atual={order.status} | external_id={order.external_id}")
-
-    if not store or order.store_id != store.id:
-        print(f"[Orders][update_status] FALHA (404): pedido não pertence ao usuário | order.store_id={order.store_id} | user.store_id={store.id if store else None}")
+    order = _account_order(order_id)
+    if not order:
+        print(f"[Orders][update_status] FALHA (404): pedido não encontrado nas lojas da conta | order_id={order_id}")
         return jsonify({"error": "Pedido não encontrado."}), 404
+    print(f"[Orders][update_status] Pedido encontrado: id={order.id} | store_id={order.store_id} | status_atual={order.status} | external_id={order.external_id}")
 
     data = request.get_json(silent=True) or {}
     new_status = data.get("status")
@@ -229,9 +238,8 @@ def update_status(order_id):
 @orders_bp.post("/<int:order_id>/decrypt")
 @login_required
 def retry_decrypt(order_id):
-    store = g.current_user.store
-    order = Order.query.get(order_id)
-    if not order or not store or order.store_id != store.id:
+    order = _account_order(order_id)
+    if not order:
         return jsonify({"error": "Pedido não encontrado."}), 404
     if not order.external_id:
         return jsonify({"error": "Este pedido não veio da Keeta."}), 400
@@ -277,9 +285,8 @@ OWN_STAGE_MIN_STATUS = {
 @orders_bp.patch("/<int:order_id>/delivery-stage")
 @login_required
 def update_delivery_stage(order_id):
-    store = g.current_user.store
-    order = Order.query.get(order_id)
-    if not order or not store or order.store_id != store.id:
+    order = _account_order(order_id)
+    if not order:
         return jsonify({"error": "Pedido não encontrado."}), 404
 
     stage = (request.get_json(silent=True) or {}).get("stage")

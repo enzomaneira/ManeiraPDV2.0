@@ -8,7 +8,7 @@ import OrdersPage from './OrdersPage';
 import HistoryPage from './HistoryPage';
 import MenuPage from './MenuPage';
 import SettingsPage from './SettingsPage';
-import { orderService } from '../services/api';
+import { orderService, storeService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 // Converte o pedido da API para o formato usado pelas telas do PDV
@@ -34,6 +34,8 @@ function formatOrder(order) {
 
   return {
     id: order.id,
+    storeId: order.storeId,
+    storeName: order.storeName || null,
     keetaId: order.externalId,
     displayId: order.displayId || order.pickupCode || order.id,
     pickupCode: order.pickupCode || null,
@@ -72,6 +74,8 @@ function PDVApp() {
   const { user, logout } = useAuth();
 
   const [orders, setOrders] = useState([]);
+  // Restaurantes (marcas) da conta: o quadro junta os pedidos de todas
+  const [stores, setStores] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [activeTab, setActiveTab] = useState("orders");
   const [isStoreOpen, setIsStoreOpen] = useState(true);
@@ -118,6 +122,23 @@ function PDVApp() {
     return () => clearInterval(interval);
   }, []);
 
+  // Preferências de cada marca (aceite, etapas). Recarrega quando a loja
+  // selecionada salva as Configurações.
+  useEffect(() => {
+    storeService.list().then(({ data }) => setStores(Array.isArray(data) ? data : [])).catch(() => {});
+  }, [config.autoAccept, config.enabledDeliveryStages]);
+
+  const multiBrand = stores.length > 1;
+  const storeById = Object.fromEntries(stores.map(store => [store.id, store]));
+  // Quadro combinado: aprovação manual se alguma marca usa; colunas de etapas
+  // de qualquer marca. Os botões de cada pedido seguem a marca dele.
+  const boardConfig = multiBrand ? {
+    autoAccept: stores.every(store => store.autoAccept),
+    enabledDeliveryStages: [...new Set(stores.flatMap(store => store.enabledDeliveryStages || []))],
+  } : config;
+  const stagesForOrder = (order) => storeById[order?.storeId]?.enabledDeliveryStages ?? config.enabledDeliveryStages;
+  const keepBrand = (raw) => formatOrder({ ...raw, storeName: raw.storeName || storeById[raw.storeId]?.name });
+
   // 2. Busca de Pedidos (da loja do usuário logado)
   const fetchOrders = async () => {
     try {
@@ -163,7 +184,7 @@ function PDVApp() {
   const handleStageChange = async (orderId, stage) => {
     try {
       const { data } = await orderService.updateDeliveryStage(orderId, stage);
-      setSelectedOrder(formatOrder(data.order));
+      setSelectedOrder(keepBrand(data.order));
       fetchOrders();
       if (data.keeta?.warning) alert(data.keeta.warning);
     } catch (error) {
@@ -241,8 +262,8 @@ function PDVApp() {
             (Histórico, Cardápio, Configurações) rolam na vertical. min-h-0
             deixa a área encolher dentro do flex para a rolagem funcionar. */}
         <div className={`flex-1 min-h-0 p-8 ${activeTab === 'orders' ? 'overflow-x-auto overflow-y-hidden' : 'overflow-y-auto'}`}>
-          {activeTab === 'orders' && <OrdersPage orders={orders} config={config} onSelectOrder={setSelectedOrder} />}
-          {activeTab === 'history' && <HistoryPage orders={orders} onSelectOrder={setSelectedOrder} />}
+          {activeTab === 'orders' && <OrdersPage orders={orders} config={boardConfig} showBrand={multiBrand} onSelectOrder={setSelectedOrder} />}
+          {activeTab === 'history' && <HistoryPage orders={orders} showBrand={multiBrand} onSelectOrder={setSelectedOrder} />}
           {activeTab === 'settings' && <SettingsPage config={config} setConfig={setConfig} />}
           {activeTab === 'menu' && <MenuPage />}
         </div>
@@ -253,8 +274,9 @@ function PDVApp() {
         onClose={() => setSelectedOrder(null)}
         onStatusChange={handleStatusChange}
         onStageChange={handleStageChange}
-        enabledStages={config.enabledDeliveryStages}
-        onOrderUpdated={(raw) => { setSelectedOrder(formatOrder(raw)); fetchOrders(); }}
+        enabledStages={stagesForOrder(selectedOrder)}
+        showBrand={multiBrand}
+        onOrderUpdated={(raw) => { setSelectedOrder(keepBrand(raw)); fetchOrders(); }}
       />
     </div>
   );

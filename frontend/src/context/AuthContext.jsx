@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import { authService, TOKEN_KEY } from '../services/api';
+import { authService, TOKEN_KEY, selectStore } from '../services/api';
 
 // Contexto global de autenticação. Guarda o usuário logado e expõe
 // as funções de login/cadastro/logout para o restante do app.
@@ -30,6 +30,7 @@ export function AuthProvider({ children }) {
 
     const login = async (email, password) => {
         const res = await authService.login(email, password);
+        selectStore(null);  // começa no primeiro restaurante da conta
         localStorage.setItem(TOKEN_KEY, res.data.token);
         setUser(res.data.user);
         return res.data.user;
@@ -37,6 +38,7 @@ export function AuthProvider({ children }) {
 
     const register = async (name, email, password, storeName) => {
         const res = await authService.register(name, email, password, storeName);
+        selectStore(null);
         localStorage.setItem(TOKEN_KEY, res.data.token);
         setUser(res.data.user);
         return res.data.user;
@@ -44,6 +46,7 @@ export function AuthProvider({ children }) {
 
     const logout = () => {
         localStorage.removeItem(TOKEN_KEY);
+        selectStore(null);
         setUser(null);
     };
 
