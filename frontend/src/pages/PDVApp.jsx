@@ -8,6 +8,7 @@ import OrdersPage from './OrdersPage';
 import HistoryPage from './HistoryPage';
 import MenuPage from './MenuPage';
 import SettingsPage from './SettingsPage';
+import ReportsPage from './ReportsPage';
 import { orderService, storeService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -219,7 +220,7 @@ function PDVApp() {
         <header className="h-20 px-8 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10 border-b border-slate-200">
           <div>
             <h2 className="text-2xl font-bold text-slate-800">
-              {activeTab === 'orders' ? 'Fluxo de Pedidos' : activeTab === 'history' ? 'Histórico' : activeTab === 'menu' ? 'Cardápio' : 'Configurações'}
+              {activeTab === 'orders' ? 'Fluxo de Pedidos' : activeTab === 'history' ? 'Histórico' : activeTab === 'reports' ? 'Relatórios' : activeTab === 'menu' ? 'Cardápio' : 'Configurações'}
             </h2>
             <div className="flex items-center gap-2 mt-1">
               <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
@@ -266,6 +267,7 @@ function PDVApp() {
           {activeTab === 'history' && <HistoryPage orders={orders} showBrand={multiBrand} onSelectOrder={setSelectedOrder} />}
           {activeTab === 'settings' && <SettingsPage config={config} setConfig={setConfig} />}
           {activeTab === 'menu' && <MenuPage />}
+          {activeTab === 'reports' && <ReportsPage stores={stores} />}
         </div>
       </main>
 

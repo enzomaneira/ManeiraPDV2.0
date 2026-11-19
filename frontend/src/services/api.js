@@ -139,6 +139,11 @@ export const availabilityService = {
     delete: (availId) => api.delete(`/stores/me/availabilities/${availId}`),
 };
 
+export const reportService = {
+    // Relatório de vendas: { from: 'AAAA-MM-DD', to: 'AAAA-MM-DD', storeId: 'all' | id }
+    get: (params) => api.get('/reports', { params }),
+};
+
 export const keetaSyncService = {
     syncMenu: () => api.post('/keeta/sync-menu'),
 };

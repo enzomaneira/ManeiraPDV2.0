@@ -1,4 +1,4 @@
-import { ChefHat, ShoppingBag, History, Utensils, Settings, LogOut } from 'lucide-react';
+import { ChefHat, ShoppingBag, History, Utensils, Settings, LogOut, BarChart3 } from 'lucide-react';
 import StoreSwitcher from './StoreSwitcher';
 
 export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
@@ -23,6 +23,7 @@ export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
         <nav className="p-4 space-y-2">
           <SidebarItem icon={<ShoppingBag />} label="Pedidos" id="orders" activeTab={activeTab} onClick={setActiveTab} />
           <SidebarItem icon={<History />} label="Histórico" id="history" activeTab={activeTab} onClick={setActiveTab} />
+          <SidebarItem icon={<BarChart3 />} label="Relatórios" id="reports" activeTab={activeTab} onClick={setActiveTab} />
           <SidebarItem icon={<Utensils />} label="Cardápio" id="menu" activeTab={activeTab} onClick={setActiveTab} />
           <SidebarItem icon={<Settings />} label="Configurações" id="settings" activeTab={activeTab} onClick={setActiveTab} />
         </nav>

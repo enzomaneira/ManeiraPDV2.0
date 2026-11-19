@@ -14,6 +14,7 @@ from routes.keeta_webhook import keeta_bp
 from routes.config        import config_bp
 from routes.stores        import stores_bp
 from routes.auth          import auth_bp
+from routes.reports       import reports_bp
 
 print("\n" + "=" * 70)
 print("[Main][INIT] Carregando módulo main.py...")
@@ -64,6 +65,7 @@ def create_app():
     CORS(orders_bp, origins=cors_origins)
     CORS(config_bp, origins=cors_origins)
     CORS(stores_bp, origins=cors_origins)
+    CORS(reports_bp, origins=cors_origins)
     # keeta_bp: sem CORS — chamadas server-to-server da Keeta
     print(f"[Main][create_app] CORS configurado por blueprint | origins={cors_origins} | keeta_bp: sem CORS (webhooks)")
 
@@ -115,6 +117,7 @@ def create_app():
     application.register_blueprint(stores_bp, url_prefix="/api/stores")
     print("[Main][create_app]   → stores_bp registrado em /api/stores")
     application.register_blueprint(auth_bp,   url_prefix="/api/auth")
+    application.register_blueprint(reports_bp, url_prefix="/api/reports")
     print("[Main][create_app]   → auth_bp registrado em /api/auth")
 
     # Cria as tabelas ao iniciar
