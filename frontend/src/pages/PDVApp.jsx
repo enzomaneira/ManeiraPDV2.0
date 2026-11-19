@@ -80,7 +80,7 @@ function PDVApp() {
 
   const [config, setConfig] = useState({
     autoAccept: true,
-    detailedDeliveryStatus: false,
+    enabledDeliveryStages: [],
     keetaId: "",
     keetaStatus: "DISCONNECTED",
   });
@@ -94,7 +94,7 @@ function PDVApp() {
           setConfig(prev => ({
             ...prev,
             autoAccept: res.data.autoAccept,
-            detailedDeliveryStatus: Boolean(res.data.detailedDeliveryStatus),
+            enabledDeliveryStages: res.data.enabledDeliveryStages || [],
             keetaId: res.data.keetaMerchantId || "",
             keetaStatus: res.data.keetaMerchantId ? "CONNECTED" : "DISCONNECTED",
           }));
@@ -247,7 +247,7 @@ function PDVApp() {
         onClose={() => setSelectedOrder(null)}
         onStatusChange={handleStatusChange}
         onStageChange={handleStageChange}
-        detailed={config.detailedDeliveryStatus}
+        enabledStages={config.enabledDeliveryStages}
         onOrderUpdated={(raw) => { setSelectedOrder(formatOrder(raw)); fetchOrders(); }}
       />
     </div>

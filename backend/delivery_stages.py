@@ -22,6 +22,10 @@ STAGES = (
 )
 STAGE_RANK = {stage: index for index, stage in enumerate(STAGES)}
 
+# Etapas que a loja pode ligar/desligar no quadro. "Saiu para entrega"
+# (DELIVERY_ONGOING) e "Entregue" (ORDER_DELIVERED) são principais e fixas.
+OPTIONAL_STAGES = ("PICKUP_ONGOING", "ARRIVED_AT_MERCHANT", "ORDER_PICKED", "ARRIVED_AT_CUSTOMER")
+
 # Evento do webhook da Keeta -> etapa
 KEETA_EVENT_TO_STAGE = {
     "PICKUP_ONGOING":         "PICKUP_ONGOING",

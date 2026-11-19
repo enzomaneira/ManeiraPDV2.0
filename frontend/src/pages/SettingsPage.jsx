@@ -2,6 +2,7 @@ import { useState } from 'react';
 import api from '../services/api';
 import AccountSettings from '../components/AccountSettings';
 import StoreContactSettings from '../components/StoreContactSettings';
+import DeliveryStageSettings from '../components/DeliveryStageSettings';
 import { Save, Store, Globe, Wifi, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function SettingsPage({ config, setConfig }) {
@@ -17,13 +18,13 @@ export default function SettingsPage({ config, setConfig }) {
         // O merchant ID só é salvo pelo botão "Ativar Integração" (onboarding).
         const response = await api.post('/config', {
             autoAccept: config.autoAccept,
-            detailedDeliveryStatus: Boolean(config.detailedDeliveryStatus),
+            enabledDeliveryStages: config.enabledDeliveryStages || [],
         });
 
         setConfig(prev => ({
             ...prev,
             autoAccept: response.data?.autoAccept ?? prev.autoAccept,
-            detailedDeliveryStatus: response.data?.detailedDeliveryStatus ?? prev.detailedDeliveryStatus,
+            enabledDeliveryStages: response.data?.enabledDeliveryStages ?? prev.enabledDeliveryStages,
         }));
 
         setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' });
@@ -189,28 +190,11 @@ export default function SettingsPage({ config, setConfig }) {
                       </div>
                   </div>
 
-                  {/* TOGGLE ETAPAS DETALHADAS DA ENTREGA */}
-                  <div
-                    role="switch"
-                    aria-checked={Boolean(config.detailedDeliveryStatus)}
-                    onClick={() => setConfig({...config, detailedDeliveryStatus: !config.detailedDeliveryStatus})}
-                    className={`mt-3 flex items-center justify-between gap-4 p-4 rounded-xl border transition-all cursor-pointer ${config.detailedDeliveryStatus ? 'bg-sky-50 border-sky-200' : 'bg-slate-50 border-slate-200'}`}
-                  >
-                      <div>
-                          <p className={`font-bold ${config.detailedDeliveryStatus ? 'text-sky-800' : 'text-slate-700'}`}>
-                              {config.detailedDeliveryStatus ? 'Etapas da entrega DETALHADAS' : 'Etapas da entrega SIMPLES'}
-                          </p>
-                          <p className="text-xs text-slate-500 mt-1">
-                              {config.detailedDeliveryStatus
-                                ? 'O quadro ganha colunas para entregador a caminho, na loja, pedido coletado, saiu para entrega e chegou ao cliente. Na entrega própria, cada etapa marcada é enviada para a Keeta.'
-                                : 'O quadro mostra só Em Preparo, Pronto e Entregas. A etapa do entregador aparece no cartão do pedido.'
-                              }
-                          </p>
-                      </div>
-                      <div className={`w-14 h-8 shrink-0 flex items-center rounded-full p-1 transition-colors duration-300 ${config.detailedDeliveryStatus ? 'bg-sky-500' : 'bg-slate-300'}`}>
-                          <div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform duration-300 ${config.detailedDeliveryStatus ? 'translate-x-6' : 'translate-x-0'}`}></div>
-                      </div>
-                  </div>
+                  {/* ETAPAS DO QUADRO: principais fixas, extras escolhidas pela loja */}
+                  <DeliveryStageSettings
+                    value={config.enabledDeliveryStages || []}
+                    onChange={(stages) => setConfig({...config, enabledDeliveryStages: stages})}
+                  />
               </div>
           </div>
       </div>

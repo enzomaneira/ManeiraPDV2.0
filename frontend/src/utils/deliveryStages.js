@@ -2,6 +2,7 @@
 //
 // As etapas usam os nomes do /tracking da Keeta. Na entrega da Keeta elas vêm
 // dos eventos do entregador; na entrega própria é o restaurante que avança.
+// A loja escolhe quais etapas opcionais aparecem; as principais são fixas.
 
 export const STAGES = [
   'PICKUP_ONGOING',
@@ -11,6 +12,9 @@ export const STAGES = [
   'ARRIVED_AT_CUSTOMER',
   'ORDER_DELIVERED',
 ];
+
+// Etapas que a loja pode ligar/desligar (as demais são principais)
+export const OPTIONAL_STAGES = ['PICKUP_ONGOING', 'ARRIVED_AT_MERCHANT', 'ORDER_PICKED', 'ARRIVED_AT_CUSTOMER'];
 
 export const STAGE_LABELS = {
   PICKUP_ONGOING: 'Entregador a caminho',
@@ -28,65 +32,56 @@ export const stageRank = (stage) => STAGES.indexOf(stage);
 
 export const isKeetaDelivery = (order) => order.deliveredBy === 'MARKETPLACE';
 
-// Próximas etapas possíveis para o restaurante (entrega própria)
-export function nextOwnStages(order) {
+const isVisibleStage = (stage, enabledStages) => !OPTIONAL_STAGES.includes(stage) || enabledStages.includes(stage);
+
+// Próximas etapas que o restaurante pode marcar (entrega própria): só as
+// principais e as opcionais que a loja escolheu.
+export function nextOwnStages(order, enabledStages = []) {
   if (isKeetaDelivery(order)) return [];
   if (!['PREPARING', 'READY', 'DISPATCHED'].includes(order.status)) return [];
   const current = stageRank(order.deliveryStage);
   return STAGES.filter((stage, index) => index > current
+    && isVisibleStage(stage, enabledStages)
     && (order.status !== 'PREPARING' || STAGES_DURING_PREPARATION.includes(stage)));
 }
 
-const SIMPLE_COLUMNS = [
-  { id: 'PREPARING', title: 'Em Preparo', theme: 'orange', icon: 'chef' },
-  { id: 'READY', title: 'Pronto p/ Entrega', theme: 'green', icon: 'check' },
-  { id: 'DISPATCHED', title: 'Entregas', theme: 'purple', icon: 'bike' },
-];
-
-const DETAILED_COLUMNS = [
-  { id: 'PREPARING', title: 'Em Preparo', theme: 'orange', icon: 'chef' },
-  { id: 'READY', title: 'Pronto p/ Entrega', theme: 'green', icon: 'check' },
-  { id: 'PICKUP_ONGOING', title: 'Entregador a caminho', theme: 'sky', icon: 'navigation' },
-  { id: 'ARRIVED_AT_MERCHANT', title: 'Entregador na loja', theme: 'teal', icon: 'store' },
-  { id: 'ORDER_PICKED', title: 'Pedido coletado', theme: 'indigo', icon: 'package' },
-  { id: 'DELIVERY_ONGOING', title: 'Saiu para entrega', theme: 'purple', icon: 'bike' },
-  { id: 'ARRIVED_AT_CUSTOMER', title: 'Chegou ao cliente', theme: 'pink', icon: 'map' },
-];
-
-const PENDING_COLUMN = { id: 'PENDING', title: 'Aprovação Pendente', theme: 'blue', icon: 'alert' };
+const COLUMN_INFO = {
+  PENDING: { title: 'Aprovação Pendente', theme: 'blue', icon: 'alert' },
+  PREPARING: { title: 'Em Preparo', theme: 'orange', icon: 'chef' },
+  READY: { title: 'Pronto p/ Entrega', theme: 'green', icon: 'check' },
+  PICKUP_ONGOING: { title: 'Entregador a caminho', theme: 'sky', icon: 'navigation' },
+  ARRIVED_AT_MERCHANT: { title: 'Entregador na loja', theme: 'teal', icon: 'store' },
+  ORDER_PICKED: { title: 'Pedido coletado', theme: 'indigo', icon: 'package' },
+  DELIVERY_ONGOING: { title: 'Saiu para entrega', theme: 'purple', icon: 'bike' },
+  ARRIVED_AT_CUSTOMER: { title: 'Chegou ao cliente', theme: 'pink', icon: 'map' },
+};
+const COLUMN_ORDER = ['PREPARING', 'READY', 'PICKUP_ONGOING', 'ARRIVED_AT_MERCHANT', 'ORDER_PICKED', 'DELIVERY_ONGOING', 'ARRIVED_AT_CUSTOMER'];
 
 // Coluna de cada pedido. Todo pedido em andamento cai em exatamente uma
-// coluna, nos dois modos; concluídos e cancelados vão para o Histórico (null).
-export function columnFor(order, detailed) {
+// coluna visível; concluídos e cancelados vão para o Histórico (null). Se a
+// etapa do pedido não tem coluna (a loja desligou), ele fica na coluna
+// principal do seu status: Pronto ou Saiu para entrega.
+export function columnFor(order, enabledStages = []) {
   const { status } = order;
   if (status === 'PENDING' || status === 'NEW') return 'PENDING';
   if (status === 'COMPLETED' || status === 'CANCELED') return null;
   if (status === 'PREPARING') return 'PREPARING';
 
-  if (!detailed) return status === 'READY' ? 'READY' : 'DISPATCHED';
-
-  switch (order.deliveryStage) {
-    case 'PICKUP_ONGOING':
-    case 'ARRIVED_AT_MERCHANT':
-    case 'ORDER_PICKED':
-    case 'DELIVERY_ONGOING':
-    case 'ARRIVED_AT_CUSTOMER':
-      return order.deliveryStage;
-    case 'ORDER_DELIVERED':
-      return 'ARRIVED_AT_CUSTOMER';
-    default:
-      return status === 'READY' ? 'READY' : 'DELIVERY_ONGOING';
-  }
+  const fallback = status === 'READY' ? 'READY' : 'DELIVERY_ONGOING';
+  const stage = order.deliveryStage === 'ORDER_DELIVERED' ? 'ARRIVED_AT_CUSTOMER' : order.deliveryStage;
+  if (!stage || !COLUMN_ORDER.includes(stage)) return fallback;
+  return isVisibleStage(stage, enabledStages) ? stage : fallback;
 }
 
 // Colunas a mostrar. A de aprovação aparece com aceite manual ou quando há
 // algum pedido esperando (para nenhum pedido ficar escondido).
-export function boardColumns(orders, { detailed, autoAccept }) {
-  const columns = detailed ? DETAILED_COLUMNS : SIMPLE_COLUMNS;
-  const hasPending = orders.some((order) => columnFor(order, detailed) === 'PENDING');
-  const visible = !autoAccept || hasPending ? [PENDING_COLUMN, ...columns] : columns;
-  return visible.map((column) => ({
-    ...column,
-    orders: orders.filter((order) => columnFor(order, detailed) === column.id),
+export function boardColumns(orders, { enabledStages = [], autoAccept }) {
+  const ids = COLUMN_ORDER.filter((id) => isVisibleStage(id, enabledStages));
+  const hasPending = orders.some((order) => columnFor(order, enabledStages) === 'PENDING');
+  const visible = !autoAccept || hasPending ? ['PENDING', ...ids] : ids;
+  return visible.map((id) => ({
+    id,
+    ...COLUMN_INFO[id],
+    orders: orders.filter((order) => columnFor(order, enabledStages) === id),
   }));
 }

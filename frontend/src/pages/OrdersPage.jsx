@@ -9,8 +9,10 @@ const ICONS = {
 };
 
 export default function OrdersPage({ orders, config, onSelectOrder }) {
-    const detailed = Boolean(config.detailedDeliveryStatus);
-    const columns = boardColumns(orders, { detailed, autoAccept: config.autoAccept });
+    const enabledStages = config.enabledDeliveryStages || [];
+    // Com etapas extras o quadro passa de 4 colunas: colunas mais estreitas
+    const detailed = enabledStages.length > 0;
+    const columns = boardColumns(orders, { enabledStages, autoAccept: config.autoAccept });
 
     return (
         // Modo detalhado: colunas mais estreitas, alinhadas à esquerda e com

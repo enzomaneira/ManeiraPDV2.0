@@ -16,6 +16,7 @@ from models import StoreConfig
 from auth_utils import login_required
 from routes.auth import validate_email
 import keeta_client
+from delivery_stages import OPTIONAL_STAGES
 
 config_bp = Blueprint("config", __name__)
 
@@ -92,10 +93,11 @@ def update_config():
             return jsonify({"error": "autoAccept deve ser verdadeiro ou falso."}), 400
         config.auto_accept = data["autoAccept"]
 
-    if "detailedDeliveryStatus" in data:
-        if not isinstance(data["detailedDeliveryStatus"], bool):
-            return jsonify({"error": "detailedDeliveryStatus deve ser verdadeiro ou falso."}), 400
-        config.detailed_delivery_status = data["detailedDeliveryStatus"]
+    if "enabledDeliveryStages" in data:
+        chosen = data["enabledDeliveryStages"]
+        if not isinstance(chosen, list) or any(stage not in OPTIONAL_STAGES for stage in chosen):
+            return jsonify({"error": "Etapas de entrega inválidas."}), 400
+        config.delivery_stages_json = json.dumps([stage for stage in OPTIONAL_STAGES if stage in chosen])
 
     # O merchant ID só pode ser definido pelo onboarding (PUT /api/keeta/onboard),
     # que confirma com a Keeta e impede usar o ID de outra loja. Aqui só

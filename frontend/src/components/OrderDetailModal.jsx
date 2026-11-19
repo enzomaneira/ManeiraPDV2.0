@@ -191,10 +191,11 @@ function describePayment(method, total) {
     return text;
 }
 
-export default function OrderDetailModal({ order, onClose, onStatusChange, onStageChange, onOrderUpdated, detailed = false }) {
+export default function OrderDetailModal({ order, onClose, onStatusChange, onStageChange, onOrderUpdated, enabledStages = [] }) {
     if (!order) return null;
     const keetaDelivery = isKeetaDelivery(order);
-    const ownStages = detailed ? nextOwnStages(order) : [];
+    // Entrega própria: botões das próximas etapas (principais + as escolhidas pela loja)
+    const ownStages = nextOwnStages(order, enabledStages);
 
     const getHeaderColor = () => {
         switch(order.status) {
@@ -418,27 +419,12 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
                             </button>
                         </div>
                     )}
-                    {/* Entrega própria com etapas detalhadas */}
-                    {(order.status === 'READY' || order.status === 'DISPATCHED') && !keetaDelivery && detailed && ownStages.length > 0 && (
+                    {/* Entrega própria: a próxima etapa em destaque e atalhos para as demais */}
+                    {(order.status === 'READY' || order.status === 'DISPATCHED') && !keetaDelivery && ownStages.length > 0 && (
                         <StageButtons stages={ownStages} onPick={(stage) => {
                             if (stage === 'ORDER_DELIVERED' && !window.confirm('Confirmar entrega do pedido?')) return;
                             onStageChange(order.id, stage);
                         }} />
-                    )}
-                    {/* Entrega própria no modo simples */}
-                    {order.status === 'READY' && !keetaDelivery && !detailed && (
-                        <div className="flex gap-4">
-                            <button onClick={() => onStatusChange(order.id, 'DISPATCHED')} className="w-full py-4 bg-purple-600 text-white font-bold rounded-2xl hover:bg-purple-700 shadow-xl shadow-purple-200 transition-all flex items-center justify-center gap-2 text-lg">
-                                <Bike className="w-6 h-6" /> Despachar Motoqueiro
-                            </button>
-                        </div>
-                    )}
-                    {order.status === 'DISPATCHED' && !keetaDelivery && !detailed && (
-                        <div className="flex gap-4">
-                            <button onClick={() => { if(window.confirm('Confirmar entrega do pedido?')) onStatusChange(order.id, 'COMPLETED'); }} className="w-full py-4 bg-green-600 text-white font-bold rounded-2xl hover:bg-green-700 shadow-xl shadow-green-200 transition-all flex items-center justify-center gap-2 text-lg">
-                                <CheckCircle className="w-6 h-6" /> Finalizar Entrega
-                            </button>
-                        </div>
                     )}
                     {order.status === 'COMPLETED' && (
                         <div className="w-full py-3 bg-slate-50 text-slate-400 font-bold rounded-xl text-center flex items-center justify-center gap-2 border border-slate-100">

@@ -98,8 +98,23 @@ class StoreConfig(db.Model):
     contact_email      = db.Column(db.String(254), nullable=True)
     contact_phone      = db.Column(db.String(20), nullable=True)
     service_hours_json = db.Column(db.Text, nullable=True)
-    # Quadro de pedidos com as etapas do entregador (a caminho, na loja, coletado...)
+    # Etapas opcionais do quadro de pedidos escolhidas pela loja (lista JSON
+    # dentre OPTIONAL_DELIVERY_STAGES). As etapas principais são fixas.
+    delivery_stages_json = db.Column(db.Text, nullable=True)
+    # Versão anterior (liga/desliga tudo); só usada se a lista nunca foi salva
     detailed_delivery_status = db.Column(db.Boolean, default=False)
+
+    @property
+    def enabled_delivery_stages(self) -> list:
+        import json as _json
+        from delivery_stages import OPTIONAL_STAGES
+        if self.delivery_stages_json is None:
+            return list(OPTIONAL_STAGES) if self.detailed_delivery_status else []
+        try:
+            chosen = _json.loads(self.delivery_stages_json)
+        except (TypeError, ValueError):
+            return []
+        return [stage for stage in OPTIONAL_STAGES if isinstance(chosen, list) and stage in chosen]
 
     @property
     def service_hours(self) -> list:
@@ -117,7 +132,7 @@ class StoreConfig(db.Model):
             "serviceHours":     self.service_hours,
             "storeId":          self.store_id,
             "autoAccept":       self.auto_accept,
-            "detailedDeliveryStatus": bool(self.detailed_delivery_status),
+            "enabledDeliveryStages": self.enabled_delivery_stages,
             "merchantId":       self.keeta_merchant_id,
             "keetaMerchantId":  self.keeta_merchant_id,
             "isStoreOpen":      self.is_store_open,
