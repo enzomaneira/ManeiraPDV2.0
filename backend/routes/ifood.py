@@ -24,7 +24,7 @@ import delivery_stages
 import ifood_client
 from auth_utils import login_required, rate_limited
 from database import db
-from models import Order, OrderItem, StoreConfig
+from models import MenuItem, Order, OrderItem, StoreConfig
 
 ifood_bp = Blueprint("ifood", __name__)
 
@@ -172,14 +172,19 @@ def save_order_from_ifood(data: dict, store_id: int) -> Order | None:
     order.payments_json = json.dumps({"prepaid": _money(payments.get("prepaid")), "pending": _money(payments.get("pending")), "methods": methods})
     order.payment_type = "ONLINE" if _money(payments.get("prepaid")) > 0 and not _money(payments.get("pending")) else "NA_ENTREGA"
 
-    # Itens
+    # Itens. O nome vem do cardápio do PDV pelo externalCode (o código que o PDV
+    # enviou ao publicar no iFood): nos pedidos de teste o iFood troca o "name"
+    # do item por "PEDIDO DE TESTE - NÃO ENTREGAR". Sem produto com o código,
+    # usa o "name" do iFood.
+    codes = {str(i.get("externalCode")).strip() for i in data.get("items") or [] if isinstance(i, dict) and _text(str(i.get("externalCode") or ""))}
+    pdv_names = {m.external_code: m.name for m in MenuItem.query.filter(MenuItem.store_id == store_id, MenuItem.external_code.in_(codes)).all()} if codes else {}
     order.items.clear()
     for item in data.get("items") or []:
         if not isinstance(item, dict):
             continue
         options = [{"name": o.get("name"), "quantity": o.get("quantity") or 1, "price": _money(o.get("unitPrice")),
                     "externalCode": o.get("externalCode")} for o in item.get("options") or [] if isinstance(o, dict) and o.get("name")]
-        name = _text(item.get("name")) or "Item"
+        name = pdv_names.get(str(item.get("externalCode") or "").strip()) or _text(item.get("name")) or "Item"
         if options:
             name += f" ({', '.join(option_labels(options))})"
         if _text(item.get("observations")):
