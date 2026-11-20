@@ -188,3 +188,33 @@ def get_merchant(merchant_id: str) -> dict | None:
 def list_merchants() -> list[dict]:
     status, body = _request("GET", "/merchant/v1.0/merchants")
     return body if status == 200 and isinstance(body, list) else []
+
+
+# --- Abrir/fechar a loja (pausas) -------------------------------------------
+#  O iFood não tem "fechar loja": fecha-se criando uma pausa (interruption)
+#  com início e fim, e reabre-se apagando a pausa. Datas em ISO 8601; o iFood
+#  guarda e devolve em UTC, sem o "Z".
+
+def list_interruptions(merchant_id: str) -> list[dict] | None:
+    """Pausas da loja (None se o iFood não respondeu)."""
+    status, body = _request("GET", f"/merchant/v1.0/merchants/{merchant_id}/interruptions")
+    if status == 200 and isinstance(body, list):
+        return body
+    print(f"[iFood][interruptions] merchant_id={merchant_id} | status_code={status} | body={str(body)[:200]}")
+    return None
+
+
+def create_interruption(merchant_id: str, description: str, start: str, end: str) -> tuple[bool, dict | None]:
+    status, body = _request("POST", f"/merchant/v1.0/merchants/{merchant_id}/interruptions",
+                            json_body={"description": description, "start": start, "end": end})
+    ok = status in (200, 201) and isinstance(body, dict) and bool(body.get("id"))
+    print(f"[iFood][interruption-create] merchant_id={merchant_id} | status_code={status} | sucesso={ok}"
+          + ("" if ok else f" | body={str(body)[:200]}"))
+    return ok, body
+
+
+def delete_interruption(merchant_id: str, interruption_id: str) -> bool:
+    status, body = _request("DELETE", f"/merchant/v1.0/merchants/{merchant_id}/interruptions/{interruption_id}")
+    ok = status in (200, 202, 204, 404)  # 404: a pausa já não existe
+    print(f"[iFood][interruption-delete] merchant_id={merchant_id} | id={interruption_id} | status_code={status} | sucesso={ok}")
+    return ok

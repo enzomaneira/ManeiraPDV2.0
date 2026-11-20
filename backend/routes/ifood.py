@@ -15,7 +15,7 @@
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify, g
 from sqlalchemy.exc import IntegrityError
@@ -379,3 +379,105 @@ def publish_menu():
         return jsonify(result), 400
     result["status"] = menu_publish.ifood_status(store.id)
     return jsonify(result), 200 if result["ok"] else 207
+
+
+# -----------------------------------------------------------------------------
+#  Abrir/fechar a loja no iFood
+# -----------------------------------------------------------------------------
+#  Fechar = criar uma pausa no iFood de agora até STORE_CLOSE_DAYS dias depois
+#  (até alguém reabrir). Abrir = apagar as pausas ativas, inclusive as criadas
+#  fora do PDV (ex.: Gestor de Pedidos), para a loja realmente voltar a vender.
+
+STORE_CLOSE_DAYS = 7
+
+
+def _utc(value):
+    """Data do iFood (UTC, sem fuso) -> datetime UTC sem fuso."""
+    try:
+        text = str(value).replace("Z", "")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _active_interruptions(interruptions: list[dict]) -> list[dict]:
+    now = datetime.utcnow()
+    active = []
+    for item in interruptions or []:
+        start, end = _utc(item.get("start")), _utc(item.get("end"))
+        if start and end and start <= now < end:
+            active.append(item)
+    return active
+
+
+def _ifood_store_status(config) -> tuple[dict, int]:
+    if not ifood_client.is_configured() or not config or not config.ifood_merchant_id:
+        return {"linked": False}, 200
+    interruptions = ifood_client.list_interruptions(config.ifood_merchant_id)
+    if interruptions is None:
+        return {"linked": True, "error": "O iFood não respondeu. Tente de novo em instantes."}, 502
+    active = _active_interruptions(interruptions)
+    ends = [e for e in (_utc(i.get("end")) for i in active) if e]
+    return {
+        "linked": True,
+        "isOpen": not active,
+        "closedUntil": max(ends).strftime("%Y-%m-%dT%H:%M:%SZ") if ends else None,
+        "reason": (active[0].get("description") if active else None),
+    }, 200
+
+
+@ifood_bp.get("/store-status")
+@login_required
+def get_store_status():
+    """Loja aberta ou fechada (pausada) no iFood, para o restaurante selecionado."""
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    body, status = _ifood_store_status(StoreConfig.query.get(store.id))
+    return jsonify(body), status
+
+
+@ifood_bp.post("/store-status")
+@login_required
+def set_store_status():
+    """Abre ou fecha a loja no iFood. Body: { "isOpen": true|false }"""
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    config = StoreConfig.query.get(store.id)
+    if not ifood_client.is_configured() or not config or not config.ifood_merchant_id:
+        return jsonify({"error": "Loja ainda não está conectada ao iFood."}), 400
+    is_open = (request.get_json(silent=True) or {}).get("isOpen")
+    if not isinstance(is_open, bool):
+        return jsonify({"error": "isOpen deve ser verdadeiro ou falso."}), 400
+    merchant = config.ifood_merchant_id
+    interruptions = ifood_client.list_interruptions(merchant)
+    if interruptions is None:
+        return jsonify({"error": "O iFood não respondeu. Tente de novo em instantes."}), 502
+    active = _active_interruptions(interruptions)
+
+    if is_open:
+        failed = [i for i in active if not ifood_client.delete_interruption(merchant, i.get("id"))]
+        if failed:
+            return jsonify({"error": "O iFood não deixou remover a pausa da loja. Tente de novo."}), 502
+    elif not active:
+        now = datetime.utcnow().replace(microsecond=0)
+        ok, body = ifood_client.create_interruption(
+            merchant, "Loja fechada pelo PDV",
+            now.strftime("%Y-%m-%dT%H:%M:%SZ"), (now + timedelta(days=STORE_CLOSE_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        if not ok:
+            detail = body.get("error", {}).get("message") if isinstance(body, dict) and isinstance(body.get("error"), dict) else None
+            return jsonify({"error": "O iFood não aceitou fechar a loja." + (f" ({detail})" if detail else "")}), 502
+
+    print(f"[iFood][store-status] store_id={store.id} | merchant={merchant} | abrir={is_open} | pausas_ativas_antes={len(active)}")
+    status = {"linked": True, "isOpen": is_open, "closedUntil": None, "reason": None}
+    if not is_open:
+        refreshed = ifood_client.list_interruptions(merchant)
+        current = _active_interruptions(refreshed) if refreshed is not None else []
+        ends = [e for e in (_utc(i.get("end")) for i in current) if e]
+        status.update(closedUntil=max(ends).strftime("%Y-%m-%dT%H:%M:%SZ") if ends else None,
+                      reason=current[0].get("description") if current else "Loja fechada pelo PDV")
+    return jsonify({"message": f"Loja agora está {'ABERTA' if is_open else 'FECHADA'} no iFood.", "status": status})

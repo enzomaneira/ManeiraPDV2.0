@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '../services/api';
-import { Power, Loader2, LogOut } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 
 import Sidebar from '../components/Sidebar';
 import OrderDetailModal from '../components/OrderDetailModal';
@@ -9,6 +9,7 @@ import HistoryPage from './HistoryPage';
 import MenuPage from './MenuPage';
 import SettingsPage from './SettingsPage';
 import ReportsPage from './ReportsPage';
+import StoreStatusControls from '../components/StoreStatusControls';
 import { orderService, storeService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -82,9 +83,10 @@ function PDVApp() {
   const [stores, setStores] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [activeTab, setActiveTab] = useState("orders");
-  const [isStoreOpen, setIsStoreOpen] = useState(true);
+  // Loja aberta/fechada em cada delivery: { keeta: {linked, isOpen}, ifood: {linked, isOpen, closedUntil} }
+  const [storeStatus, setStoreStatus] = useState({ keeta: { linked: false }, ifood: { linked: false } });
   const [isConnected, setIsConnected] = useState(false);
-  const [isStatusLoading, setIsStatusLoading] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(null); // 'keeta' | 'ifood'
 
   const [config, setConfig] = useState({
     autoAccept: true,
@@ -108,9 +110,7 @@ function PDVApp() {
             keetaId: res.data.keetaMerchantId || "",
             keetaStatus: res.data.keetaMerchantId ? "CONNECTED" : "DISCONNECTED",
           }));
-          if (res.data.isStoreOpen !== undefined) {
-            setIsStoreOpen(res.data.isStoreOpen);
-          }
+          setStoreStatus(prev => ({ ...prev, keeta: { linked: Boolean(res.data.keetaMerchantId), isOpen: res.data.isStoreOpen !== false } }));
         }
         setIsConnected(true);
       } catch (error) {
@@ -121,10 +121,21 @@ function PDVApp() {
 
     fetchConfig();
     // O backend consulta a Keeta (no máximo a cada 5 min) e traz o status da
-    // loja; assim o botão LOJA ABERTA/FECHADA acompanha o que vale na Keeta.
+    // loja; assim o botão da Keeta acompanha o que vale na Keeta.
     const interval = setInterval(() => fetchConfig(true), 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // iFood: aberta/fechada vem das pausas da loja no iFood. Recarrega a cada
+  // 5 min e ao trocar de aba (ex.: depois de ligar a loja nas Configurações).
+  const fetchIfoodStatus = () => api.get('/ifood/store-status')
+    .then(({ data }) => setStoreStatus(prev => ({ ...prev, ifood: data })))
+    .catch(error => setStoreStatus(prev => ({ ...prev, ifood: { ...(error.response?.data || {}), linked: prev.ifood.linked || error.response?.status === 502, isOpen: null } })));
+  useEffect(() => {
+    fetchIfoodStatus();
+    const interval = setInterval(fetchIfoodStatus, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [activeTab]);
 
   // iFood: com o PDV aberto, busca os eventos das lojas do iFood a cada 30s
   // (o backend ignora chamadas repetidas de outras abas). O webhook, quando
@@ -206,22 +217,20 @@ function PDVApp() {
     }
   };
 
-  const toggleStoreStatus = async () => {
-    const nextStatus = !isStoreOpen;
-    setIsStatusLoading(true);
-
+  const toggleStoreStatus = async (platform) => {
+    const nextOpen = platform.isOpen !== true;
+    if (!nextOpen && !confirm(`Fechar a loja no ${platform.name}? Ela para de receber pedidos de lá até você abrir de novo.`)) return;
+    setStatusLoading(platform.key);
     try {
-      const response = await api.post('/keeta/store-status', {
-        isOpen: nextStatus,
-      });
-
-      setIsStoreOpen(nextStatus);
-      alert(`Loja agora está ${nextStatus ? 'ABERTA' : 'FECHADA'}.`);
+      const { data } = await api.post(platform.key === 'keeta' ? '/keeta/store-status' : '/ifood/store-status', { isOpen: nextOpen });
+      setStoreStatus(prev => ({
+        ...prev,
+        [platform.key]: platform.key === 'ifood' && data?.status ? data.status : { ...prev[platform.key], isOpen: nextOpen },
+      }));
     } catch (error) {
-      console.error("Erro na requisição:", error);
-      alert("ERRO NO BACKEND: " + (error.response?.data?.error || error.message));
+      alert(`Não foi possível ${nextOpen ? 'abrir' : 'fechar'} a loja no ${platform.name}: ` + (error.response?.data?.error || error.message));
     } finally {
-      setIsStatusLoading(false);
+      setStatusLoading(null);
     }
   };
 
@@ -230,37 +239,29 @@ function PDVApp() {
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} user={user} onLogout={logout} />
 
       <main className="flex-1 flex flex-col relative overflow-hidden bg-slate-100">
-        <header className="h-20 px-8 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10 border-b border-slate-200">
-          <div>
-            <h2 className="text-2xl font-bold text-slate-800">
+        <header className="h-20 px-8 flex items-center justify-between gap-4 bg-white/80 backdrop-blur-md sticky top-0 z-10 border-b border-slate-200">
+          <div className="min-w-0">
+            <h2 className="text-2xl font-bold text-slate-800 truncate">
               {activeTab === 'orders' ? 'Fluxo de Pedidos' : activeTab === 'history' ? 'Histórico' : activeTab === 'reports' ? 'Relatórios' : activeTab === 'menu' ? 'Cardápio' : 'Configurações'}
             </h2>
-            <div className="flex items-center gap-2 mt-1">
-              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+            <div className="flex items-center gap-2 mt-1 min-w-0">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
               <p className="text-xs font-bold text-slate-500">{isConnected ? `Online` : 'Offline'}</p>
               {user?.storeName && (
-                <span className="text-xs font-bold text-slate-400 ml-2">• {user.storeName}</span>
+                <span className="text-xs font-bold text-slate-400 ml-2 truncate">• {user.storeName}</span>
               )}
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <button
-              onClick={toggleStoreStatus}
-              disabled={isStatusLoading}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-full font-bold transition-all shadow-sm border ${isStatusLoading ? 'opacity-70 cursor-not-allowed' : 'active:scale-95'
-                } ${isStoreOpen
-                  ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
-                  : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
-                }`}
-            >
-              {isStatusLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Power className="w-4 h-4" />
-              )}
-              {isStatusLoading ? 'PROCESSANDO...' : isStoreOpen ? 'LOJA ABERTA' : 'LOJA FECHADA'}
-            </button>
+          <div className="flex items-center gap-4 shrink-0">
+            <StoreStatusControls
+              platforms={[
+                { key: 'keeta', name: 'Keeta', ...storeStatus.keeta },
+                { key: 'ifood', name: 'iFood', ...storeStatus.ifood },
+              ]}
+              loadingKey={statusLoading}
+              onToggle={toggleStoreStatus}
+            />
 
             <button
               onClick={logout}
