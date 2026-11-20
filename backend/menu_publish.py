@@ -299,7 +299,7 @@ def publish_ifood(store_id: int) -> dict:
         mapping["catalogId"] = default.get("catalogId") or default.get("id")
     catalog = mapping["catalogId"]
 
-    # Categorias: cria no iFood a que ainda não existe (ou mudou de nome); cada uma só uma vez
+    # Categorias: cria no iFood a que ainda não existe e renomeia a que mudou de nome
     tried = set()
     for payload in payloads:
         local = payload["_local"]
@@ -308,6 +308,15 @@ def publish_ifood(store_id: int) -> dict:
         if key in tried or (known and known.get("name") == local["categoryName"]):
             continue
         tried.add(key)
+        if known:
+            status, body = ifood_client._request("PATCH", f"/catalog/v2.0/merchants/{merchant}/catalogs/{catalog}/categories/{known['id']}",
+                                                 json_body={"name": local["categoryName"]})
+            if status in (200, 201, 202, 204):
+                known["name"] = local["categoryName"]
+                continue
+            if status != 404:  # 404: a categoria não existe mais lá, então cria de novo
+                errors.append(f"Categoria \"{local['categoryName']}\": o iFood não aceitou o novo nome ({_ifood_error(status, body)})")
+                continue
         status, body = ifood_client._request("POST", f"/catalog/v2.0/merchants/{merchant}/catalogs/{catalog}/categories",
                                              json_body={"name": local["categoryName"], "status": "AVAILABLE", "template": "DEFAULT"})
         if status in (200, 201) and isinstance(body, dict) and body.get("id"):
@@ -367,14 +376,29 @@ def publish_ifood(store_id: int) -> dict:
                 break
             status, _ = ifood_client._request("PATCH", f"/catalog/v2.0/merchants/{merchant}/items/status",
                                               json_body={"itemId": old_id, "status": "UNAVAILABLE"})
-            if status in (200, 202, 204):
-                paused += 1
+            if status in (200, 202, 204, 404):
+                paused += status != 404  # 404: já não existe no iFood (ex.: categoria apagada)
                 mapping["sent"].pop(old_id, None)
                 mapping["items"] = [i for i in mapping["items"] if i != old_id]
         keep_old = set(mapping["items"]) if left else (current_ids & set(mapping["items"]))
         mapping["items"] = sorted(set(new_item_ids) | keep_old)
     else:
         mapping["items"] = sorted(set(new_item_ids) | set(mapping["items"]))
+
+    # Categorias que saíram do cardápio do iFood (excluídas no PDV ou sem nenhum
+    # produto no iFood): apaga lá também
+    removed_categories = 0
+    if not left:
+        current_categories = {str(p["_local"]["categoryId"]) for p in payloads}
+        for key, info in list(mapping["categories"].items()):
+            if key in current_categories:
+                continue
+            status, body = ifood_client._request("DELETE", f"/catalog/v2.0/merchants/{merchant}/categories/{info['id']}")
+            if status in (200, 202, 204, 404):
+                removed_categories += status != 404
+                del mapping["categories"][key]
+            else:
+                errors.append(f"Categoria \"{info.get('name')}\": o iFood não deixou apagar ({_ifood_error(status, body)})")
 
     config.ifood_catalog_map_json = json.dumps(mapping)
     if not errors:
@@ -384,8 +408,8 @@ def publish_ifood(store_id: int) -> dict:
     for error in errors[:5]:
         print(f"[MenuPublish][ifood] store_id={store_id} | {error}")
     print(f"[MenuPublish][ifood] store_id={store_id} | enviados={sent}/{len(payloads)} | sem_mudanca={skipped} | faltaram={left} "
-          f"| pausados={paused} | erros={len(errors)} | {time.monotonic() - started:.1f}s")
-    return {"ok": not errors, "sent": sent, "unchanged": skipped, "total": len(payloads), "paused": paused, "left": left, "errors": errors[:5]}
+          f"| pausados={paused} | categorias_apagadas={removed_categories} | erros={len(errors)} | {time.monotonic() - started:.1f}s")
+    return {"ok": not errors, "sent": sent, "unchanged": skipped, "total": len(payloads), "paused": paused, "removedCategories": removed_categories, "left": left, "errors": errors[:5]}
 
 
 def _both_available(*statuses) -> str:
@@ -429,19 +453,38 @@ def push_ifood_status(store_id: int, entity) -> None:
         print(f"[MenuPublish][ifood-status] ERRO store_id={store_id}: {type(e).__name__}: {e}")
 
 
-def pause_ifood_deleted(store_id: int, item_ids=(), option_ids=()) -> None:
-    """Excluído no PDV: pausa na hora no iFood (sai de vez na próxima publicação)."""
+def pause_ifood_deleted(store_id: int, item_ids=(), option_ids=(), category_ids=()) -> None:
+    """Excluído no PDV: some na hora do iFood. Categoria é apagada lá (com os
+    produtos dela); produto e complemento são pausados (saem de vez na próxima
+    publicação)."""
     config = StoreConfig.query.get(store_id)
     if not config or not config.ifood_merchant_id or not ifood_client.is_configured():
         return
-    published = set(_load_map(config)["items"])
+    mapping = _load_map(config)
+    published = set(mapping["items"])
     merchant = config.ifood_merchant_id
     try:
+        gone = set()
+        for local_id in category_ids:
+            info = mapping["categories"].get(str(local_id))
+            if not info:
+                continue
+            status, _ = ifood_client._request("DELETE", f"/catalog/v2.0/merchants/{merchant}/categories/{info['id']}")
+            if status in (200, 202, 204, 404):
+                del mapping["categories"][str(local_id)]
+                gone.update(_ifood_id(store_id, "item", i) for i in item_ids)
         for local_id in item_ids:
             item_id = _ifood_id(store_id, "item", local_id)
-            if item_id in published:
+            if item_id in published and item_id not in gone:
                 _ifood_patch(merchant, "items", item_id, "UNAVAILABLE")
         for local_id in option_ids:
             _ifood_patch(merchant, "options", _ifood_id(store_id, "option", local_id), "UNAVAILABLE")
+        if gone or category_ids:
+            mapping["items"] = [i for i in mapping["items"] if i not in gone]
+            for item_id in gone:
+                mapping["sent"].pop(item_id, None)
+            config.ifood_catalog_map_json = json.dumps(mapping)
+            db.session.commit()
     except Exception as e:
+        db.session.rollback()
         print(f"[MenuPublish][ifood-delete] ERRO store_id={store_id}: {type(e).__name__}: {e}")

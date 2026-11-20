@@ -82,6 +82,7 @@ export default function MenuPage() {
           if (data.sent) parts.push(`${data.sent} ${data.sent === 1 ? 'produto enviado' : 'produtos enviados'}`);
           if (data.unchanged) parts.push(`${data.unchanged} sem mudança`);
           if (data.paused) parts.push(`${data.paused} pausado${data.paused > 1 ? 's' : ''} por ter saído do cardápio`);
+          if (data.removedCategories) parts.push(`${data.removedCategories} categoria${data.removedCategories > 1 ? 's' : ''} apagada${data.removedCategories > 1 ? 's' : ''}`);
           showMessage('success', `Cardápio publicado no iFood${parts.length ? ` (${parts.join(', ')})` : ''}.`);
         }
       }

@@ -242,7 +242,7 @@ def _notify_keeta_menu_sync(store, entity=None, deleted=None):
         try:
             import menu_publish
             menu_publish.push_keeta_status(store.id)
-            menu_publish.pause_ifood_deleted(store.id, deleted.get("items", []), deleted.get("options", []))
+            menu_publish.pause_ifood_deleted(store.id, deleted.get("items", []), deleted.get("options", []), deleted.get("categories", []))
         except Exception as e:
             print(f"[Stores][_notify_keeta_menu_sync] ERRO ao avisar exclusão (ignorado): {type(e).__name__}: {e}")
         return
@@ -568,7 +568,7 @@ def delete_my_category(category_id):
         }), 409
 
     cat_name = category.name
-    deleted = {"items": [item.id for item in category.items]}
+    deleted = {"items": [item.id for item in category.items], "categories": [category.id]}
     try:
         db.session.delete(category)
         db.session.commit()
