@@ -357,3 +357,20 @@ def link_merchant():
         db.session.rollback()
         return jsonify({"error": "Esta loja do iFood já está ligada a outro restaurante."}), 409
     return jsonify({"merchantId": merchant_id, "name": merchant.get("name") or merchant.get("corporateName")})
+
+
+@ifood_bp.post("/publish-menu")
+@login_required
+def publish_menu():
+    """"Publicar no iFood": envia o cardápio do restaurante selecionado."""
+    import menu_publish
+    store = g.current_user.store
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    if rate_limited(f"ifood-publish:{store.id}", limit=6, window_seconds=600):
+        return jsonify({"error": "Muitas publicações seguidas. Aguarde alguns minutos."}), 429
+    result = menu_publish.publish_ifood(store.id)
+    if result.get("error"):
+        return jsonify(result), 400
+    result["status"] = menu_publish.ifood_status(store.id)
+    return jsonify(result), 200 if result["ok"] else 207

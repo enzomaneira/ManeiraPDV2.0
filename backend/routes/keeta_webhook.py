@@ -36,6 +36,8 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 import keeta_client
 import delivery_stages
+import menu_platforms
+import menu_publish
 import store_sync
 from models import Order, MenuItem, MenuCategory, MenuOptionGroup, MenuAvailability, Store, StoreConfig
 from models import menu_item_option_groups, menu_item_availabilities, menu_category_availabilities
@@ -181,7 +183,7 @@ def _merchant_status_for_store(store_id) -> str:
     return "AVAILABLE"
 
 
-def _build_menu_response(store_id: int):
+def _build_menu_response(store_id: int, platform: str = "KEETA"):
     """
     Constrói o JSON do cardápio completo (Open Delivery format) a partir do
     banco de dados. Inclui: basicInfo, services, menus, categories, items,
@@ -202,6 +204,10 @@ def _build_menu_response(store_id: int):
     week_hours = keeta_client.brasilia_periods_to_week_hours(config.service_hours if config else []) \
         or keeta_client.PLACEHOLDER_WEEK_HOURS
     print(f"[_build_menu_response] Loja: nome='{store_name}'")
+    # Cardápio por plataforma: com "mesmo cardápio" desligado, só entra o que
+    # está marcado para esta plataforma, com o preço próprio dela.
+    same = menu_platforms.same_menu(config)
+    visible = lambda entity: menu_platforms.is_visible(entity, platform, same)
 
     # --- Busca os itens do cardápio no banco ---
     # Ordenados pela posição na categoria: é a ordem de itemOfferId que a Keeta exibe.
@@ -222,6 +228,7 @@ def _build_menu_response(store_id: int):
     # A Keeta não processa o status da categoria: uma categoria pausada no PDV
     # pausa as ofertas dela.
     unavailable_category_ids = {cat.id for cat in categories_db if (cat.status or "AVAILABLE") != "AVAILABLE"}
+    hidden_category_ids = {cat.id for cat in categories_db if not visible(cat)}
 
     for idx, item in enumerate(items):
         item_id_str = str(item.id)
@@ -241,6 +248,10 @@ def _build_menu_response(store_id: int):
         # viram produto (sem itemOffer e sem categoria).
         if item.is_option_item:
             continue
+        # Produto fora desta plataforma: continua em items[] (pode ser opção de
+        # um combo), mas não vira oferta.
+        if not visible(item) or item.category_id in hidden_category_ids:
+            continue
 
         offer_status = item.status or "AVAILABLE"
         if item.category_id in unavailable_category_ids:
@@ -255,11 +266,7 @@ def _build_menu_response(store_id: int):
             # oferta como tendo apenas preço indoor.
             # No contrato Open Delivery, `price` é o preço de delivery da
             # oferta. Nunca deixar uma oferta apenas com preço indoor.
-            "price": {
-                "originalValue": item.original_price if item.original_price is not None else item.price,
-                "currency":      "BRL",
-                "value":         item.price,
-            },
+            "price": dict(zip(("value", "originalValue"), menu_platforms.item_prices(item, platform, same)), currency="BRL"),
         })
 
         cat_key = item.category_id if item.category_id else uncategorized_id
@@ -351,6 +358,8 @@ def _build_menu_response(store_id: int):
                 print(f"[_build_menu_response] AVISO: opção id={opt.id} do grupo '{og.name}' sem item válido "
                       f"(item_id={opt.item_id}); omitida do cardápio enviado à Keeta.")
                 continue
+            if not visible(opt):
+                continue
             # Item esgotado esgota também a opção que o oferece.
             opt_status = opt.status or "AVAILABLE"
             if item_status_by_id.get(opt.item_id) != "AVAILABLE":
@@ -368,7 +377,8 @@ def _build_menu_response(store_id: int):
                 "itemId":       str(opt.item_id),
                 "index":        len(options_list),
                 "status":       opt_status,
-                "price":        {"originalValue": opt.price or 0.0, "currency": "BRL", "value": opt.price or 0.0},
+                "price":        {"originalValue": menu_platforms.option_price(opt, platform, same), "currency": "BRL",
+                                 "value": menu_platforms.option_price(opt, platform, same)},
                 "maxPermitted": opt_limit,
             })
 
@@ -693,7 +703,7 @@ def keeta_root():
     if not store_id or not Store.query.get(store_id):
         return jsonify({"error": "Informe um storeId válido."}), 400
     print(f"[keeta_root] GET /api/keeta | storeId={store_id}")
-    return jsonify(keeta_client.sanitize_merchant_for_keeta(_build_menu_response(store_id)))
+    return jsonify(keeta_client.sanitize_merchant_for_keeta(menu_publish.published_keeta_merchant(store_id)))
 
 
 # =============================================================================
@@ -1026,13 +1036,14 @@ def force_sync_menu():
     # O path usa o merchant_id interno persistido no onboarding desta loja.
     merchant_id = str(config.keeta_merchant_id).strip()
     print(f"[Webhook][force_sync_menu] Solicitando menu push | store_id={store.id} | merchant_id={merchant_id}...")
-    merchant = _build_menu_response(store.id)
-    success, error_detail = keeta_client.force_menu_sync(merchant_id, merchant)
+    # "Publicar na Keeta": o rascunho atual vira o cardápio publicado
+    success, error_detail = menu_publish.publish_keeta(store.id)
     print(f"[Webhook][force_sync_menu] Resultado: success={success} | error={error_detail}")
 
     if success:
         print(f"[Webhook][force_sync_menu] FIM (sucesso) | store_id={store.id}")
-        return jsonify({"message": "Cardápio enviado para a Keeta! A sincronização pode levar alguns minutos."})
+        return jsonify({"message": "Cardápio publicado na Keeta! Pode levar alguns minutos para aparecer no app.",
+                        "status": menu_publish.keeta_status(store.id)})
     else:
         print(f"[Webhook][force_sync_menu] FIM (falha) | store_id={store.id}")
         return jsonify({"error": f"Falha ao sincronizar com a Keeta: {error_detail}"}), 500
@@ -1101,7 +1112,8 @@ def get_merchant_menu():
         # somente em uma notificação de atualização enviada via POST.
         # O mesmo saneamento do push: é este JSON que a Keeta valida quando
         # recarrega o cardápio (MENU_UPDATE).
-        merchant = keeta_client.sanitize_merchant_for_keeta(_build_menu_response(store_id))
+        # Cardápio PUBLICADO (com status e dados da loja ao vivo), não o rascunho
+        merchant = keeta_client.sanitize_merchant_for_keeta(menu_publish.published_keeta_merchant(store_id))
         merchant_id = _merchant_id_for_store(store_id)
         _log_menu_diagnostics(merchant, store_id, merchant_id)
 

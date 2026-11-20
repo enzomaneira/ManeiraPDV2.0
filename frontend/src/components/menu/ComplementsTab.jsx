@@ -2,10 +2,11 @@ import { Plus, Edit3, Trash2, Loader2, ListPlus } from 'lucide-react';
 import { formatCurrency } from '../../utils/formatters';
 import { groupRuleText, isProduct } from './menuUtils';
 import { StatusToggle } from './ProductsTab';
+import { PlatformBadge } from './PlatformFields';
 
 // Aba "Complementos": cada grupo (Molhos, Adicionais, Bebida do Combo…) com a
 // regra de escolha, as opções e os produtos que o usam.
-export default function ComplementsTab({ optionGroups, items, loading, busyId, onNewGroup, onEditGroup, onDeleteGroup, onToggleItem }) {
+export default function ComplementsTab({ optionGroups, items, loading, busyId, onNewGroup, onEditGroup, onDeleteGroup, onToggleItem, sameMenu = true }) {
   const itemById = Object.fromEntries(items.map(item => [item.id, item]));
   const productsUsing = (groupId) => items.filter(item => isProduct(item) && (item.optionGroupsId || []).includes(groupId));
 
@@ -48,7 +49,7 @@ export default function ComplementsTab({ optionGroups, items, loading, busyId, o
               <button type="button" onClick={() => onDeleteGroup(group, used.length)} className="p-2 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50" title="Excluir grupo" aria-label={`Excluir grupo ${group.name}`}><Trash2 className="w-4 h-4" /></button>
             </header>
             <ul className="divide-y divide-slate-100">
-              {(group.options || []).length === 0 && <li className="px-5 py-3 text-sm text-red-600">Grupo sem opções: ele não aparece na Keeta até você adicionar pelo menos uma.</li>}
+              {(group.options || []).length === 0 && <li className="px-5 py-3 text-sm text-red-600">Grupo sem opções: ele não aparece nas plataformas até você adicionar pelo menos uma.</li>}
               {(group.options || []).map(option => {
                 const item = itemById[option.itemId];
                 const available = (item?.status || 'AVAILABLE') === 'AVAILABLE' && option.status === 'AVAILABLE';
@@ -58,6 +59,7 @@ export default function ComplementsTab({ optionGroups, items, loading, busyId, o
                     <span className={`flex-1 min-w-[160px] font-medium ${available ? 'text-slate-700' : 'text-slate-400'}`}>
                       {item?.name || option.name}
                       {shared && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-bold" title="Este item também é vendido sozinho no cardápio">também é produto</span>}
+                      {!sameMenu && <span className="ml-2"><PlatformBadge entity={option} /></span>}
                     </span>
                     {option.maxPermitted > 1 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-bold" title="O cliente pode escolher esta opção mais de uma vez">até {option.maxPermitted}x</span>}
                     <span className="w-20 text-right text-sm font-bold tabular-nums text-slate-600">{option.price > 0 ? `+ ${formatCurrency(option.price)}` : 'Grátis'}</span>

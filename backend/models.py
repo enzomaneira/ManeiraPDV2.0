@@ -115,6 +115,15 @@ class StoreConfig(db.Model):
     # Etapas opcionais do quadro de pedidos escolhidas pela loja (lista JSON
     # dentre OPTIONAL_DELIVERY_STAGES). As etapas principais são fixas.
     delivery_stages_json = db.Column(db.Text, nullable=True)
+    # Cardápio por plataforma: ligado = Keeta e iFood recebem o mesmo cardápio
+    same_menu_all_platforms = db.Column(db.Boolean, nullable=True, default=True)
+    # Publicação manual: o que cada plataforma recebeu da última vez
+    keeta_menu_snapshot_json = db.Column(db.Text, nullable=True)   # cardápio publicado (a Keeta lê este, não o rascunho)
+    keeta_published_at       = db.Column(db.String(40), nullable=True)
+    keeta_published_hash     = db.Column(db.String(64), nullable=True)
+    ifood_published_at       = db.Column(db.String(40), nullable=True)
+    ifood_published_hash     = db.Column(db.String(64), nullable=True)
+    ifood_catalog_map_json   = db.Column(db.Text, nullable=True)   # catálogo e categorias criados no iFood
     # Versão anterior (liga/desliga tudo); só usada se a lista nunca foi salva
     detailed_delivery_status = db.Column(db.Boolean, default=False)
 
@@ -147,6 +156,7 @@ class StoreConfig(db.Model):
             "storeId":          self.store_id,
             "autoAccept":       self.auto_accept,
             "enabledDeliveryStages": self.enabled_delivery_stages,
+            "sameMenuAllPlatforms": self.same_menu_all_platforms is not False,
             "merchantId":       self.keeta_merchant_id,
             "keetaMerchantId":  self.keeta_merchant_id,
             "ifoodMerchantId":  self.ifood_merchant_id,
@@ -172,6 +182,9 @@ class MenuCategory(db.Model):
     external_code = db.Column(db.String(100), nullable=False)  # código externo (PDV Code)
     index         = db.Column(db.Integer, nullable=False, default=0)
     status        = db.Column(db.String(20), nullable=False, default="AVAILABLE")
+    # Cardápio por plataforma (só vale com StoreConfig.same_menu_all_platforms desligado)
+    on_keeta      = db.Column(db.Boolean, nullable=True, default=True)
+    on_ifood      = db.Column(db.Boolean, nullable=True, default=True)
 
     # Relacionamento com os itens
     items = db.relationship("MenuItem", back_populates="category", cascade="all, delete-orphan")
@@ -185,6 +198,8 @@ class MenuCategory(db.Model):
             "externalCode": self.external_code,
             "index":        self.index,
             "status":       self.status,
+            "onKeeta":       self.on_keeta is not False,
+            "onIfood":       self.on_ifood is not False,
             "itemCount":    len(self.items) if self.items else 0,
             "items":        [i.to_dict() for i in self.items] if self.items else [],
         }
@@ -215,6 +230,11 @@ class MenuItem(db.Model):
     # Itens marcados como opção continuam sendo MenuItem completos, mas não
     # aparecem como produto raiz na exportação do cardápio.
     is_option_item = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    # Cardápio por plataforma (só vale com StoreConfig.same_menu_all_platforms desligado)
+    on_keeta      = db.Column(db.Boolean, nullable=True, default=True)
+    on_ifood      = db.Column(db.Boolean, nullable=True, default=True)
+    keeta_price   = db.Column(db.Float, nullable=True)   # preço só na Keeta (vazio = o preço normal)
+    ifood_price   = db.Column(db.Float, nullable=True)   # preço só no iFood (vazio = o preço normal)
 
     category = db.relationship("MenuCategory", back_populates="items")
 
@@ -233,6 +253,11 @@ class MenuItem(db.Model):
             "imageUrl":      self.image_url,
             "index":          self.index,
             "isOptionItem":   self.is_option_item,
+            "onKeeta":       self.on_keeta is not False,
+            "onIfood":       self.on_ifood is not False,
+            "keetaPrice":    self.keeta_price,
+            "ifoodPrice":    self.ifood_price,
+
             # IDs são incluídos no contrato administrativo para que o frontend
             # consiga editar os vínculos sem depender do payload da Keeta.
             "optionGroupsId": [group.id for group in self.option_groups.all()],
@@ -327,6 +352,11 @@ class MenuOption(db.Model):
     status          = db.Column(db.String(20), nullable=False, default="AVAILABLE")
     price           = db.Column(db.Float, nullable=True, default=0.0)     # preço adicional desta opção
     max_permitted   = db.Column(db.Integer, nullable=True)                # limite de vezes que esta opção pode ser escolhida
+    # Cardápio por plataforma (só vale com StoreConfig.same_menu_all_platforms desligado)
+    on_keeta      = db.Column(db.Boolean, nullable=True, default=True)
+    on_ifood      = db.Column(db.Boolean, nullable=True, default=True)
+    keeta_price   = db.Column(db.Float, nullable=True)   # preço só na Keeta (vazio = o preço normal)
+    ifood_price   = db.Column(db.Float, nullable=True)   # preço só no iFood (vazio = o preço normal)
 
     option_group = db.relationship("MenuOptionGroup", back_populates="options")
     item = db.relationship("MenuItem", foreign_keys=[item_id], back_populates="option_references")
@@ -343,6 +373,11 @@ class MenuOption(db.Model):
             "status":         self.status,
             "price":          self.price if self.price is not None else (self.item.price if self.item else 0.0),
             "maxPermitted":   self.max_permitted,
+            "onKeeta":       self.on_keeta is not False,
+            "onIfood":       self.on_ifood is not False,
+            "keetaPrice":    self.keeta_price,
+            "ifoodPrice":    self.ifood_price,
+
             "item":           {
                 "id": self.item.id,
                 "name": self.item.name,

@@ -183,6 +183,24 @@ def _run_lightweight_migrations():
         # iFood: loja de cada restaurante e plataforma de cada pedido
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS ifood_merchant_id VARCHAR(100)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform VARCHAR(20)",
+        # Cardápio por plataforma e publicação manual
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS same_menu_all_platforms BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_menu_snapshot_json TEXT",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_published_at VARCHAR(40)",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_published_hash VARCHAR(64)",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS ifood_published_at VARCHAR(40)",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS ifood_published_hash VARCHAR(64)",
+        "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS ifood_catalog_map_json TEXT",
+        "ALTER TABLE menu_categories ADD COLUMN IF NOT EXISTS on_keeta BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE menu_categories ADD COLUMN IF NOT EXISTS on_ifood BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS on_keeta BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS on_ifood BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS keeta_price DOUBLE PRECISION",
+        "ALTER TABLE menu_items ADD COLUMN IF NOT EXISTS ifood_price DOUBLE PRECISION",
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS on_keeta BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS on_ifood BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS keeta_price DOUBLE PRECISION",
+        "ALTER TABLE menu_options ADD COLUMN IF NOT EXISTS ifood_price DOUBLE PRECISION",
         # OrderItem: opções/adicionais do item
         "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS options_json TEXT",
         # MenuItem: novos campos para suportar Open Delivery e subitens reais.

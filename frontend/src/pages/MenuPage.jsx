@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { CheckCircle, AlertCircle, X, Send, RefreshCw, Utensils, ListPlus, Save, Loader2, Info } from 'lucide-react';
-import { categoryService, menuService, optionGroupService, availabilityService, keetaSyncService } from '../services/api';
+import { CheckCircle, AlertCircle, X, Utensils, ListPlus, Save, Loader2 } from 'lucide-react';
+import { categoryService, menuService, optionGroupService, availabilityService, menuPublishService } from '../services/api';
 import ProductsTab from '../components/menu/ProductsTab';
 import ComplementsTab from '../components/menu/ComplementsTab';
 import ProductEditor from '../components/menu/ProductEditor';
 import GroupEditor from '../components/menu/GroupEditor';
+import PublishPanel from '../components/menu/PublishPanel';
+import PlatformFields from '../components/menu/PlatformFields';
+import { platformForm, platformPayload } from '../components/menu/platforms';
 import { inputClass, labelClass, getErrorMessage, isProduct } from '../components/menu/menuUtils';
 
 // Tela de Cardápio organizada como nos gestores de cardápio de delivery
@@ -19,13 +22,15 @@ export default function MenuPage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
   const [reordering, setReordering] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [publishStatus, setPublishStatus] = useState(null);
+  const [publishing, setPublishing] = useState(null); // 'keeta' | 'ifood'
+  const [savingMode, setSavingMode] = useState(false);
   const [message, setMessage] = useState(null);
   // Modais
   const [productEditor, setProductEditor] = useState(null); // { id } | { draft }
   const [groupEditor, setGroupEditor] = useState(null);     // { group, presetProductIds }
   const [categoryEditor, setCategoryEditor] = useState(null); // { category } | {}
-  const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
+  const [categoryForm, setCategoryForm] = useState({ name: '', description: '', ...platformForm() });
   const [categorySaving, setCategorySaving] = useState(false);
 
   const timer = useRef(null);
@@ -35,7 +40,13 @@ export default function MenuPage() {
     if (type === 'success') timer.current = setTimeout(() => setMessage(null), 3500);
   };
 
+  // Alterações não publicadas em cada plataforma (não trava a tela se falhar)
+  const loadPublishStatus = async () => {
+    try { const { data } = await menuPublishService.status(); setPublishStatus(data); } catch { /* mostra "Carregando…" */ }
+  };
+
   const refresh = async () => {
+    loadPublishStatus();
     try {
       const [cats, menu, groups, avails] = await Promise.all([
         categoryService.getAll(), menuService.getAll(), optionGroupService.getAll(), availabilityService.getAll(),
@@ -53,20 +64,50 @@ export default function MenuPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { refresh(); }, []);
 
-  // ===== Keeta =====
-  const handleSync = async () => {
-    setSyncing(true);
+  // ===== Publicação =====
+  const sameMenu = publishStatus?.sameMenu !== false;
+  const handlePublish = async (platform) => {
+    setPublishing(platform);
     try {
-      const { data } = await keetaSyncService.syncMenu();
-      showMessage('success', data?.message || 'Cardápio enviado para a Keeta.');
+      if (platform === 'keeta') {
+        const { data } = await menuPublishService.publishKeeta();
+        showMessage('success', data?.message || 'Cardápio publicado na Keeta.');
+      } else {
+        const { data, status } = await menuPublishService.publishIfood();
+        if (status === 207) {
+          const details = (data.errors || []).map(error => `• ${error}`).join('\n');
+          showMessage('error', `Publicado em parte no iFood: ${data.sent + (data.unchanged || 0)} de ${data.total} produtos em dia.\n${details}`);
+        } else {
+          const parts = [];
+          if (data.sent) parts.push(`${data.sent} ${data.sent === 1 ? 'produto enviado' : 'produtos enviados'}`);
+          if (data.unchanged) parts.push(`${data.unchanged} sem mudança`);
+          if (data.paused) parts.push(`${data.paused} pausado${data.paused > 1 ? 's' : ''} por ter saído do cardápio`);
+          showMessage('success', `Cardápio publicado no iFood${parts.length ? ` (${parts.join(', ')})` : ''}.`);
+        }
+      }
     } catch (error) {
-      showMessage('error', getErrorMessage(error, 'Não foi possível enviar para a Keeta.'));
-    } finally { setSyncing(false); }
+      showMessage('error', getErrorMessage(error, `Não foi possível publicar ${platform === 'keeta' ? 'na Keeta' : 'no iFood'}.`));
+    } finally {
+      setPublishing(null);
+      loadPublishStatus();
+    }
+  };
+  const toggleSameMenu = async (value) => {
+    if (!value && !confirm('Usar um cardápio diferente em cada plataforma?\n\nTudo continua aparecendo nas duas até você mudar. Em cada categoria, produto e complemento vai aparecer onde ele é vendido e o preço em cada plataforma.')) return;
+    if (value && !confirm('Voltar a usar o mesmo cardápio nas duas plataformas?\n\nTudo que você escondeu de uma plataforma volta a aparecer nela, com o preço normal (os ajustes ficam guardados se quiser voltar depois).')) return;
+    setSavingMode(true);
+    try {
+      await menuPublishService.setSameMenu(value);
+      await loadPublishStatus();
+      showMessage('success', value ? 'Agora as duas plataformas usam o mesmo cardápio. Publique para aplicar.' : 'Agora cada plataforma tem seu cardápio. Publique para aplicar.');
+    } catch (error) {
+      showMessage('error', getErrorMessage(error, 'Não foi possível mudar o modo do cardápio.'));
+    } finally { setSavingMode(false); }
   };
 
   // ===== Categorias =====
   const openCategory = (category) => {
-    setCategoryForm({ name: category?.name || '', description: category?.description || '' });
+    setCategoryForm({ name: category?.name || '', description: category?.description || '', ...platformForm(category || {}) });
     setCategoryEditor({ category });
   };
   const saveCategory = async (e) => {
@@ -74,7 +115,7 @@ export default function MenuPage() {
     if (!categoryForm.name.trim()) { showMessage('error', 'Dê um nome à categoria.'); return; }
     setCategorySaving(true);
     try {
-      const payload = { name: categoryForm.name.trim(), description: categoryForm.description.trim() };
+      const payload = { name: categoryForm.name.trim(), description: categoryForm.description.trim(), ...(sameMenu ? {} : platformPayload(categoryForm, false)) };
       if (categoryEditor.category) await categoryService.update(categoryEditor.category.id, payload);
       else await categoryService.create(payload);
       await refresh();
@@ -98,7 +139,7 @@ export default function MenuPage() {
     try {
       await categoryService.update(category.id, { status });
       await refresh();
-      showMessage('success', status === 'AVAILABLE' ? `"${category.name}" voltou para o cardápio.` : `"${category.name}" pausada: os produtos dela saem da Keeta.`);
+      showMessage('success', status === 'AVAILABLE' ? `"${category.name}" voltou para o cardápio.` : `"${category.name}" pausada: os produtos dela saem das plataformas.`);
     } catch (error) { showMessage('error', getErrorMessage(error, 'Não foi possível alterar a categoria.')); }
     finally { setBusyId(null); }
   };
@@ -170,16 +211,10 @@ export default function MenuPage() {
             {soldOut > 0 && <span className="ml-2 font-bold text-red-600">· {soldOut} esgotado{soldOut > 1 ? 's' : ''}</span>}
           </p>
         </div>
-        <button onClick={handleSync} disabled={syncing}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm shadow-sm border ${syncing ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-yellow-400 hover:bg-yellow-500 text-yellow-900 border-yellow-300'}`}>
-          {syncing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}{syncing ? 'Enviando…' : 'Enviar para Keeta'}
-        </button>
       </div>
 
-      <div className="flex items-start gap-2 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-sm text-indigo-900">
-        <Info className="w-4 h-4 mt-0.5 shrink-0" />
-        <p>Cada alteração salva aqui já é enviada para a Keeta. Use <b>Enviar para Keeta</b> só se quiser forçar uma atualização completa.</p>
-      </div>
+      <PublishPanel status={publishStatus} publishing={publishing} savingMode={savingMode}
+        onPublish={handlePublish} onToggleSameMenu={toggleSameMenu} />
 
       <div className="flex gap-1 p-1 bg-slate-200/70 rounded-xl w-fit" role="tablist">
         {[
@@ -195,7 +230,7 @@ export default function MenuPage() {
 
       {tab === 'products' ? (
         <ProductsTab
-          categories={categories} items={items} optionGroups={optionGroups} loading={loading} busyId={busyId} reordering={reordering}
+          categories={categories} items={items} optionGroups={optionGroups} loading={loading} busyId={busyId} reordering={reordering} sameMenu={sameMenu}
           onNewCategory={() => openCategory(null)} onEditCategory={openCategory} onDeleteCategory={deleteCategory}
           onToggleCategory={toggleCategory} onMoveCategory={(position, direction) => move(categories, position, direction, categoryService.update)}
           onNewProduct={(categoryId) => setProductEditor({ draft: { categoryId } })} onEditProduct={(item) => setProductEditor({ id: item.id })}
@@ -204,7 +239,7 @@ export default function MenuPage() {
         />
       ) : (
         <ComplementsTab
-          optionGroups={optionGroups} items={items} loading={loading} busyId={busyId}
+          optionGroups={optionGroups} items={items} loading={loading} busyId={busyId} sameMenu={sameMenu}
           onNewGroup={() => setGroupEditor({ group: null })} onEditGroup={(group) => setGroupEditor({ group })}
           onDeleteGroup={deleteGroup} onToggleItem={toggleItem}
         />
@@ -216,13 +251,13 @@ export default function MenuPage() {
           product={editingProduct} draft={productEditor.draft} categories={categories} optionGroups={optionGroups} availabilities={availabilities}
           onClose={() => setProductEditor(null)} onChanged={refresh} onCreated={(id) => setProductEditor({ id })}
           onCreateGroup={(product) => setGroupEditor({ group: null, presetProductIds: product ? [product.id] : [] })}
-          showMessage={showMessage}
+          showMessage={showMessage} sameMenu={sameMenu}
         />
       )}
       {groupEditor && (
         <GroupEditor
           group={groupEditor.group} items={items} categories={categories} presetProductIds={groupEditor.presetProductIds}
-          onClose={() => setGroupEditor(null)} onChanged={refresh} showMessage={showMessage}
+          onClose={() => setGroupEditor(null)} onChanged={refresh} showMessage={showMessage} sameMenu={sameMenu}
         />
       )}
       {categoryEditor && (
@@ -236,6 +271,10 @@ export default function MenuPage() {
               <input id="category-name" className={inputClass} maxLength={150} value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} placeholder="Ex.: Hambúrgueres" autoFocus /></div>
             <div><label className={labelClass} htmlFor="category-description">Descrição</label>
               <input id="category-description" className={inputClass} maxLength={500} value={categoryForm.description} onChange={e => setCategoryForm({ ...categoryForm, description: e.target.value })} placeholder="Ex.: Hambúrgueres artesanais da casa" /></div>
+            {!sameMenu && (
+              <div><p className={labelClass}>Onde a categoria aparece</p>
+                <PlatformFields form={categoryForm} onChange={changes => setCategoryForm(prev => ({ ...prev, ...changes }))} withPrices={false} idPrefix="category" /></div>
+            )}
             <div className="flex gap-3 pt-1">
               <button type="button" onClick={() => setCategoryEditor(null)} className="flex-1 py-2.5 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
               <button type="submit" disabled={categorySaving} className={`flex-1 py-2.5 font-bold rounded-xl flex items-center justify-center gap-2 ${categorySaving ? 'bg-slate-300' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X, Save, Loader2, ChevronDown, ChevronRight, Plus, Clock, Trash2 } from 'lucide-react';
 import PhotoField from './PhotoField';
+import PlatformFields from './PlatformFields';
+import { platformForm, platformPayload } from './platforms';
 import { menuService, availabilityService } from '../../services/api';
 import { formatCurrency } from '../../utils/formatters';
 import {
@@ -26,7 +28,7 @@ function Section({ number, title, hint, children }) {
 // Cadastro/edição de um produto, num formulário só. Produto novo continua aberto
 // depois de salvo para escolher complementos e horários.
 export default function ProductEditor({
-  product, draft, categories, optionGroups, availabilities, onClose, onChanged, onCreated, onCreateGroup, showMessage,
+  product, draft, categories, optionGroups, availabilities, onClose, onChanged, onCreated, onCreateGroup, showMessage, sameMenu = true,
 }) {
   const [current, setCurrent] = useState(product);
   const isNew = !current;
@@ -40,6 +42,7 @@ export default function ProductEditor({
       price: source.price != null ? String(source.price) : '',
       originalPrice: source.originalPrice != null && source.originalPrice > source.price ? String(source.originalPrice) : '',
       externalCode: product ? product.externalCode || '' : '',
+      ...platformForm(source),
     };
   });
   // Grupos escolhidos antes de o produto existir (aplicados ao criar).
@@ -65,10 +68,12 @@ export default function ProductEditor({
     if (!form.categoryId) { showMessage('error', 'Escolha a categoria do produto.'); return; }
     if (isNaN(price) || price < 0) { showMessage('error', 'Informe o preço de venda.'); return; }
     if (isNaN(original) || original < price) { showMessage('error', 'O preço "de" precisa ser maior que o preço de venda (ou fique em branco).'); return; }
+    let platforms = {};
+    try { platforms = sameMenu ? {} : platformPayload(form, true); } catch (error) { showMessage('error', error.message); return; }
     setSaving(true);
     const payload = {
       name: form.name.trim(), description: form.description.trim(), categoryId: Number(form.categoryId),
-      imageUrl: form.imageUrl.trim(), price, originalPrice: original, externalCode: form.externalCode.trim(),
+      imageUrl: form.imageUrl.trim(), price, originalPrice: original, externalCode: form.externalCode.trim(), ...platforms,
     };
     try {
       if (isNew) {
@@ -181,7 +186,13 @@ export default function ProductEditor({
             <p className="text-xs text-slate-500">Preencha o preço "de" só para promoções: o app mostra <span className="line-through">{form.originalPrice ? formatCurrency(Number(form.originalPrice) || 0) : 'R$ 40,00'}</span> por {form.price ? formatCurrency(Number(form.price) || 0) : 'R$ 32,00'}.</p>
           </Section>
 
-          <Section number="4" title="Complementos" hint="Grupos que o cliente escolhe ao pedir este produto (molhos, adicionais, bebida do combo…).">
+          {!sameMenu && (
+            <Section number="4" title="Onde vender" hint="Desmarque a plataforma em que o produto não deve aparecer. Deixe o preço em branco para usar o preço de venda.">
+              <PlatformFields form={form} onChange={set} basePrice={form.price} idPrefix="product" />
+            </Section>
+          )}
+
+          <Section number={sameMenu ? '4' : '5'} title="Complementos" hint="Grupos que o cliente escolhe ao pedir este produto (molhos, adicionais, bebida do combo…).">
             {optionGroups.length === 0 && <p className="text-sm text-slate-500">Nenhum grupo de complementos criado ainda.</p>}
             <div className="space-y-2">
               {optionGroups.map(group => {
@@ -214,7 +225,7 @@ export default function ProductEditor({
                 <div>
                   <label className={labelClass} htmlFor="product-code">Código do produto (PDV)</label>
                   <input id="product-code" className={inputClass + ' font-mono'} maxLength={100} value={form.externalCode} onChange={e => set({ externalCode: e.target.value })} placeholder="Gerado automaticamente" />
-                  <p className="text-xs text-slate-400 mt-1">É o código que a Keeta usa para reconhecer o produto. Só mude se souber o que está fazendo.</p>
+                  <p className="text-xs text-slate-400 mt-1">É o código que a Keeta e o iFood usam para reconhecer o produto. Só mude se souber o que está fazendo.</p>
                 </div>
                 <div>
                   <p className={labelClass + ' flex items-center gap-1.5'}><Clock className="w-4 h-4" />Horários em que o produto aparece (Brasília)</p>

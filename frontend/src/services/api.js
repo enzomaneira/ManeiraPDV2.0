@@ -120,7 +120,7 @@ export const menuService = {
 
 export const optionGroupService = {
     getAll: () => api.get('/stores/me/option-groups'),
-    // { sync: false } não avisa a Keeta nesta chamada (a tela faz um envio só no fim)
+    // { sync: false } era usado quando cada edição ia direto para a Keeta; hoje as edições esperam o botão Publicar
     create: (data, { sync = true } = {}) => api.post('/stores/me/option-groups', data, { params: sync ? {} : { sync: 0 } }),
     update: (groupId, data, { sync = true } = {}) => api.put(`/stores/me/option-groups/${groupId}`, data, { params: sync ? {} : { sync: 0 } }),
     delete: (groupId) => api.delete(`/stores/me/option-groups/${groupId}`),
@@ -128,7 +128,7 @@ export const optionGroupService = {
     createOption: (groupId, data, { sync = true } = {}) => api.post(`/stores/me/option-groups/${groupId}/options`, data, { params: sync ? {} : { sync: 0 } }),
     updateOption: (groupId, optionId, data, { sync = true } = {}) => api.put(`/stores/me/option-groups/${groupId}/options/${optionId}`, data, { params: sync ? {} : { sync: 0 } }),
     deleteOption: (groupId, optionId, { sync = true } = {}) => api.delete(`/stores/me/option-groups/${groupId}/options/${optionId}`, { params: sync ? {} : { sync: 0 } }),
-    // Define de uma vez quais produtos usam o grupo (um único envio para a Keeta)
+    // Define de uma vez quais produtos usam o grupo
     setItems: (groupId, itemIds) => api.put(`/stores/me/option-groups/${groupId}/items`, { itemIds }),
 };
 
@@ -146,6 +146,15 @@ export const reportService = {
 
 export const keetaSyncService = {
     syncMenu: () => api.post('/keeta/sync-menu'),
+};
+
+// Cardápio com publicação manual em cada plataforma
+export const menuPublishService = {
+    // { sameMenu, keeta: { pending, publishedAt, linked }, ifood: { pending, publishedAt, linked, configured } }
+    status: () => api.get('/stores/me/menu/publish-status'),
+    setSameMenu: (sameMenu) => api.put('/stores/me/menu/platform-mode', { sameMenu }),
+    publishKeeta: () => api.post('/keeta/sync-menu'),
+    publishIfood: () => api.post('/ifood/publish-menu'),
 };
 
 export default api;

@@ -3,14 +3,16 @@ import { X, Save, Loader2, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react
 import { optionGroupService } from '../../services/api';
 import { formatCurrency } from '../../utils/formatters';
 import { inputClass, labelClass, getErrorMessage, groupRuleText, isProduct } from './menuUtils';
+import PlatformFields from './PlatformFields';
+import { platformForm, platformPayload } from './platforms';
 
 let draftKey = 0;
 const newKey = () => `novo-${++draftKey}`;
 
 // Cria/edita um grupo de complementos: regra de escolha, opções (cada uma com
 // o preço cobrado NESTE grupo) e os produtos que usam o grupo. Salva tudo e
-// avisa a Keeta uma vez só, no fim.
-export default function GroupEditor({ group, items, categories, presetProductIds = [], onClose, onChanged, showMessage }) {
+// a publicação nas plataformas fica para o botão Publicar.
+export default function GroupEditor({ group, items, categories, presetProductIds = [], onClose, onChanged, showMessage, sameMenu = true }) {
   const isNew = !group;
   const itemById = Object.fromEntries(items.map(item => [item.id, item]));
   const [form, setForm] = useState({
@@ -22,7 +24,7 @@ export default function GroupEditor({ group, items, categories, presetProductIds
   });
   const [options, setOptions] = useState(() => (group?.options || []).map(option => ({
     key: `op-${option.id}`, id: option.id, itemId: option.itemId, name: itemById[option.itemId]?.name || option.name, price: String(option.price ?? 0),
-    maxQty: String(option.maxPermitted || 1),
+    maxQty: String(option.maxPermitted || 1), ...platformForm(option),
   })));
   const [productIds, setProductIds] = useState(() => new Set(
     group ? items.filter(item => isProduct(item) && (item.optionGroupsId || []).includes(group.id)).map(item => item.id) : presetProductIds,
@@ -46,10 +48,10 @@ export default function GroupEditor({ group, items, categories, presetProductIds
     if (newOption.mode === 'existing') {
       const item = itemById[Number(newOption.itemId)];
       if (!item) { showMessage('error', 'Escolha o item.'); return; }
-      setOptions(prev => [...prev, { key: newKey(), itemId: item.id, name: item.name, price: newOption.price || '0', maxQty: '1' }]);
+      setOptions(prev => [...prev, { key: newKey(), itemId: item.id, name: item.name, price: newOption.price || '0', maxQty: '1', ...platformForm() }]);
     } else {
       if (!newOption.name.trim()) { showMessage('error', 'Digite o nome da opção (ex.: Bacon extra).'); return; }
-      setOptions(prev => [...prev, { key: newKey(), itemId: null, name: newOption.name.trim(), price: newOption.price || '0', maxQty: '1' }]);
+      setOptions(prev => [...prev, { key: newKey(), itemId: null, name: newOption.name.trim(), price: newOption.price || '0', maxQty: '1', ...platformForm() }]);
     }
     setNewOption({ mode: newOption.mode, name: '', price: '', itemId: '' });
   };
@@ -67,6 +69,9 @@ export default function GroupEditor({ group, items, categories, presetProductIds
     if (options.some(option => optionLimit(option) > maxPermitted)) { showMessage('error', `Uma opção não pode ser escolhida mais vezes que o máximo do grupo (${maxPermitted}).`); return; }
     const prices = options.map(option => parseFloat(String(option.price).replace(',', '.')));
     if (prices.some(price => isNaN(price) || price < 0)) { showMessage('error', 'Confira os preços das opções.'); return; }
+    let platforms;
+    try { platforms = options.map(option => (sameMenu ? {} : platformPayload(option, true))); }
+    catch (error) { showMessage('error', `${error.message} Veja as opções do grupo.`); return; }
     setSaving(true);
     try {
       const payload = { name: form.name.trim(), description: form.description.trim(), minPermitted, maxPermitted, status: 'AVAILABLE' };
@@ -79,11 +84,11 @@ export default function GroupEditor({ group, items, categories, presetProductIds
         if (!keep.has(old.id)) await optionGroupService.deleteOption(groupId, old.id, { sync: false });
       }
       for (const [index, option] of options.entries()) {
-        const body = { name: option.name, price: prices[index], index, status: 'AVAILABLE', maxPermitted: optionLimit(option) };
+        const body = { name: option.name, price: prices[index], index, status: 'AVAILABLE', maxPermitted: optionLimit(option), ...platforms[index] };
         if (option.id) await optionGroupService.updateOption(groupId, option.id, body, { sync: false });
         else await optionGroupService.createOption(groupId, { ...body, itemId: option.itemId }, { sync: false });
       }
-      // Última chamada: vincula os produtos e envia o cardápio à Keeta uma vez.
+      // Última chamada: vincula os produtos ao grupo.
       await optionGroupService.setItems(groupId, [...productIds]);
       await onChanged();
       showMessage('success', isNew ? 'Grupo criado.' : 'Grupo atualizado.');
@@ -155,6 +160,11 @@ export default function GroupEditor({ group, items, categories, presetProductIds
                   </label>
                   {item && isProduct(item) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-bold" title={`Vendido sozinho por ${formatCurrency(item.price)}`}>produto do cardápio</span>}
                   <button type="button" onClick={() => setOptions(prev => prev.filter(entry => entry.key !== option.key))} className="p-2 text-slate-300 hover:text-red-600" aria-label={`Remover ${option.name}`}><Trash2 className="w-4 h-4" /></button>
+                  {!sameMenu && (
+                    <div className="basis-full pl-6">
+                      <PlatformFields form={option} onChange={changes => updateOption(option.key, changes)} basePrice={option.price} idPrefix={`option-${option.key}`} compact />
+                    </div>
+                  )}
                 </div>
               );
             })}

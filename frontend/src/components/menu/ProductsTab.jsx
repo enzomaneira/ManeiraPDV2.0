@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { formatCurrency } from '../../utils/formatters';
 import { isProduct } from './menuUtils';
+import { PlatformBadge } from './PlatformFields';
 
 // Botão Disponível / Esgotado usado nas listas do cardápio.
 export function StatusToggle({ available, busy, onClick, labelOn = 'Disponível', labelOff = 'Esgotado', title }) {
@@ -29,7 +30,7 @@ function IconButton({ title, onClick, disabled, danger, children }) {
 // Aba "Produtos": cada categoria é um bloco com seus produtos, como no
 // gestor de cardápio do iFood e dos PDVs de delivery.
 export default function ProductsTab({
-  categories, items, optionGroups, loading, busyId, reordering,
+  categories, items, optionGroups, loading, busyId, reordering, sameMenu = true,
   onNewCategory, onEditCategory, onDeleteCategory, onToggleCategory, onMoveCategory,
   onNewProduct, onEditProduct, onDuplicateProduct, onDeleteProduct, onToggleProduct, onMoveProduct,
 }) {
@@ -81,11 +82,12 @@ export default function ProductsTab({
                   <h3 className="font-bold text-lg text-slate-800">{category.name}</h3>
                   <span className="text-xs font-bold text-slate-400">{products.length} {products.length === 1 ? 'produto' : 'produtos'}</span>
                   {paused && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">Categoria pausada</span>}
+                  {!sameMenu && <PlatformBadge entity={category} />}
                 </div>
                 {category.description && <p className="text-xs text-slate-500">{category.description}</p>}
               </div>
               <button type="button" onClick={() => onToggleCategory(category)} disabled={busyId === `cat-${category.id}`}
-                title={paused ? 'Voltar a mostrar a categoria na Keeta' : 'Esconder todos os produtos desta categoria na Keeta'}
+                title={paused ? 'Voltar a mostrar a categoria nas plataformas' : 'Esconder na hora todos os produtos desta categoria nas plataformas'}
                 className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-50">
                 {paused ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}{paused ? 'Mostrar categoria' : 'Pausar categoria'}
               </button>
@@ -113,7 +115,9 @@ export default function ProductsTab({
                         : <Utensils className="w-6 h-6 text-indigo-300" />}
                     </div>
                     <button type="button" onClick={() => onEditProduct(item)} className="flex-1 min-w-[200px] text-left group">
-                      <p className={`font-bold group-hover:text-indigo-700 ${available ? 'text-slate-800' : 'text-slate-400'}`}>{item.name}</p>
+                      <p className={`font-bold group-hover:text-indigo-700 ${available ? 'text-slate-800' : 'text-slate-400'}`}>
+                        {item.name}{!sameMenu && <span className="ml-2 align-middle"><PlatformBadge entity={item} /></span>}
+                      </p>
                       {item.description && item.description !== item.name && <p className="text-xs text-slate-500 line-clamp-1">{item.description}</p>}
                       {chips.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1">
@@ -124,6 +128,8 @@ export default function ProductsTab({
                     <div className="text-right w-24 shrink-0">
                       <span className="font-extrabold text-indigo-600 tabular-nums">{formatCurrency(item.price)}</span>
                       {item.originalPrice > item.price && <span className="block text-xs text-slate-400 line-through">{formatCurrency(item.originalPrice)}</span>}
+                      {!sameMenu && item.onKeeta !== false && item.keetaPrice != null && <span className="block text-[11px] text-slate-500 tabular-nums">Keeta {formatCurrency(item.keetaPrice)}</span>}
+                      {!sameMenu && item.onIfood !== false && item.ifoodPrice != null && <span className="block text-[11px] text-slate-500 tabular-nums">iFood {formatCurrency(item.ifoodPrice)}</span>}
                     </div>
                     <StatusToggle available={available} busy={busyId === item.id} onClick={() => onToggleProduct(item)} />
                     <div className="flex items-center">

@@ -228,42 +228,57 @@ def _owned_option_item(store, item_id):
     return item
 
 
-def _notify_keeta_menu_sync(store):
+def _notify_keeta_menu_sync(store, entity=None, deleted=None):
     """
-    Notifica a Keeta (POST /merchantUpdate) sempre que o cardápio muda,
-    para que ela puxe o cardápio atualizado via GET /merchant.
+    Cardápio com publicação manual: editar o cardápio NÃO envia nada às
+    plataformas (o restaurante clica em "Publicar na Keeta"/"Publicar no iFood").
 
-    O merchant_id usado aqui é o identificador persistido no onboarding
-    (`StoreConfig.keeta_merchant_id`). O body vazio dispara o fluxo pull, e a
-    Keeta busca o Merchant atualizado pelo endpoint GET /merchant.
-
-    Falhas aqui são apenas logadas (não interrompem a resposta ao
-    frontend), pois o cardápio já foi salvo com sucesso no nosso banco.
+    A exceção são as pausas (Esgotado/Disponível, pausar categoria ou
+    complemento) e as exclusões: vão na hora para a Keeta (que recebe o
+    cardápio publicado com o status novo) e para o iFood.
     """
-    # A tela salva um grupo de complementos em várias chamadas (grupo, opções,
-    # produtos); as intermediárias vêm com ?sync=0 e só a última avisa a Keeta.
-    if request.args.get("sync") == "0":
+    if deleted is not None:
+        # Exclusão: o que saiu do PDV não pode continuar à venda
+        try:
+            import menu_publish
+            menu_publish.push_keeta_status(store.id)
+            menu_publish.pause_ifood_deleted(store.id, deleted.get("items", []), deleted.get("options", []))
+        except Exception as e:
+            print(f"[Stores][_notify_keeta_menu_sync] ERRO ao avisar exclusão (ignorado): {type(e).__name__}: {e}")
+        return
+    data = request.get_json(silent=True)
+    status_only = request.method in ("PUT", "PATCH") and isinstance(data, dict) and set(data) == {"status"}
+    if not status_only or entity is None:
         return
     try:
-        # Alterações normais disparam o pull do GET /merchant.
-        from models import StoreConfig
-
-        config = StoreConfig.query.get(store.id)
-        if not config or not config.keeta_merchant_id:
-            print(f"[Stores][_notify_keeta_menu_sync] AVISO: sem keetaMerchantId registrado | store_id={store.id}")
-            return
-
-        merchant_id = str(config.keeta_merchant_id).strip()
-        from routes.keeta_webhook import _build_menu_response
-
-        merchant = _build_menu_response(store.id)
-        success, err = force_menu_sync(merchant_id, merchant)
-        if not success:
-            print(f"[Stores][_notify_keeta_menu_sync] AVISO: falha ao notificar a Keeta | store_id={store.id} | erro={err}")
-        else:
-            print(f"[Stores][_notify_keeta_menu_sync] Keeta notificada com sucesso | store_id={store.id}")
+        import menu_publish
+        menu_publish.push_keeta_status(store.id)
+        menu_publish.push_ifood_status(store.id, entity)
     except Exception as e:
-        print(f"[Stores][_notify_keeta_menu_sync] ERRO inesperado (ignorado): {type(e).__name__}: {e}")
+        print(f"[Stores][_notify_keeta_menu_sync] ERRO ao enviar pausa (ignorado): {type(e).__name__}: {e}")
+
+
+def _apply_platform_fields(entity, data, with_prices: bool):
+    """Campos do cardápio por plataforma: onKeeta/onIfood e preço próprio."""
+    for key, attr in (("onKeeta", "on_keeta"), ("onIfood", "on_ifood")):
+        if key in data:
+            if not isinstance(data[key], bool):
+                raise ValueError(f"{key} deve ser verdadeiro ou falso.")
+            setattr(entity, attr, data[key])
+    if with_prices:
+        for key, attr in (("keetaPrice", "keeta_price"), ("ifoodPrice", "ifood_price")):
+            if key in data:
+                value = data[key]
+                if value in (None, ""):
+                    setattr(entity, attr, None)
+                    continue
+                try:
+                    value = round(float(str(value).replace(",", ".")), 2)
+                except (TypeError, ValueError):
+                    raise ValueError("Preço da plataforma inválido.")
+                if value < 0:
+                    raise ValueError("O preço não pode ser negativo.")
+                setattr(entity, attr, value)
 
 
 def _option_group_min_permitted_warning(group) -> str | None:
@@ -464,9 +479,13 @@ def create_my_category():
         )
         print(f"[Stores][create_my_category] Objeto criado: name='{category.name}' | external_code={category.external_code}")
 
+        _apply_platform_fields(category, data, with_prices=False)
         db.session.add(category)
         db.session.commit()
         print(f"[Stores][create_my_category] Commit realizado | category_id={category.id}")
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
     except Exception as e:
         db.session.rollback()
         print(f"[Stores][create_my_category] ERRO: {type(e).__name__}: {e}")
@@ -512,14 +531,18 @@ def update_my_category(category_id):
         return jsonify({"error": str(error)}), 400
 
     try:
+        _apply_platform_fields(category, data, with_prices=False)
         db.session.commit()
         print(f"[Stores][update_my_category] Atualizado: name='{category.name}' | status={category.status}")
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
     except Exception as e:
         db.session.rollback()
         print(f"[Stores][update_my_category] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao atualizar categoria."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, category)
     return jsonify(category.to_dict())
 
 
@@ -545,6 +568,7 @@ def delete_my_category(category_id):
         }), 409
 
     cat_name = category.name
+    deleted = {"items": [item.id for item in category.items]}
     try:
         db.session.delete(category)
         db.session.commit()
@@ -554,7 +578,7 @@ def delete_my_category(category_id):
         print(f"[Stores][delete_my_category] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao remover categoria."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, deleted=deleted)
     return jsonify({"message": f"Categoria '{cat_name}' removida."}), 200
 
 
@@ -642,9 +666,13 @@ def create_my_menu_item():
         )
         print(f"[Stores][create_my_menu_item] Item: name='{item.name}' | price={item.price} | extCode={item.external_code} | catId={category_id}")
 
+        _apply_platform_fields(item, data, with_prices=True)
         db.session.add(item)
         db.session.commit()
         print(f"[Stores][create_my_menu_item] Commit | item_id={item.id}")
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
     except Exception as e:
         db.session.rollback()
         print(f"[Stores][create_my_menu_item] ERRO: {type(e).__name__}: {e}")
@@ -708,14 +736,18 @@ def update_my_menu_item(item_id):
         item.image_url = str(data["imageUrl"] or "").strip()
 
     try:
+        _apply_platform_fields(item, data, with_prices=True)
         db.session.commit()
         print(f"[Stores][update_my_menu_item] Atualizado: name='{item.name}' | price={item.price}")
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
     except Exception as e:
         db.session.rollback()
         print(f"[Stores][update_my_menu_item] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao atualizar item."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, item)
     return jsonify(item.to_dict())
 
 
@@ -750,7 +782,7 @@ def delete_my_menu_item(item_id):
         print(f"[Stores][delete_my_menu_item] ERRO: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao remover item."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, deleted={"items": [item_id]})
     return jsonify({"message": f"Item '{item_name}' removido."}), 200
 
 
@@ -861,6 +893,7 @@ def delete_my_option_group(group_id):
     if not group:
         return jsonify({"error": "Grupo não encontrado."}), 404
 
+    deleted = {"options": [option.id for option in group.options]}
     try:
         db.session.delete(group)
         db.session.commit()
@@ -869,7 +902,7 @@ def delete_my_option_group(group_id):
         print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, deleted=deleted)
     return jsonify({"message": "Removido."}), 200
 
 
@@ -904,6 +937,7 @@ def create_option(group_id):
             index=(db.session.query(db.func.max(MenuOption.index)).filter_by(option_group_id=group.id).scalar() or -1) + 1,
             max_permitted=_parse_optional_limit(data.get("maxPermitted")),
         )
+        _apply_platform_fields(option, data, with_prices=True)
         db.session.add(option)
         db.session.commit()
     except ValueError as error:
@@ -970,12 +1004,16 @@ def update_option(group_id, option_id):
         return jsonify({"error": str(error)}), 400
 
     try:
+        _apply_platform_fields(option, data, with_prices=True)
         db.session.commit()
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error)}), 400
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Erro ao atualizar opção."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, option)
     result = option.to_dict()
     warning = _option_group_min_permitted_warning(option.option_group)
     if warning:
@@ -1006,7 +1044,7 @@ def delete_option(group_id, option_id):
         print(f"[Stores] ERRO ao salvar: {type(e).__name__}: {e}")
         return jsonify({"error": "Erro ao salvar no banco. Tente novamente."}), 500
 
-    _notify_keeta_menu_sync(store)
+    _notify_keeta_menu_sync(store, deleted={"options": [option_id]})
     result = {"message": "Removida."}
     warning = _option_group_min_permitted_warning(group)
     if warning:
@@ -1283,3 +1321,41 @@ def unlink_availability(item_id, avail_id):
 
     _notify_keeta_menu_sync(store)
     return jsonify({"message": "Desvinculada."}), 200
+
+
+# =============================================================================
+#  Publicação do cardápio (Keeta / iFood) e cardápio por plataforma
+# =============================================================================
+
+@stores_bp.get("/me/menu/publish-status")
+@login_required
+def menu_publish_status():
+    """Se há alterações não publicadas em cada plataforma e quando foi a última publicação."""
+    import menu_publish
+    from models import StoreConfig
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    config = StoreConfig.query.get(store.id)
+    return jsonify({
+        "sameMenu": config.same_menu_all_platforms is not False if config else True,
+        "keeta": menu_publish.keeta_status(store.id),
+        "ifood": menu_publish.ifood_status(store.id),
+    })
+
+
+@stores_bp.put("/me/menu/platform-mode")
+@login_required
+def menu_platform_mode():
+    """Liga/desliga "mesmo cardápio nas duas plataformas". Body: { "sameMenu": true }"""
+    from models import StoreConfig
+    store = _get_store_or_404()
+    if not store:
+        return jsonify({"error": "Usuário não possui um restaurante vinculado."}), 404
+    value = (request.get_json(silent=True) or {}).get("sameMenu")
+    if not isinstance(value, bool):
+        return jsonify({"error": "sameMenu deve ser verdadeiro ou falso."}), 400
+    config = StoreConfig.query.get(store.id)
+    config.same_menu_all_platforms = value
+    db.session.commit()
+    return jsonify({"sameMenu": value})

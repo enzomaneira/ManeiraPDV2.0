@@ -65,7 +65,7 @@ export default function StoreContactSettings() {
       setPhone(formatPhone(data.contactPhone));
       setSavedPhone(data.contactPhone || null);
       setPeriods(data.serviceHours || []);
-      setMessage({ type: 'success', text: 'Dados salvos. Clique em "Enviar para Keeta" no Cardápio para atualizar a loja na Keeta.' });
+      setMessage({ type: 'success', text: 'Dados salvos. Clique em "Publicar na Keeta" no Cardápio para atualizar a loja na Keeta.' });
     } catch (error) {
       setMessage({ type: 'error', text: error?.response?.data?.error || 'Não foi possível salvar.' });
     } finally {
