@@ -216,6 +216,7 @@ def build_ifood_items(store_id: int) -> list[dict]:
         payloads.append({
             "_local": {"categoryId": category.id, "categoryName": category.name, "imageUrl": item.image_url},
             "item": {"id": _ifood_id(store_id, "item", item.id), "type": "DEFAULT", "status": status,
+                     "productId": main_product["id"],  # o iFood exige: qual produto este item vende
                      "price": price, "externalCode": item.external_code or str(item.id)},
             "products": products, "optionGroups": groups, "options": options,
         })
@@ -255,6 +256,17 @@ def _upload_image(merchant_id: str, url: str, cache: dict, session) -> str | Non
     except Exception as e:
         print(f"[MenuPublish][ifood-image] ERRO: {type(e).__name__}")
         return None
+
+
+def _ifood_error(status, body) -> str:
+    """Resposta de erro do iFood em texto curto: "400: item.productId must be a UUID; …"."""
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        details = [d.get("message") for d in error.get("details") or [] if isinstance(d, dict) and d.get("message")]
+        return f"{status}: " + ("; ".join(details[:3]) if details else str(error.get("message") or error.get("code")))
+    if isinstance(body, dict) and body.get("message"):
+        return f"{status}: {body['message']}"
+    return f"{status}: {str(body)[:160]}"
 
 
 def _sent_hash(body: dict, image_url) -> str:
@@ -301,7 +313,7 @@ def publish_ifood(store_id: int) -> dict:
         if status in (200, 201) and isinstance(body, dict) and body.get("id"):
             mapping["categories"][key] = {"id": body["id"], "name": local["categoryName"]}
         else:
-            errors.append(f"Categoria \"{local['categoryName']}\": o iFood respondeu {status} {str(body)[:160]}")
+            errors.append(f"Categoria \"{local['categoryName']}\": o iFood respondeu {_ifood_error(status, body)}")
 
     # Itens: só envia o que mudou desde o último envio que deu certo
     new_item_ids, skipped, left = [], 0, 0
@@ -339,7 +351,7 @@ def publish_ifood(store_id: int) -> dict:
             else:
                 mapping["sent"].pop(item_id, None)
         else:
-            errors.append(f"Produto \"{body['products'][0]['name']}\": o iFood respondeu {status} {str(response)[:160]}")
+            errors.append(f"Produto \"{body['products'][0]['name']}\": o iFood respondeu {_ifood_error(status, response)}")
     session.close()
     if left:
         errors.insert(0, f"Faltaram {left} produto(s): o envio levou mais tempo que o permitido. "
