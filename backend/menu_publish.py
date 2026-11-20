@@ -146,6 +146,12 @@ def _load_map(config) -> dict:
         data = json.loads(config.ifood_catalog_map_json) if config and config.ifood_catalog_map_json else {}
     except (TypeError, ValueError):
         data = {}
+    # Outra loja do iFood ligada (ex.: credenciais novas): ids antigos não valem mais
+    merchant = (config.ifood_merchant_id or "") if config else ""
+    if data.get("merchantId") and data["merchantId"] != merchant:
+        data = {}
+    data["merchantId"] = merchant
+    data.setdefault("catalogId", None)  # catálogo DEFAULT da loja no iFood
     data.setdefault("categories", {})   # id da categoria do PDV -> {"id": id no iFood, "name": nome}
     data.setdefault("items", [])        # ids de item enviados na última publicação
     data.setdefault("images", {})       # url da foto -> imagePath no iFood
@@ -270,18 +276,32 @@ def publish_ifood(store_id: int) -> dict:
     payloads = build_ifood_items(store_id)
     errors, sent, paused = [], 0, 0
 
-    # Categorias: cria no iFood a que ainda não existe (ou mudou de nome)
+    # Catálogo: as categorias ficam dentro do catálogo DEFAULT da loja
+    if not mapping.get("catalogId"):
+        status, catalogs = ifood_client._request("GET", f"/catalog/v2.0/merchants/{merchant}/catalogs")
+        catalogs = catalogs if status == 200 and isinstance(catalogs, list) else []
+        default = next((c for c in catalogs if "DEFAULT" in (c.get("context") or [])), catalogs[0] if catalogs else None)
+        if not default:
+            print(f"[MenuPublish][ifood] store_id={store_id} | catálogo não encontrado | status_code={status}")
+            return {"ok": False, "error": f"Não encontrei o cardápio (catálogo) da loja no iFood (resposta {status})."}
+        mapping["catalogId"] = default.get("catalogId") or default.get("id")
+    catalog = mapping["catalogId"]
+
+    # Categorias: cria no iFood a que ainda não existe (ou mudou de nome); cada uma só uma vez
+    tried = set()
     for payload in payloads:
         local = payload["_local"]
         key = str(local["categoryId"])
         known = mapping["categories"].get(key)
-        if not known or known.get("name") != local["categoryName"]:
-            status, body = ifood_client._request("POST", f"/catalog/v2.0/merchants/{merchant}/categories",
-                                                 json_body={"name": local["categoryName"], "status": "AVAILABLE", "template": "DEFAULT"})
-            if status in (200, 201) and isinstance(body, dict) and body.get("id"):
-                mapping["categories"][key] = {"id": body["id"], "name": local["categoryName"]}
-            else:
-                errors.append(f"Categoria \"{local['categoryName']}\": o iFood respondeu {status} {str(body)[:160]}")
+        if key in tried or (known and known.get("name") == local["categoryName"]):
+            continue
+        tried.add(key)
+        status, body = ifood_client._request("POST", f"/catalog/v2.0/merchants/{merchant}/catalogs/{catalog}/categories",
+                                             json_body={"name": local["categoryName"], "status": "AVAILABLE", "template": "DEFAULT"})
+        if status in (200, 201) and isinstance(body, dict) and body.get("id"):
+            mapping["categories"][key] = {"id": body["id"], "name": local["categoryName"]}
+        else:
+            errors.append(f"Categoria \"{local['categoryName']}\": o iFood respondeu {status} {str(body)[:160]}")
 
     # Itens: só envia o que mudou desde o último envio que deu certo
     new_item_ids, skipped, left = [], 0, 0
@@ -349,6 +369,8 @@ def publish_ifood(store_id: int) -> dict:
         config.ifood_published_hash = menu_platforms.menu_hash(payloads)
         config.ifood_published_at = _now()
     db.session.commit()
+    for error in errors[:5]:
+        print(f"[MenuPublish][ifood] store_id={store_id} | {error}")
     print(f"[MenuPublish][ifood] store_id={store_id} | enviados={sent}/{len(payloads)} | sem_mudanca={skipped} | faltaram={left} "
           f"| pausados={paused} | erros={len(errors)} | {time.monotonic() - started:.1f}s")
     return {"ok": not errors, "sent": sent, "unchanged": skipped, "total": len(payloads), "paused": paused, "left": left, "errors": errors[:5]}
