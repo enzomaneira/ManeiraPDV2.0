@@ -16,6 +16,7 @@
 # =============================================================================
 
 import base64
+import copy
 import hashlib
 import json
 import time
@@ -335,7 +336,9 @@ def publish_ifood(store_id: int) -> dict:
         category = mapping["categories"].get(str(local["categoryId"]))
         if not category:
             continue
-        body = {k: v for k, v in payload.items() if k != "_local"}
+        # Cópia profunda: a foto (imagePath) e a categoria do iFood entram só no que é enviado,
+        # não no payload usado para guardar o que foi publicado (senão fica sempre "pendente").
+        body = copy.deepcopy({k: v for k, v in payload.items() if k != "_local"})
         body["item"] = {**body["item"], "categoryId": category["id"]}
         item_id = body["item"]["id"]
         digest = _sent_hash(body, local.get("imageUrl"))
