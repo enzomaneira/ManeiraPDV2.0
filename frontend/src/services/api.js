@@ -93,6 +93,9 @@ export const orderService = {
     retryDecrypt: (orderId) => api.post(`/orders/${orderId}/decrypt`),
     // Entrega própria: avança a etapa (entregador a caminho, na loja, coletado...)
     updateDeliveryStage: (orderId, stage) => api.patch(`/orders/${orderId}/delivery-stage`, { stage }),
+    // Reembolso pedido pelo cliente na Keeta
+    acceptRefund: (orderId) => api.post(`/orders/${orderId}/refund/accept`),
+    rejectRefund: (orderId, code, reason) => api.post(`/orders/${orderId}/refund/reject`, { code, reason }),
 };
 
 export const categoryService = {

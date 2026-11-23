@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { History, Search, Calendar, Ban, CheckCircle, ChevronRight } from 'lucide-react';
 import { formatCurrency, formatFullDate } from '../utils/formatters';
+import { refundLabel } from '../utils/refunds';
 
 export default function HistoryPage({ orders, onSelectOrder, showBrand = false }) {
     const [query, setQuery] = useState('');
@@ -77,6 +78,11 @@ export default function HistoryPage({ orders, onSelectOrder, showBrand = false }
                                         ) : (
                                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-green-100 text-green-700">
                                                 <CheckCircle className="w-3 h-3"/> Entregue
+                                            </span>
+                                        )}
+                                        {refundLabel(order.refund) && (
+                                            <span className={`ml-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${refundLabel(order.refund).style}`}>
+                                                {refundLabel(order.refund).text}
                                             </span>
                                         )}
                                     </td>

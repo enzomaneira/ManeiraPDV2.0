@@ -36,6 +36,7 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 import keeta_client
 import delivery_stages
+import refunds
 import menu_platforms
 import menu_publish
 import store_sync
@@ -795,6 +796,15 @@ def receive_order_event():
     # fundamental que, aconteça o que acontecer no processamento, sempre
     # respondamos 200 rapidamente — erros são apenas logados, nunca deixados
     # propagar e derrubar a resposta HTTP.
+    # Reembolso: registra antes de qualquer chamada à Keeta, para não perder o
+    # pedido de reembolso se a busca dos detalhes falhar ou demorar.
+    if event_type in refunds.REFUND_EVENTS:
+        try:
+            _apply_refund_event(event_type, order_id, event)
+        except Exception as e:
+            db.session.rollback()
+            print(f"[Webhook][receive_order_event] ERRO ao registrar reembolso (segue o fluxo): {type(e).__name__}: {e}")
+
     try:
         print(f"[Webhook][receive_order_event] Buscando detalhes completos do pedido {order_id} na Keeta (orderURL={order_url})...")
         order_data = keeta_client.get_order_details(order_id, order_url=order_url)
@@ -841,6 +851,18 @@ def receive_order_event():
     return jsonify({"message": "ok"}), 200
 
 
+def _apply_refund_event(event_type: str, order_id: str, event: dict) -> None:
+    order = Order.query.filter_by(external_id=order_id).first()
+    if not order:
+        print(f"[Webhook][refund] pedido {order_id} ainda não está no banco | evento={event_type}")
+        return
+    if refunds.apply_event(order, event_type, event):
+        db.session.commit()
+        info = refunds.load(order) or {}
+        print(f"[Webhook][refund] pedido {order_id} | evento={event_type} | reembolso={info.get('status')} | "
+              f"valor={info.get('amount')} | parcial={info.get('partial')} | status_pedido={order.status}")
+
+
 def _handle_event(event_type: str, order_id: str, event: dict | None = None):
     """
     Mapeia os tipos de evento da Keeta para os status internos do PDV.
@@ -856,6 +878,11 @@ def _handle_event(event_type: str, order_id: str, event: dict | None = None):
       REFUNDED         → CANCELED
     """
     print(f"[Webhook][_handle_event] INÍCIO | event_type={event_type} | order_id={order_id}")
+    if event_type in refunds.REFUND_EVENTS:
+        # Pedido que ainda não existia quando o evento chegou (salvo agora há pouco)
+        _apply_refund_event(event_type, order_id, event or {})
+        print(f"[Webhook][_handle_event] FIM | event_type={event_type} | order_id={order_id}")
+        return
 
     status_map = {
         "CONFIRMED":        "PREPARING",
@@ -865,9 +892,8 @@ def _handle_event(event_type: str, order_id: str, event: dict | None = None):
         "CONCLUDED":        "COMPLETED",
         "CANCELLED":        "CANCELED",
         "CANCELLATION_REQUESTED": "CANCELED",
-        "USER_REFUND_REQUEST": "CANCELED",
-        "REFUNDED":         "CANCELED",
-        "REFUND_FAILED":    "CANCELED",
+        # Reembolsos (USER_REFUND_REQUEST, REFUNDED, REFUND_FAILED) não entram
+        # aqui: ficam em refunds.py, porque pedir reembolso não cancela o pedido.
     }
 
     # Eventos do entregador da Keeta (só quando a entrega é da Keeta):

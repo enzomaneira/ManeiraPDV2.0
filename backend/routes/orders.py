@@ -19,6 +19,7 @@ from auth_utils import login_required, rate_limited
 import keeta_client
 import ifood_client
 import delivery_stages
+import refunds
 import threading
 
 orders_bp = Blueprint("orders", __name__)
@@ -712,3 +713,66 @@ def save_order_from_keeta(order_json: dict, local_merchant_id: str):
         print(f"[Orders][save_order_from_keeta] ERRO ao salvar pedido. Rollback executado. Detalhes: {type(e).__name__}: {e}")
 
     print(f"[Orders][save_order_from_keeta] FIM | keeta_id={keeta_id}")
+
+
+# -----------------------------------------------------------------------------
+#  Reembolso pedido pelo cliente (Keeta): aceitar ou recusar
+# -----------------------------------------------------------------------------
+
+def _refund_order_or_error(order_id):
+    order = _account_order(order_id)
+    if not order:
+        return None, (jsonify({"error": "Pedido não encontrado."}), 404)
+    if (order.platform or "KEETA") != "KEETA" or not order.external_id:
+        return None, (jsonify({"error": "Só pedidos da Keeta têm reembolso pelo PDV."}), 400)
+    refund = refunds.load(order)
+    if not refund or refund.get("status") != "REQUESTED":
+        return None, (jsonify({"error": "Este pedido não tem reembolso esperando resposta."}), 409)
+    return order, None
+
+
+def _keeta_refund_error(status_code, body):
+    if status_code == 422:
+        return "A Keeta diz que este reembolso já foi respondido ou não pode mais ser respondido."
+    if status_code is None:
+        return "A Keeta não respondeu. Tente de novo em instantes."
+    return f"A Keeta não aceitou a resposta (código {status_code})."
+
+
+@orders_bp.post("/<int:order_id>/refund/accept")
+@login_required
+def accept_refund(order_id):
+    order, error = _refund_order_or_error(order_id)
+    if error:
+        return error
+    ok, status_code, body = keeta_client.accept_refund(order.external_id)
+    if not ok:
+        return jsonify({"error": _keeta_refund_error(status_code, body)}), 502
+    refunds.mark_decision(order, "ACCEPT")
+    db.session.commit()
+    print(f"[Orders][refund] aceito | order_id={order.id} | keeta={order.external_id}")
+    return jsonify({"message": "Reembolso aceito. A Keeta confirma em instantes.", "order": order.to_dict()})
+
+
+@orders_bp.post("/<int:order_id>/refund/reject")
+@login_required
+def reject_refund(order_id):
+    data = request.get_json(silent=True) or {}
+    code = data.get("code") or "OTHER"
+    reason = str(data.get("reason") or "").strip()
+    if code not in refunds.REJECT_CODES:
+        return jsonify({"error": "Motivo de recusa inválido."}), 400
+    if not reason:
+        reason = refunds.REJECT_CODES[code]
+    if len(reason) > 300:
+        return jsonify({"error": "O motivo pode ter no máximo 300 caracteres."}), 400
+    order, error = _refund_order_or_error(order_id)
+    if error:
+        return error
+    ok, status_code, body = keeta_client.reject_refund(order.external_id, reason, code)
+    if not ok:
+        return jsonify({"error": _keeta_refund_error(status_code, body)}), 502
+    refunds.mark_decision(order, "REJECT", code, reason)
+    db.session.commit()
+    print(f"[Orders][refund] recusado | order_id={order.id} | keeta={order.external_id} | code={code}")
+    return jsonify({"message": "Reembolso recusado. A Keeta avisa o cliente.", "order": order.to_dict()})

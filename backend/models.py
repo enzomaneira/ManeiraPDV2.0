@@ -537,6 +537,8 @@ class Order(db.Model):
     delivery_stage    = db.Column(db.String(40),  nullable=True)
     delivery_stage_at = db.Column(db.String(40),  nullable=True)  # UTC ISO
     pickup_eta        = db.Column(db.String(40),  nullable=True)  # previsão do entregador na loja (UTC ISO)
+    # Reembolso pedido pelo cliente (Keeta): ver refunds.py
+    refund_json       = db.Column(db.Text,        nullable=True)
 
     created_at       = db.Column(db.String(100), nullable=True)
 
@@ -579,8 +581,19 @@ class Order(db.Model):
             "discounts":       discounts,
             "createdAt":       self.created_at,
             "items":           [item.to_dict() for item in self.items],
+            "refund":          self._refund(),
             **self._contact_details(),
         }
+
+    def _refund(self):
+        import json as _json
+        try:
+            data = _json.loads(self.refund_json) if self.refund_json else None
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return {k: v for k, v in data.items() if k != "events"}
 
     def _contact_details(self) -> dict:
         """Cliente, entrega e pagamento para a tela de detalhes. Campos que ainda

@@ -10,6 +10,7 @@ import MenuPage from './MenuPage';
 import SettingsPage from './SettingsPage';
 import ReportsPage from './ReportsPage';
 import StoreStatusControls from '../components/StoreStatusControls';
+import RefundAlert from '../components/RefundAlert';
 import { orderService, storeService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -71,7 +72,8 @@ function formatOrder(order) {
     time: order.createdAt,
     items: processedItems,
     fees: order.fees || [],
-    discounts: order.discounts || []
+    discounts: order.discounts || [],
+    refund: order.refund || null,
   };
 }
 
@@ -272,6 +274,9 @@ function PDVApp() {
             </button>
           </div>
         </header>
+
+        {/* Reembolso esperando resposta: aviso em qualquer aba (o pedido já está no Histórico) */}
+        <RefundAlert orders={orders} onSelectOrder={setSelectedOrder} />
 
         {/* Só o quadro de pedidos rola na horizontal (colunas); as demais abas
             (Histórico, Cardápio, Configurações) rolam na vertical. min-h-0

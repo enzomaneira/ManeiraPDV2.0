@@ -571,6 +571,32 @@ def request_cancellation(order_id: str, reason: str = "Dificuldades internas do 
         return False
 
 
+def _refund_action(order_id: str, action: str, payload: dict | None) -> tuple[bool, int | None, str]:
+    url = f"{BASE_URL}/v1/orders/{order_id}/{action}"
+    body = canonical_json(payload) if payload else ""
+    try:
+        response = requests.post(url, headers=_build_headers(url, body=body), data=body, timeout=REQUEST_TIMEOUT)
+        ok = response.status_code in (200, 201, 202, 204)
+        print(f"[Keeta][{action}] order_id={order_id} | status_code={response.status_code} | sucesso={ok}"
+              + ("" if ok else f" | body={response.text[:300]}"))
+        return ok, response.status_code, response.text[:300]
+    except Exception as e:
+        print(f"[Keeta][{action}] ERRO order_id={order_id}: {type(e).__name__}: {e}")
+        return False, None, ""
+
+
+def accept_refund(order_id: str) -> tuple[bool, int | None, str]:
+    """Aceita o reembolso pedido pelo cliente. POST /v1/orders/{orderId}/acceptRefund (sem corpo).
+    204 → a Keeta envia REFUNDED depois."""
+    return _refund_action(order_id, "acceptRefund", None)
+
+
+def reject_refund(order_id: str, reason: str, code: str = "OTHER") -> tuple[bool, int | None, str]:
+    """Recusa o reembolso. POST /v1/orders/{orderId}/rejectRefund {reason, code}
+    code: DISH_ALREADY_DONE | OUT_FOR_DELIVERY | OTHER. 204 → a Keeta envia REFUND_FAILED."""
+    return _refund_action(order_id, "rejectRefund", {"reason": reason, "code": code})
+
+
 def get_order_details(order_id: str, order_url: str | None = None) -> dict | None:
     """
     Busca os detalhes completos de um pedido na Keeta.

@@ -4,6 +4,7 @@ import { formatCurrency, formatFullDate, formatTime } from '../utils/formatters'
 import { STAGE_LABELS, isKeetaDelivery, nextOwnStages } from '../utils/deliveryStages';
 import { orderItemParts } from '../utils/orderItems';
 import PlatformTag from './PlatformTag';
+import RefundPanel from './RefundPanel';
 import { orderService } from '../services/api';
 
 const PAYMENT_METHOD_NAMES = {
@@ -259,7 +260,8 @@ export default function OrderDetailModal({ order, onClose, onStatusChange, onSta
 
                 {/* Body */}
                 <div className="p-6 overflow-y-auto space-y-6 bg-slate-50/50">
-                    
+                    <RefundPanel order={order} onOrderUpdated={onOrderUpdated} />
+
                     {/* Itens */}
                     <div className="space-y-3">
                         <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm uppercase tracking-wide">

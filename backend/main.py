@@ -178,6 +178,7 @@ def _run_lightweight_migrations():
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_stage VARCHAR(40)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_stage_at VARCHAR(40)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS pickup_eta VARCHAR(40)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_json TEXT",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS detailed_delivery_status BOOLEAN DEFAULT FALSE",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS delivery_stages_json TEXT",
         # iFood: loja de cada restaurante e plataforma de cada pedido
