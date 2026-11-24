@@ -170,6 +170,9 @@ def create_order():
 #  PATCH /api/orders/<id>/status
 #  Atualiza o status de um pedido e notifica a Keeta na mesma operação
 # -----------------------------------------------------------------------------
+UPDATABLE_STATUSES = {"PREPARING", "READY_FOR_PICKUP", "DELIVERY_IN_PROGRESS", "COMPLETED", "CANCELED"}
+
+
 @orders_bp.patch("/<int:order_id>/status")
 @login_required
 def update_status(order_id):
@@ -187,6 +190,19 @@ def update_status(order_id):
 
     old_status = order.status
     print(f"[Orders][update_status] Transição de status: '{old_status}' → '{new_status}'")
+
+    # O status só anda para frente (cancelar vale enquanto não terminou). Um
+    # clique numa tela desatualizada (o pedido já avançou pela plataforma) não
+    # pode fazer o pedido voltar, nem reabrir um pedido concluído/cancelado.
+    if new_status not in UPDATABLE_STATUSES:
+        return jsonify({"error": "Status inválido."}), 400
+    if old_status in delivery_stages.FINAL_STATUSES:
+        done = "concluído" if old_status == "COMPLETED" else "cancelado"
+        print(f"[Orders][update_status] RECUSADO (409): pedido já {done} | order_id={order.id}")
+        return jsonify({"error": f"Este pedido já foi {done}. A tela foi atualizada.", "order": order.to_dict()}), 409
+    if new_status != "CANCELED" and delivery_stages.STATUS_RANK.get(new_status, -1) <= delivery_stages.STATUS_RANK.get(old_status, -1):
+        print(f"[Orders][update_status] RECUSADO (409): '{old_status}' já está nesta etapa ou depois | order_id={order.id}")
+        return jsonify({"error": "O pedido já passou desta etapa. A tela foi atualizada.", "order": order.to_dict()}), 409
 
     # --- Notificações para a Keeta (em thread separada para não bloquear a resposta) ---
     # A ideia é: o operador muda o status no PDV → o PDV avisa a Keeta

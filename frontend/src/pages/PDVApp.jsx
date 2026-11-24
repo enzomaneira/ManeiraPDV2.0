@@ -203,7 +203,11 @@ function PDVApp() {
       setSelectedOrder(null);  // fecha o modal e volta ao board
       fetchOrders();
     } catch (error) {
-      alert("Erro ao atualizar pedido!");
+      // 409: o pedido já tinha avançado (ex.: concluído pelo iFood); mostra o estado atual
+      const current = error.response?.data?.order;
+      if (current) setSelectedOrder(keepBrand(current));
+      fetchOrders();
+      alert(error.response?.data?.error || 'Erro ao atualizar pedido!');
     }
   };
 
