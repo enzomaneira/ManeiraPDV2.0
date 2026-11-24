@@ -44,6 +44,24 @@ export function AuthProvider({ children }) {
         return res.data.user;
     };
 
+    // Google: entra direto ou devolve { needsSignup, signupToken, name, email }
+    const loginWithGoogle = async (credential) => {
+        const res = await authService.googleLogin(credential);
+        if (res.data.needsSignup) return res.data;
+        selectStore(null);
+        localStorage.setItem(TOKEN_KEY, res.data.token);
+        setUser(res.data.user);
+        return res.data;
+    };
+
+    const registerWithGoogle = async (signupToken, storeName, name) => {
+        const res = await authService.googleRegister(signupToken, storeName, name);
+        selectStore(null);
+        localStorage.setItem(TOKEN_KEY, res.data.token);
+        setUser(res.data.user);
+        return res.data.user;
+    };
+
     const logout = () => {
         localStorage.removeItem(TOKEN_KEY);
         selectStore(null);
@@ -51,7 +69,7 @@ export function AuthProvider({ children }) {
     };
 
     return (
-        <AuthContext.Provider value={{ user, setUser, loading, login, register, logout }}>
+        <AuthContext.Provider value={{ user, setUser, loading, login, register, loginWithGoogle, registerWithGoogle, logout }}>
             {children}
         </AuthContext.Provider>
     );

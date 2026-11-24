@@ -31,6 +31,11 @@ class User(db.Model):
     reset_token_hash = db.Column(db.String(64), nullable=True, index=True)
     reset_token_expires_at = db.Column(db.DateTime, nullable=True)
     created_at    = db.Column(db.String(100), nullable=True)
+    # Login com Google: id fixo da conta Google (sub) e o e-mail dela.
+    # Conta criada pelo Google começa sem senha própria (has_password=False).
+    google_sub    = db.Column(db.String(64), nullable=True, unique=True, index=True)
+    google_email  = db.Column(db.String(254), nullable=True)
+    has_password  = db.Column(db.Boolean, nullable=True, default=True)
 
     # Restaurantes (marcas) desta conta, na ordem de criação
     stores = db.relationship("Store", back_populates="owner", order_by="Store.id")
@@ -60,6 +65,9 @@ class User(db.Model):
             "storeId": self.store.id if self.store else None,
             "storeName": self.store.name if self.store else None,
             "stores":  [{"id": s.id, "name": s.name} for s in self.stores],
+            "googleLinked": bool(self.google_sub),
+            "googleEmail": self.google_email if self.google_sub else None,
+            "hasPassword": self.has_password is not False,
         }
 
 

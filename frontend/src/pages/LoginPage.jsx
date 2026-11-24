@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ChefHat, Mail, Lock, LogIn, Loader2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import GoogleAuthSection from '../components/GoogleAuthSection';
 
 export default function LoginPage() {
     const { login } = useAuth();
@@ -11,6 +12,7 @@ export default function LoginPage() {
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [googleSignup, setGoogleSignup] = useState(false);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -40,7 +42,11 @@ export default function LoginPage() {
                     <p className="text-slate-500 text-sm mt-1">Acesse o painel do seu restaurante</p>
                 </div>
 
-                <form onSubmit={handleSubmit} className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+                {/* O bloco do Google fica sempre montado: no passo de cadastro ele
+                    guarda a resposta do Google e substitui o formulário de senha. */}
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+                {!googleSignup && (
+                <form onSubmit={handleSubmit} className="space-y-5">
                     <h2 className="text-xl font-bold text-slate-800">Entrar</h2>
 
                     {error && (
@@ -88,7 +94,12 @@ export default function LoginPage() {
                         {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <LogIn className="w-5 h-5" />}
                         {loading ? 'Entrando...' : 'Entrar'}
                     </button>
+                </form>
+                )}
 
+                <GoogleAuthSection onStepChange={setGoogleSignup} />
+
+                {!googleSignup && (<>
                     <div className="flex justify-center">
                         <Link to="/forgot-password" className="text-sm text-indigo-600 font-bold hover:underline">
                             Esqueci minha senha
@@ -101,7 +112,8 @@ export default function LoginPage() {
                             Cadastre seu restaurante
                         </Link>
                     </p>
-                </form>
+                </>)}
+                </div>
             </div>
         </div>
     );

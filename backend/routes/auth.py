@@ -8,6 +8,11 @@
 #    GET  /api/auth/me               → retorna os dados do usuário logado (token)
 #    PUT  /api/auth/me               → altera nome/e-mail do usuário logado
 #    POST /api/auth/change-password  → troca a senha (exige a senha atual)
+#    GET  /api/auth/google/config    → Client ID do Google (público) para o botão
+#    POST /api/auth/google           → entra com Google (ou pede o nome do restaurante)
+#    POST /api/auth/google/register  → termina o cadastro de quem entrou com Google
+#    POST /api/auth/google/link      → vincula uma conta Google à conta logada
+#    DELETE /api/auth/google/link    → desvincula
 #
 #  Senhas e tokens nunca são escritos nos logs.
 # =============================================================================
@@ -22,6 +27,7 @@ from email.message import EmailMessage
 from flask import Blueprint, request, jsonify, g
 from sqlalchemy.exc import IntegrityError
 
+import google_auth
 from database import db
 from models import User, Store, StoreConfig
 from auth_utils import generate_token, login_required, client_ip, rate_limited, reset_rate_limit
@@ -100,6 +106,33 @@ def _send_password_reset_email(email: str, reset_url: str):
         smtp.send_message(message)
 
 
+def _create_account(name: str, email: str, store_name: str, password: str | None = None, google: dict | None = None):
+    """Cria o usuário, o primeiro restaurante e a configuração padrão (commit)."""
+    user = User(name=name, email=email, created_at=datetime.now().isoformat())
+    if password:
+        user.set_password(password)
+        user.has_password = True
+    else:
+        # Conta criada pelo Google: senha aleatória que ninguém conhece; dá para
+        # criar uma senha depois em Configurações → Conta.
+        user.set_password(secrets.token_urlsafe(32))
+        user.has_password = False
+    if google:
+        user.google_sub = google["sub"]
+        user.google_email = google["email"]
+    db.session.add(user)
+    db.session.flush()  # garante que user.id já existe, sem precisar commitar ainda
+
+    store = Store(name=store_name, owner_id=user.id)
+    db.session.add(store)
+    db.session.flush()
+
+    # Configuração padrão da loja (integração Keeta)
+    db.session.add(StoreConfig(store_id=store.id, auto_accept=True, is_store_open=True))
+    db.session.commit()
+    return user, store
+
+
 @auth_bp.post("/register")
 def register():
     """
@@ -142,18 +175,7 @@ def register():
         return jsonify(duplicate_email), 409
 
     try:
-        user = User(name=name, email=email, created_at=datetime.now().isoformat())
-        user.set_password(password)
-        db.session.add(user)
-        db.session.flush()  # garante que user.id já existe, sem precisar commitar ainda
-
-        store = Store(name=store_name, owner_id=user.id)
-        db.session.add(store)
-        db.session.flush()
-
-        # Configuração padrão da loja (integração Keeta)
-        db.session.add(StoreConfig(store_id=store.id, auto_accept=True, is_store_open=True))
-        db.session.commit()
+        user, store = _create_account(name, email, store_name, password=password)
     except IntegrityError:
         # Dois cadastros simultâneos com o mesmo e-mail: o segundo cai aqui.
         db.session.rollback()
@@ -305,7 +327,7 @@ def update_me():
             error = validate_email(email)
             if error:
                 return jsonify({"error": error}), 400
-            if not user.check_password(str(data.get("currentPassword") or "")):
+            if user.has_password is not False and not user.check_password(str(data.get("currentPassword") or "")):
                 return jsonify({"error": "Senha atual incorreta."}), 403
             if User.query.filter(User.email == email, User.id != user.id).first():
                 return jsonify({"error": "Já existe uma conta cadastrada com este e-mail."}), 409
@@ -334,7 +356,7 @@ def change_password():
     if rate_limited(f"change-password:{user.id}", limit=10, window_seconds=900):
         return jsonify(TOO_MANY_ATTEMPTS[0]), TOO_MANY_ATTEMPTS[1]
 
-    if not user.check_password(str(data.get("currentPassword") or "")):
+    if user.has_password is not False and not user.check_password(str(data.get("currentPassword") or "")):
         return jsonify({"error": "Senha atual incorreta."}), 403
 
     new_password = str(data.get("newPassword") or "")
@@ -343,6 +365,112 @@ def change_password():
         return jsonify({"error": error}), 400
 
     user.set_password(new_password)
+    user.has_password = True
     db.session.commit()
     print(f"[Auth][change_password] Senha alterada | user_id={user.id}")
     return jsonify({"message": "Senha alterada com sucesso.", "token": generate_token(user), "user": user.to_dict()})
+
+
+# =============================================================================
+#  Login com Google
+# =============================================================================
+
+@auth_bp.get("/google/config")
+def google_config():
+    """Client ID do Google para o botão "Entrar com Google" (não é segredo)."""
+    return jsonify({"clientId": google_auth.client_id()})
+
+
+@auth_bp.post("/google")
+def google_login():
+    """
+    Entra com Google. Body: { "credential": "<ID token do Google>" }
+      - conta Google já vinculada → entra
+      - e-mail (verificado pelo Google) igual ao de uma conta do PDV → vincula e entra
+      - senão → { needsSignup: true, signupToken, name, email } para pedir o restaurante
+    """
+    if rate_limited(f"google-login:{client_ip()}", limit=30, window_seconds=900):
+        return jsonify(TOO_MANY_ATTEMPTS[0]), TOO_MANY_ATTEMPTS[1]
+    info, error = google_auth.verify_id_token((request.get_json(silent=True) or {}).get("credential"))
+    if error:
+        return jsonify({"error": error}), 401
+    user = User.query.filter_by(google_sub=info["sub"]).first()
+    if not user:
+        user = User.query.filter_by(email=info["email"]).first()
+        if user:
+            if user.google_sub and user.google_sub != info["sub"]:
+                return jsonify({"error": "Esta conta do PDV já está vinculada a outra conta Google."}), 409
+            user.google_sub, user.google_email = info["sub"], info["email"]
+            db.session.commit()
+            print(f"[Auth][google] conta vinculada pelo e-mail | user_id={user.id}")
+    if user:
+        print(f"[Auth][google] FIM (login) | user_id={user.id}")
+        return jsonify({"token": generate_token(user), "user": user.to_dict()})
+    print("[Auth][google] conta Google nova: pedindo o nome do restaurante")
+    return jsonify({"needsSignup": True, "signupToken": google_auth.make_signup_token(info),
+                    "name": info.get("name") or "", "email": info["email"]})
+
+
+@auth_bp.post("/google/register")
+def google_register():
+    """Termina o cadastro de quem entrou com Google. Body: { signupToken, storeName, name? }"""
+    if rate_limited(f"register:{client_ip()}", limit=5, window_seconds=3600):
+        return jsonify(TOO_MANY_ATTEMPTS[0]), TOO_MANY_ATTEMPTS[1]
+    data = request.get_json(silent=True) or {}
+    info = google_auth.read_signup_token(str(data.get("signupToken") or ""))
+    if not info:
+        return jsonify({"error": "O login com Google expirou. Clique em Entrar com Google de novo."}), 401
+    name = str(data.get("name") or info.get("name") or "").strip()
+    store_name = str(data.get("storeName") or "").strip()
+    error = validate_name(name, "o seu nome", NAME_MAX_LENGTH) or validate_name(store_name, "o nome do restaurante", STORE_NAME_MAX_LENGTH)
+    if error:
+        return jsonify({"error": error}), 400
+    if User.query.filter((User.google_sub == info["sub"]) | (User.email == info["email"])).first():
+        return jsonify({"error": "Já existe uma conta com este Google ou e-mail. Clique em Entrar com Google."}), 409
+    try:
+        user, store = _create_account(name, info["email"], store_name, google=info)
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Já existe uma conta com este Google ou e-mail. Clique em Entrar com Google."}), 409
+    except Exception as e:
+        db.session.rollback()
+        print(f"[Auth][google_register] ERRO: {type(e).__name__}: {e}")
+        return jsonify({"error": "Erro interno ao criar a conta. Tente novamente."}), 500
+    print(f"[Auth][google_register] FIM (sucesso) | user_id={user.id} | store_id={store.id}")
+    return jsonify({"token": generate_token(user), "user": user.to_dict()}), 201
+
+
+@auth_bp.post("/google/link")
+@login_required
+def google_link():
+    """Vincula uma conta Google à conta logada (pode ser de outro e-mail)."""
+    user = g.current_user
+    if rate_limited(f"google-link:{user.id}", limit=10, window_seconds=900):
+        return jsonify(TOO_MANY_ATTEMPTS[0]), TOO_MANY_ATTEMPTS[1]
+    info, error = google_auth.verify_id_token((request.get_json(silent=True) or {}).get("credential"))
+    if error:
+        return jsonify({"error": error}), 401
+    other = User.query.filter(User.google_sub == info["sub"], User.id != user.id).first()
+    if other:
+        return jsonify({"error": "Esta conta Google já está vinculada a outra conta do PDV."}), 409
+    user.google_sub, user.google_email = info["sub"], info["email"]
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "Esta conta Google já está vinculada a outra conta do PDV."}), 409
+    print(f"[Auth][google_link] vinculada | user_id={user.id}")
+    return jsonify(user.to_dict())
+
+
+@auth_bp.delete("/google/link")
+@login_required
+def google_unlink():
+    user = g.current_user
+    if user.has_password is False:
+        return jsonify({"error": "Crie uma senha antes de desvincular o Google, senão você não consegue mais entrar."}), 400
+    user.google_sub = None
+    user.google_email = None
+    db.session.commit()
+    print(f"[Auth][google_unlink] desvinculada | user_id={user.id}")
+    return jsonify(user.to_dict())

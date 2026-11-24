@@ -62,6 +62,12 @@ export const authService = {
     updateMe: (data) => api.put('/auth/me', data),
     changePassword: (currentPassword, newPassword) =>
         api.post('/auth/change-password', { currentPassword, newPassword }),
+    // Login com Google
+    googleConfig: () => api.get('/auth/google/config'),
+    googleLogin: (credential) => api.post('/auth/google', { credential }),
+    googleRegister: (signupToken, storeName, name) => api.post('/auth/google/register', { signupToken, storeName, name }),
+    googleLink: (credential) => api.post('/auth/google/link', { credential }),
+    googleUnlink: () => api.delete('/auth/google/link'),
 };
 
 export const storeService = {

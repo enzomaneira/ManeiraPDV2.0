@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ChefHat, Mail, Lock, User, Store, UserPlus, Loader2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import GoogleAuthSection from '../components/GoogleAuthSection';
 
 export default function RegisterPage() {
     const { register } = useAuth();
@@ -14,6 +15,7 @@ export default function RegisterPage() {
     const [confirmPassword, setConfirmPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [googleSignup, setGoogleSignup] = useState(false);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -49,7 +51,9 @@ export default function RegisterPage() {
                     <p className="text-slate-500 text-sm mt-1">Crie sua conta e cadastre seu restaurante</p>
                 </div>
 
-                <form onSubmit={handleSubmit} className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+                <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+                {!googleSignup && (
+                <form onSubmit={handleSubmit} className="space-y-5">
                     <h2 className="text-xl font-bold text-slate-800">Criar conta</h2>
 
                     {error && (
@@ -154,14 +158,20 @@ export default function RegisterPage() {
                         {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <UserPlus className="w-5 h-5" />}
                         {loading ? 'Criando conta...' : 'Criar conta'}
                     </button>
+                </form>
+                )}
 
+                <GoogleAuthSection text="continue_with" onStepChange={setGoogleSignup} />
+
+                {!googleSignup && (
                     <p className="text-center text-sm text-slate-500">
                         Já tem uma conta?{' '}
                         <Link to="/login" className="text-indigo-600 font-bold hover:underline">
                             Entrar
                         </Link>
                     </p>
-                </form>
+                )}
+                </div>
             </div>
         </div>
     );

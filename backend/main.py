@@ -160,6 +160,9 @@ def _run_lightweight_migrations():
         # User: tokens de recuperação de senha (o token em texto puro nunca é salvo)
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash VARCHAR(64)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMP",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub VARCHAR(64)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email VARCHAR(254)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS has_password BOOLEAN DEFAULT TRUE",
         # StoreConfig: campos do webhook de autorização Keeta (eventos 1301/1302)
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_authorized BOOLEAN DEFAULT FALSE",
         "ALTER TABLE store_config ADD COLUMN IF NOT EXISTS keeta_auth_id VARCHAR(100)",
@@ -240,6 +243,8 @@ def _run_lightweight_migrations():
     # Índices criados depois do backfill. Um merchant da Keeta pertence a uma
     # única loja local (evita pedidos caindo no restaurante errado).
     index_statements = [
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_google_sub ON users (google_sub) "
+        "WHERE google_sub IS NOT NULL AND google_sub <> ''",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_store_config_ifood_merchant_id "
         "ON store_config (ifood_merchant_id) "
         "WHERE ifood_merchant_id IS NOT NULL AND ifood_merchant_id <> ''",

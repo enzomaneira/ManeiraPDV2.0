@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { User, Lock, Save, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
+import { User, Lock, Save, RefreshCw, CheckCircle, AlertCircle, Link2, Unlink } from 'lucide-react';
+import GoogleButton from './GoogleButton';
 import { authService, storeService, TOKEN_KEY } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -34,7 +35,42 @@ export default function AccountSettings() {
     const [savingPassword, setSavingPassword] = useState(false);
     const [passwordMessage, setPasswordMessage] = useState(null);
 
+    const [googleBusy, setGoogleBusy] = useState(false);
+    const [googleMessage, setGoogleMessage] = useState(null);
+    const [googleAvailable, setGoogleAvailable] = useState(true);
+
     const emailChanged = email.trim().toLowerCase() !== (user?.email || '');
+    // Conta criada pelo Google ainda não tem senha própria
+    const hasPassword = user?.hasPassword !== false;
+
+    const linkGoogle = async (credential) => {
+        setGoogleBusy(true);
+        setGoogleMessage(null);
+        try {
+            const { data } = await authService.googleLink(credential);
+            setUser(data);
+            setGoogleMessage({ type: 'success', text: `Conta Google ${data.googleEmail} vinculada. Agora você pode entrar com o Google.` });
+        } catch (error) {
+            setGoogleMessage({ type: 'error', text: error?.response?.data?.error || 'Não foi possível vincular a conta Google.' });
+        } finally {
+            setGoogleBusy(false);
+        }
+    };
+
+    const unlinkGoogle = async () => {
+        if (!window.confirm('Desvincular a conta Google? Você passa a entrar só com e-mail e senha.')) return;
+        setGoogleBusy(true);
+        setGoogleMessage(null);
+        try {
+            const { data } = await authService.googleUnlink();
+            setUser(data);
+            setGoogleMessage({ type: 'success', text: 'Conta Google desvinculada.' });
+        } catch (error) {
+            setGoogleMessage({ type: 'error', text: error?.response?.data?.error || 'Não foi possível desvincular.' });
+        } finally {
+            setGoogleBusy(false);
+        }
+    };
 
     const handleSaveProfile = async (e) => {
         e.preventDefault();
@@ -44,7 +80,7 @@ export default function AccountSettings() {
             const payload = { name };
             if (emailChanged) {
                 payload.email = email;
-                payload.currentPassword = emailPassword;
+                if (hasPassword) payload.currentPassword = emailPassword;
             }
             const userResponse = await authService.updateMe(payload);
             let updatedUser = userResponse.data;
@@ -73,14 +109,14 @@ export default function AccountSettings() {
         }
         setSavingPassword(true);
         try {
-            const response = await authService.changePassword(currentPassword, newPassword);
+            const response = await authService.changePassword(hasPassword ? currentPassword : '', newPassword);
             // A troca de senha encerra as sessões antigas; guardamos o token novo.
             localStorage.setItem(TOKEN_KEY, response.data.token);
             setUser(response.data.user);
             setCurrentPassword('');
             setNewPassword('');
             setConfirmPassword('');
-            setPasswordMessage({ type: 'success', text: 'Senha alterada. Outros dispositivos precisarão entrar de novo.' });
+            setPasswordMessage({ type: 'success', text: hasPassword ? 'Senha alterada. Outros dispositivos precisarão entrar de novo.' : 'Senha criada. Agora você também pode entrar com e-mail e senha.' });
         } catch (error) {
             setPasswordMessage({ type: 'error', text: error?.response?.data?.error || 'Não foi possível alterar a senha.' });
         } finally {
@@ -117,7 +153,7 @@ export default function AccountSettings() {
                     <label className={labelClass}>E-mail</label>
                     <input type="email" required maxLength={254} value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
                 </div>
-                {emailChanged && (
+                {emailChanged && hasPassword && (
                     <div>
                         <label className={labelClass}>Senha atual (para trocar o e-mail)</label>
                         <input type="password" required value={emailPassword} onChange={(e) => setEmailPassword(e.target.value)} className={inputClass} />
@@ -136,17 +172,19 @@ export default function AccountSettings() {
                         <Lock className="w-6 h-6" />
                     </div>
                     <div>
-                        <h3 className="font-bold text-lg text-slate-800">Alterar senha</h3>
-                        <p className="text-xs text-slate-400">Encerra o acesso em outros dispositivos</p>
+                        <h3 className="font-bold text-lg text-slate-800">{hasPassword ? 'Alterar senha' : 'Criar senha'}</h3>
+                        <p className="text-xs text-slate-400">{hasPassword ? 'Encerra o acesso em outros dispositivos' : 'Sua conta foi criada com o Google: crie uma senha para entrar também com e-mail'}</p>
                     </div>
                 </div>
 
                 <Feedback message={passwordMessage} />
 
-                <div>
-                    <label className={labelClass}>Senha atual</label>
-                    <input type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={inputClass} />
-                </div>
+                {hasPassword && (
+                    <div>
+                        <label className={labelClass}>Senha atual</label>
+                        <input type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={inputClass} />
+                    </div>
+                )}
                 <div>
                     <label className={labelClass}>Nova senha</label>
                     <input type="password" required minLength={6} maxLength={128} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={inputClass} />
@@ -158,9 +196,40 @@ export default function AccountSettings() {
 
                 <button type="submit" disabled={savingPassword} className={buttonClass(savingPassword)}>
                     {savingPassword ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Lock className="w-5 h-5" />}
-                    {savingPassword ? 'Alterando...' : 'Alterar senha'}
+                    {savingPassword ? 'Salvando...' : hasPassword ? 'Alterar senha' : 'Criar senha'}
                 </button>
             </form>
+
+            {(googleAvailable || user?.googleLinked) && (
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4 h-fit">
+                    <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+                        <div className="p-2 bg-slate-100 text-slate-700 rounded-lg">
+                            <Link2 className="w-6 h-6" />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-lg text-slate-800">Entrar com Google</h3>
+                            <p className="text-xs text-slate-400">Use sua conta Google para entrar no PDV</p>
+                        </div>
+                    </div>
+                    <Feedback message={googleMessage} />
+                    {user?.googleLinked ? (
+                        <>
+                            <p className="text-sm text-slate-600">Vinculado a <b>{user.googleEmail}</b>.</p>
+                            <button type="button" onClick={unlinkGoogle} disabled={googleBusy}
+                                className="w-full py-3 font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center justify-center gap-2 disabled:opacity-60">
+                                {googleBusy ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Unlink className="w-5 h-5" />} Desvincular
+                            </button>
+                            {!hasPassword && <p className="text-xs text-slate-400">Para desvincular, crie uma senha antes.</p>}
+                        </>
+                    ) : (
+                        <>
+                            <p className="text-sm text-slate-600">Vincule uma conta Google (pode ser de outro e-mail) para entrar sem digitar a senha.</p>
+                            <GoogleButton text="continue_with" onCredential={linkGoogle} onUnavailable={() => setGoogleAvailable(false)} />
+                            {googleBusy && <p className="flex items-center justify-center gap-2 text-sm text-slate-500"><RefreshCw className="w-4 h-4 animate-spin" />Vinculando...</p>}
+                        </>
+                    )}
+                </div>
+            )}
         </div>
     );
 }
